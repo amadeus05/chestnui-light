@@ -1,0 +1,257 @@
+{
+  "accuracy": 0.5746331372422264,
+  "balanced_accuracy": 0.5652010724332415,
+  "f1_macro": 0.5651277560118109,
+  "confusion_matrix": [
+    [
+      11176,
+      6000
+    ],
+    [
+      7160,
+      6602
+    ]
+  ],
+  "classification_report": {
+    "short": {
+      "precision": 0.6095113438045375,
+      "recall": 0.6506753609687936,
+      "f1-score": 0.6294210407749493,
+      "support": 17176.0
+    },
+    "long": {
+      "precision": 0.523885097603555,
+      "recall": 0.4797267838976893,
+      "f1-score": 0.5008344712486724,
+      "support": 13762.0
+    },
+    "accuracy": 0.5746331372422264,
+    "macro avg": {
+      "precision": 0.5666982207040463,
+      "recall": 0.5652010724332415,
+      "f1-score": 0.5651277560118109,
+      "support": 30938.0
+    },
+    "weighted avg": {
+      "precision": 0.5714226373523453,
+      "recall": 0.5746331372422264,
+      "f1-score": 0.5722225027369178,
+      "support": 30938.0
+    }
+  },
+  "validation_rows": 30938,
+  "probability_threshold_metrics": {
+    "0.55": {
+      "rows": 14789,
+      "coverage": 0.4780205572435193,
+      "long_signals": 4577,
+      "short_signals": 10212,
+      "no_trade": 16149,
+      "signal_accuracy": 0.6215430387450132,
+      "signal_balanced_accuracy": 0.5945836860590162,
+      "signal_f1_macro": 0.5924710285857477,
+      "signal_confusion_matrix": [
+        [
+          6571,
+          1956
+        ],
+        [
+          3641,
+          2621
+        ]
+      ],
+      "signal_classification_report": {
+        "short": {
+          "precision": 0.6434586760673717,
+          "recall": 0.7706110003518236,
+          "f1-score": 0.7013181066225519,
+          "support": 8527.0
+        },
+        "long": {
+          "precision": 0.5726458378850776,
+          "recall": 0.41855637176620886,
+          "f1-score": 0.48362395054894364,
+          "support": 6262.0
+        },
+        "accuracy": 0.6215430387450132,
+        "macro avg": {
+          "precision": 0.6080522569762247,
+          "recall": 0.5945836860590162,
+          "f1-score": 0.5924710285857477,
+          "support": 14789.0
+        },
+        "weighted avg": {
+          "precision": 0.6134749048389232,
+          "recall": 0.6215430387450132,
+          "f1-score": 0.6091414344112506,
+          "support": 14789.0
+        }
+      },
+      "long_precision": 0.5726458378850776,
+      "short_precision": 0.6434586760673717,
+      "long_recall_all": 0.19045196919052462,
+      "short_recall_all": 0.3825687005123428
+    },
+    "0.60": {
+      "rows": 4484,
+      "coverage": 0.14493503135302863,
+      "long_signals": 1530,
+      "short_signals": 2954,
+      "no_trade": 26454,
+      "signal_accuracy": 0.622435325602141,
+      "signal_balanced_accuracy": 0.6125079046664755,
+      "signal_f1_macro": 0.6080511658825276,
+      "signal_confusion_matrix": [
+        [
+          1825,
+          564
+        ],
+        [
+          1129,
+          966
+        ]
+      ],
+      "signal_classification_report": {
+        "short": {
+          "precision": 0.6178063642518619,
+          "recall": 0.7639179573043114,
+          "f1-score": 0.6831368145236758,
+          "support": 2389.0
+        },
+        "long": {
+          "precision": 0.6313725490196078,
+          "recall": 0.4610978520286396,
+          "f1-score": 0.5329655172413793,
+          "support": 2095.0
+        },
+        "accuracy": 0.622435325602141,
+        "macro avg": {
+          "precision": 0.6245894566357348,
+          "recall": 0.6125079046664755,
+          "f1-score": 0.6080511658825276,
+          "support": 4484.0
+        },
+        "weighted avg": {
+          "precision": 0.6241447132903158,
+          "recall": 0.622435325602141,
+          "f1-score": 0.6129742659495431,
+          "support": 4484.0
+        }
+      },
+      "long_precision": 0.6313725490196078,
+      "short_precision": 0.6178063642518619,
+      "long_recall_all": 0.07019328585961343,
+      "short_recall_all": 0.1062529110386586
+    },
+    "0.65": {
+      "rows": 577,
+      "coverage": 0.0186502036330726,
+      "long_signals": 217,
+      "short_signals": 360,
+      "no_trade": 30361,
+      "signal_accuracy": 0.5667244367417678,
+      "signal_balanced_accuracy": 0.6338176902931486,
+      "signal_f1_macro": 0.5647359146429778,
+      "signal_confusion_matrix": [
+        [
+          144,
+          34
+        ],
+        [
+          216,
+          183
+        ]
+      ],
+      "signal_classification_report": {
+        "short": {
+          "precision": 0.4,
+          "recall": 0.8089887640449438,
+          "f1-score": 0.5353159851301115,
+          "support": 178.0
+        },
+        "long": {
+          "precision": 0.8433179723502304,
+          "recall": 0.45864661654135336,
+          "f1-score": 0.5941558441558441,
+          "support": 399.0
+        },
+        "accuracy": 0.5667244367417678,
+        "macro avg": {
+          "precision": 0.6216589861751152,
+          "recall": 0.6338176902931486,
+          "f1-score": 0.5647359146429778,
+          "support": 577.0
+        },
+        "weighted avg": {
+          "precision": 0.7065578352993794,
+          "recall": 0.5667244367417678,
+          "f1-score": 0.5760042065361207,
+          "support": 577.0
+        }
+      },
+      "long_precision": 0.8433179723502304,
+      "short_precision": 0.4,
+      "long_recall_all": 0.013297485830547885,
+      "short_recall_all": 0.008383791336748951
+    },
+    "0.70": {
+      "rows": 21,
+      "coverage": 0.0006787769086560217,
+      "long_signals": 0,
+      "short_signals": 21,
+      "no_trade": 30917,
+      "signal_accuracy": 0.0,
+      "signal_balanced_accuracy": 0.0,
+      "signal_f1_macro": 0.0,
+      "signal_confusion_matrix": [
+        [
+          0,
+          0
+        ],
+        [
+          21,
+          0
+        ]
+      ],
+      "signal_classification_report": {
+        "short": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1-score": 0.0,
+          "support": 0.0
+        },
+        "long": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1-score": 0.0,
+          "support": 21.0
+        },
+        "accuracy": 0.0,
+        "macro avg": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1-score": 0.0,
+          "support": 21.0
+        },
+        "weighted avg": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1-score": 0.0,
+          "support": 21.0
+        }
+      },
+      "long_precision": null,
+      "short_precision": 0.0,
+      "long_recall_all": 0.0,
+      "short_recall_all": 0.0
+    }
+  },
+  "best_iteration": 31,
+  "train_rows": 156791,
+  "feature_count": 48,
+  "excluded_non_directional_rows": 450874,
+  "validation_period": {
+    "start": "2025-09-21 16:00:00",
+    "end": "2026-03-27 22:00:00"
+  }
+}
