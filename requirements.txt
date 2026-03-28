@@ -1,0 +1,8 @@
+pandas
+numpy
+joblib
+matplotlib
+pandas-ta
+requests
+lightgbm
+scikit-learn
