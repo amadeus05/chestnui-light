@@ -20,6 +20,7 @@ DIRECTIONAL_PROBA_THRESHOLD = globals().get(
     globals().get("CONFIDENCE_THRESHOLD", 0.5),
 )
 BACKTEST_INITIAL_BALANCE = float(globals().get("BACKTEST_INITIAL_BALANCE", 100.0))
+USE_DYNAMIC_BARRIERS = bool(globals().get("USE_DYNAMIC_BARRIERS", True))
 BACKTEST_CHARTS_DIR = Path(globals().get("BACKTEST_CHARTS_DIR", "backtest_charts"))
 BACKTEST_CHARTS_DIR.mkdir(parents=True, exist_ok=True)
 EQUITY_CURVE_PATH = BACKTEST_CHARTS_DIR / "equity_curve.png"
@@ -43,6 +44,23 @@ TF_MS = {
     "1d": 86_400_000,
     "1w": 604_800_000,
 }
+
+
+def get_end_date_cutoff():
+    if not globals().get("END_DATE"):
+        return None
+    return pd.to_datetime(globals().get("END_DATE"), errors="coerce")
+
+
+def apply_end_date_cutoff(df: pd.DataFrame, timestamp_column: str = "timestamp") -> pd.DataFrame:
+    if df is None or df.empty or timestamp_column not in df.columns:
+        return df
+
+    end_cutoff = get_end_date_cutoff()
+    if end_cutoff is None or pd.isna(end_cutoff):
+        return df
+
+    return df.loc[df[timestamp_column] <= end_cutoff].copy()
 
 # LightGBM binary directional mapping (from train.py)
 LABEL_TO_CLASS = {-1: 0, 1: 1}
@@ -99,6 +117,20 @@ def resolve_directional_signal(p_long: float, p_short: float) -> tuple[int, floa
     ):
         return -1, p_short, signal_gap
     return 0, max(p_long, p_short), signal_gap
+
+
+def get_barrier_pcts(feature_row: pd.DataFrame | None) -> tuple[float | None, float | None]:
+    if feature_row is None or feature_row.empty:
+        return None, None
+
+    if "barrier_stop_pct" not in feature_row.columns or "barrier_take_pct" not in feature_row.columns:
+        return None, None
+
+    stop_pct = float(feature_row["barrier_stop_pct"].iloc[0])
+    take_pct = float(feature_row["barrier_take_pct"].iloc[0])
+    if not np.isfinite(stop_pct) or not np.isfinite(take_pct):
+        return None, None
+    return stop_pct, take_pct
 
 
 def compact_symbol(symbol: str) -> str:
@@ -169,6 +201,7 @@ def load_raw_candles(symbol: str, timeframe: str) -> pd.DataFrame:
     tf_ms = timeframe_to_ms(timeframe)
     df["close_time"] = df["timestamp"] + pd.to_timedelta(tf_ms, unit="ms")
     df = df.dropna().sort_values("timestamp").reset_index(drop=True)
+    df = apply_end_date_cutoff(df)
     return df
 
 
@@ -222,6 +255,7 @@ def load_precomputed_features(symbol: str, symbol_categories=None, required_colu
         return df
 
     df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df = apply_end_date_cutoff(df)
     df["symbol"] = symbol
     if symbol_categories is None:
         df["symbol"] = df["symbol"].astype("category")
@@ -502,7 +536,7 @@ def backtest():
             feat_df = load_precomputed_features(
                 sym,
                 symbol_categories=symbol_categories,
-                required_columns=feature_names,
+                required_columns=feature_names + ["barrier_stop_pct", "barrier_take_pct"],
             )
             if feat_df.empty:
                 print(f"Warning: {sym} has no precomputed features table.")
@@ -587,7 +621,15 @@ def backtest():
     print(f"   Min signal gap: {MIN_SIGNAL_GAP:.2f}")
     print(f"   Batch entries per bar: {BACKTEST_MAX_NEW_POSITIONS_PER_BAR}")
     print(f"   Max open positions: {BACKTEST_MAX_OPEN_POSITIONS}")
-    print(f"   TP: {TP_PCT:.4f} | SL: {SL_PCT:.4f}")
+    if USE_DYNAMIC_BARRIERS:
+        print(
+            "   Dynamic barriers: "
+            f"ATRx{globals().get('BARRIER_ATR_MULTIPLIER', 1.25):.2f}, "
+            f"RVOLx{globals().get('BARRIER_RVOL_MULTIPLIER', 0.75):.2f}, "
+            f"TP/SL={globals().get('BARRIER_TP_TO_SL_RATIO', 2.0):.2f}"
+        )
+    else:
+        print(f"   TP: {TP_PCT:.4f} | SL: {SL_PCT:.4f}")
     print(f"\nBacktest on {len(test_timestamps)} candles")
     print("-" * 80)
 
@@ -634,6 +676,8 @@ def backtest():
             entry_price = pos["entry"]
             direction = pos["dir"]
             position_notional = pos["size"]
+            stop_pct = pos["stop_pct"]
+            take_pct = pos["take_pct"]
             next_open = ctx["next_open"]
             next_high = ctx["next_high"]
             next_low = ctx["next_low"]
@@ -642,8 +686,8 @@ def backtest():
             reason = ""
 
             if direction == 1:
-                stop_price = entry_price * (1 - SL_PCT)
-                take_price = entry_price * (1 + TP_PCT)
+                stop_price = entry_price * (1 - stop_pct)
+                take_price = entry_price * (1 + take_pct)
 
                 if next_low <= stop_price:
                     exit_price = (next_open if next_open < stop_price else stop_price) * (1 - SLIPPAGE)
@@ -654,8 +698,8 @@ def backtest():
                     exit_signal = True
                     reason = "TP"
             else:
-                stop_price = entry_price * (1 + SL_PCT)
-                take_price = entry_price * (1 - TP_PCT)
+                stop_price = entry_price * (1 + stop_pct)
+                take_price = entry_price * (1 - take_pct)
 
                 if next_high >= stop_price:
                     exit_price = (next_open if next_open > stop_price else stop_price) * (1 + SLIPPAGE)
@@ -711,8 +755,9 @@ def backtest():
 
             positions[sym] = None
 
+            exit_icon = "\u274C" if reason == "SL" else "\u2705" if reason == "TP" else "\u2139\uFE0F"
             print(
-                f"[{next_ts}] {sym}: {format_reason(reason)} | "
+                f"[{next_ts}] {exit_icon} {sym}: {format_reason(reason)} | "
                 f"PnL: {format_pnl_pct(pnl_clean * 100)} | "
                 f"Com: {commission:.2f}$ | "
                 f"Bal: {balance:.2f}"
@@ -744,6 +789,9 @@ def backtest():
                     symbol_categories=symbol_categories,
                 )
                 current_features = apply_feature_clip_bounds(current_features, clip_bounds)
+                stop_pct, take_pct = get_barrier_pcts(latest_row)
+                if stop_pct is None or take_pct is None:
+                    continue
 
                 proba = model.predict_proba(current_features)[0]
                 p_short = float(proba[0])
@@ -767,7 +815,7 @@ def backtest():
                     entry_price = ctx["next_open"] * (1 - SLIPPAGE)
 
                 risk_capital = snapshot_balance * RISK_PER_TRADE
-                position_notional = min(risk_capital / SL_PCT, snapshot_balance * LEVERAGE)
+                position_notional = min(risk_capital / stop_pct, snapshot_balance * LEVERAGE)
                 required_margin = position_notional / LEVERAGE
 
                 if position_notional < 10:
@@ -781,6 +829,8 @@ def backtest():
                         "entry_price": entry_price,
                         "position_notional": position_notional,
                         "required_margin": required_margin,
+                        "stop_pct": stop_pct,
+                        "take_pct": take_pct,
                         "p_long": p_long,
                         "p_short": p_short,
                         "direction_prob": direction_prob,
@@ -801,6 +851,14 @@ def backtest():
                 batch_proba = model.predict_proba(batch_features[feature_names])
                 for sym, proba in zip(batch_symbols, batch_proba):
                     ctx = market_batch[sym]
+                    feature_row = get_feature_row_precomputed(
+                        all_features[sym],
+                        current_ts,
+                        feature_names + ["barrier_stop_pct", "barrier_take_pct"],
+                    )
+                    stop_pct, take_pct = get_barrier_pcts(feature_row)
+                    if stop_pct is None or take_pct is None:
+                        continue
                     p_short = float(proba[0])
                     p_long = float(proba[1])
 
@@ -822,7 +880,7 @@ def backtest():
                         entry_price = ctx["next_open"] * (1 - SLIPPAGE)
 
                     risk_capital = snapshot_balance * RISK_PER_TRADE
-                    position_notional = min(risk_capital / SL_PCT, snapshot_balance * LEVERAGE)
+                    position_notional = min(risk_capital / stop_pct, snapshot_balance * LEVERAGE)
                     required_margin = position_notional / LEVERAGE
 
                     if position_notional < 10:
@@ -836,6 +894,8 @@ def backtest():
                             "entry_price": entry_price,
                             "position_notional": position_notional,
                             "required_margin": required_margin,
+                            "stop_pct": stop_pct,
+                            "take_pct": take_pct,
                             "p_long": p_long,
                             "p_short": p_short,
                             "direction_prob": direction_prob,
@@ -878,13 +938,15 @@ def backtest():
                 "entry": candidate["entry_price"],
                 "size": position_notional,
                 "margin": required_margin,
+                "stop_pct": candidate["stop_pct"],
+                "take_pct": candidate["take_pct"],
                 "ts_open": next_ts,
             }
             opened_this_bar += 1
             open_positions_count += 1
 
             print(
-                f"[{next_ts}] {candidate['sym']}: 🔥 OPEN {candidate['direction_str']} "
+                f"[{next_ts}] \U0001F525 OPEN {candidate['direction_str']}: {candidate['sym']} "
                 f"(Long={candidate['p_long']:.2f}, Short={candidate['p_short']:.2f}, "
                 f"Score={candidate['score']:.3f}) "
                 f"at {candidate['entry_price']:.4f} | "

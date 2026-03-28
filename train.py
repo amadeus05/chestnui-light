@@ -21,8 +21,8 @@ SYMBOL_COLUMN = "symbol"
 RESERVED_COLUMNS = {
     TARGET_COLUMN,
     TIMESTAMP_COLUMN,
-    "MFE_long",
-    "MFE_short",
+    "barrier_stop_pct",
+    "barrier_take_pct",
 }
 EXCLUDED_RAW_FEATURE_COLUMNS = {
     "open",
@@ -31,23 +31,40 @@ EXCLUDED_RAW_FEATURE_COLUMNS = {
     "close",
     "volume",
 }
-TEST_FEATURE_COLUMNS_V1 = {
-    "premium_to_index_zscore",
-    "mark_to_index_spread_zscore",
-    "oi_change_1h",
-    "oi_zscore_24",
-    "funding_zscore_24",
-    "oi_price_divergence",
-}
-TEST_FEATURE_COLUMNS_V2 = {
-    "rejection_strength_1h",
-    "liquidity_sweep_proxy_1h",
+TEST_FEATURE_COLUMNS = {
     "range_compression_1h",
     "distance_to_session_high_1h",
     "distance_to_session_low_1h",
+    "trend_persistence_score_12",
+    "trend_persistence_score_24",
+    "trend_efficiency_24h",
+    "slope_acceleration_1h_12_24",
+    "ema_slope_acceleration_1h",
+    "volatility_acceleration_1h",
+    "hour_sin_1h",
+    "hour_cos_1h",
+    "is_weekend_1h",
+    "relative_strength_vs_btc_24h",
+    "beta_to_btc_24h",
+    "residual_return_24h",
+    "cross_sectional_rank_ema_fast_slow_1h",
+    "market_breadth_ema_fast_slow_1h",
+    "market_breadth_pos_return_4h_3",
+    "market_dispersion_return_4h_3",
+    "delta_market_breadth_ema_fast_slow_1h",
+    "market_breadth_ema_fast_slow_1h_zscore",
+    "ema_fast_slow_x_market_breadth_ema_fast_slow_1h",
+    "trend_efficiency_24h_x_volatility_regime_change_1h",
 }
 LABEL_TO_CLASS = {-1: 0, 1: 1}
 CLASS_TO_LABEL = {0: -1, 1: 1}
+
+
+def get_end_date_cutoff():
+    end_date = getattr(cfg, "END_DATE", None)
+    if not end_date:
+        return None
+    return pd.to_datetime(end_date, errors="coerce")
 
 
 def parse_args():
@@ -114,6 +131,17 @@ def load_training_frame(db_path, symbols):
     dataset = dataset.dropna(subset=[TIMESTAMP_COLUMN, TARGET_COLUMN]).sort_values(TIMESTAMP_COLUMN).reset_index(drop=True)
     dataset.replace([np.inf, -np.inf], np.nan, inplace=True)
 
+    end_cutoff = get_end_date_cutoff()
+    if end_cutoff is not None and not pd.isna(end_cutoff):
+        before_rows = len(dataset)
+        dataset = dataset.loc[dataset[TIMESTAMP_COLUMN] <= end_cutoff].copy()
+        logger.info(
+            "Applied END_DATE cutoff at %s: kept %s/%s rows",
+            end_cutoff,
+            len(dataset),
+            before_rows,
+        )
+
     raw_labels = dataset[TARGET_COLUMN].astype(int)
     unknown_labels = sorted(set(raw_labels.unique()) - {-1, 0, 1})
     if unknown_labels:
@@ -133,10 +161,8 @@ def select_feature_columns(dataset):
     feature_columns = []
     use_symbol_feature = bool(getattr(cfg, "USE_SYMBOL_FEATURE", True))
     disabled_feature_columns = set()
-    if not bool(getattr(cfg, "ENABLE_TEST_MARKET_CONTEXT_FEATURES", False)):
-        disabled_feature_columns.update(TEST_FEATURE_COLUMNS_V1)
-    if not bool(getattr(cfg, "ENABLE_TEST_PRICE_ACTION_FEATURES", False)):
-        disabled_feature_columns.update(TEST_FEATURE_COLUMNS_V2)
+    if not bool(getattr(cfg, "ENABLE_TEST_FEATURES", False)):
+        disabled_feature_columns.update(TEST_FEATURE_COLUMNS)
 
     for column in dataset.columns:
         if column in RESERVED_COLUMNS:
@@ -424,7 +450,7 @@ def log_feature_importance_ranking(model, feature_columns):
         )
 
 
-def save_artifacts(model, metrics, dataset, feature_columns, clip_bounds, args):
+def save_directional_artifacts(model, metrics, dataset, feature_columns, clip_bounds, args):
     cfg.MODELS_DIR.mkdir(exist_ok=True)
 
     model_path = cfg.MODELS_DIR / f"{args.model_name}.joblib"
@@ -518,7 +544,7 @@ def main():
             model_to_save = retrain_full_model(dataset, feature_columns, args.seed, metrics["best_iteration"])
 
         log_feature_importance_ranking(model_to_save, feature_columns)
-        save_artifacts(model_to_save, metrics, dataset, feature_columns, clip_bounds_to_save, args)
+        save_directional_artifacts(model_to_save, metrics, dataset, feature_columns, clip_bounds_to_save, args)
     except Exception as exc:
         logger.error("%s", exc)
         raise SystemExit(1) from exc

@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import sqlite3
 import threading
 import time
@@ -18,25 +18,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 KLINE_URL = "https://api.bybit.com/v5/market/kline"
-MARK_KLINE_URL = "https://api.bybit.com/v5/market/mark-price-kline"
-INDEX_KLINE_URL = "https://api.bybit.com/v5/market/index-price-kline"
-PREMIUM_KLINE_URL = "https://api.bybit.com/v5/market/premium-index-price-kline"
-OPEN_INTEREST_URL = "https://api.bybit.com/v5/market/open-interest"
-FUNDING_HISTORY_URL = "https://api.bybit.com/v5/market/funding/history"
-ACCOUNT_RATIO_URL = "https://api.bybit.com/v5/market/account-ratio"
 BYBIT_CATEGORY = getattr(cfg, "BYBIT_CATEGORY", "linear")
 BYBIT_LIMIT = min(1000, max(1, int(getattr(cfg, "BYBIT_LIMIT", 1000))))
-BYBIT_CONTEXT_LIMIT = min(1000, max(1, int(getattr(cfg, "BYBIT_CONTEXT_LIMIT", 1000))))
-BYBIT_OI_LIMIT = min(200, max(1, int(getattr(cfg, "BYBIT_OI_LIMIT", 200))))
-BYBIT_RATIO_LIMIT = min(500, max(1, int(getattr(cfg, "BYBIT_RATIO_LIMIT", 500))))
-BYBIT_FUNDING_LIMIT = min(200, max(1, int(getattr(cfg, "BYBIT_FUNDING_LIMIT", 200))))
 BYBIT_TIMEOUT = float(getattr(cfg, "BYBIT_TIMEOUT", 20))
 BYBIT_MAX_WORKERS = max(1, int(getattr(cfg, "BYBIT_MAX_WORKERS", 6)))
 BYBIT_RETRY_COUNT = max(1, int(getattr(cfg, "BYBIT_RETRY_COUNT", 5)))
 BYBIT_RETRY_SLEEP = float(getattr(cfg, "BYBIT_RETRY_SLEEP", 0.3))
 DB_WRITE_BATCH_ROWS = max(BYBIT_LIMIT * 10, int(getattr(cfg, "DB_WRITE_BATCH_ROWS", 20_000)))
 MARKET_ZSCORE_WINDOW = max(10, int(getattr(cfg, "MARKET_ZSCORE_WINDOW", 96)))
-FUNDING_ZSCORE_WINDOW = max(5, int(getattr(cfg, "FUNDING_ZSCORE_WINDOW", 24)))
 EMA_FAST_WINDOW = max(2, int(getattr(cfg, "EMA_FAST_WINDOW", 12)))
 EMA_SLOW_WINDOW = max(EMA_FAST_WINDOW + 1, int(getattr(cfg, "EMA_SLOW_WINDOW", 48)))
 EMA_SLOPE_BASE_WINDOW_4H = max(2, int(getattr(cfg, "EMA_SLOPE_BASE_WINDOW_4H", 21)))
@@ -46,7 +35,6 @@ REALIZED_VOL_WINDOW_4H = max(2, int(getattr(cfg, "REALIZED_VOL_WINDOW_4H", 20)))
 RANGE_WINDOW_4H = max(2, int(getattr(cfg, "RANGE_WINDOW_4H", 14)))
 VWAP_WINDOW_4H = max(2, int(getattr(cfg, "VWAP_WINDOW_4H", 20)))
 CHOPPINESS_WINDOW_1H = max(2, int(getattr(cfg, "CHOPPINESS_WINDOW_1H", 14)))
-MARKET_CONTEXT_ZSCORE_WINDOW = max(5, int(getattr(cfg, "MARKET_CONTEXT_ZSCORE_WINDOW", 24)))
 PRICE_ACTION_LEVEL_WINDOW_1H = max(4, int(getattr(cfg, "PRICE_ACTION_LEVEL_WINDOW_1H", 24)))
 RANGE_COMPRESSION_SHORT_WINDOW_1H = max(2, int(getattr(cfg, "RANGE_COMPRESSION_SHORT_WINDOW_1H", 12)))
 RANGE_COMPRESSION_LONG_WINDOW_1H = max(
@@ -71,7 +59,7 @@ BYBIT_INTERVALS = {
     "1M": "M",
 }
 
-# Интервалы в миллисекундах
+# Ð˜Ð½Ñ‚ÐµÑ€Ð²Ð°Ð»Ñ‹ Ð² Ð¼Ð¸Ð»Ð»Ð¸ÑÐµÐºÑƒÐ½Ð´Ð°Ñ…
 TF_MS = {
     "1m": 60_000,
     "5m": 300_000,
@@ -81,11 +69,8 @@ TF_MS = {
     "1d": 86_400_000,
 }
 
-BTC_REFERENCE_SYMBOL = "BTC/USDT"
 BASE_OUTPUT_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
 FEATURE_OUTPUT_COLUMNS = [
-    "return_1h_1",
-    "return_1h_3",
     "return_1h_6",
     "return_1h_12",
     "return_1h_24",
@@ -93,7 +78,6 @@ FEATURE_OUTPUT_COLUMNS = [
     "ema_fast_slow",
     "linear_regression_slope_atr_1h_12",
     "linear_regression_slope_atr_1h_24",
-    "price_zscore_1h",
     "volatility_regime_change_1h",
     "return_4h_1",
     "return_4h_3",
@@ -104,11 +88,9 @@ FEATURE_OUTPUT_COLUMNS = [
     "realized_vol_4h_returns_20",
     "zscore_vs_vwap_4h",
     "vol_ratio",
-    "volume_zscore_1h",
     # "parkinson_ratio",  # beta disabled
     # "choppiness_index",  # beta disabled
     # "volume_imbalance_1h_12",  # beta disabled
-    "volume_ratio_1h_vs_4h",
     "price_position_1h",
     "distance_to_support_1h",
     "distance_to_resistance_1h",
@@ -116,36 +98,51 @@ FEATURE_OUTPUT_COLUMNS = [
     "adx_4h",
     "distance_to_rolling_high_4h",
     "distance_to_rolling_low_4h",
-    "relative_strength_vs_btc_6h",
     "cross_sectional_rank_4h",
 ]
-# Test Features V1: market-context / derivatives block
-TEST_FEATURE_COLUMNS_V1 = [
-    "premium_to_index_zscore",
-    "mark_to_index_spread_zscore",
-    "oi_change_1h",
-    "oi_zscore_24",
-    "funding_zscore_24",
-    "oi_price_divergence",
-]
-if bool(getattr(cfg, "ENABLE_TEST_MARKET_CONTEXT_FEATURES", False)):
-    FEATURE_OUTPUT_COLUMNS.extend(TEST_FEATURE_COLUMNS_V1)
-
-# Test Features V2: price-action / level-behavior block
-TEST_FEATURE_COLUMNS_V2 = [
-    "rejection_strength_1h",
-    "liquidity_sweep_proxy_1h",
+# Test features
+TEST_FEATURE_COLUMNS = [
+    # Range compression
     "range_compression_1h",
+    # Session positioning
     "distance_to_session_high_1h",
     "distance_to_session_low_1h",
+    # Trend persistence / acceleration
+    "trend_persistence_score_12",
+    "trend_persistence_score_24",
+    # Trend efficiency
+    "trend_efficiency_24h",
+    # Acceleration
+    "slope_acceleration_1h_12_24",
+    "ema_slope_acceleration_1h",
+    "volatility_acceleration_1h",
+    # Time context
+    "hour_sin_1h",
+    "hour_cos_1h",
+    "is_weekend_1h",
+    # Asset-specific alpha
+    "relative_strength_vs_btc_24h",
+    "beta_to_btc_24h",
+    "residual_return_24h",
+    # Cross-sectional context
+    "cross_sectional_rank_ema_fast_slow_1h",
+    # Market context
+    "market_breadth_ema_fast_slow_1h",
+    "market_breadth_pos_return_4h_3",
+    "market_dispersion_return_4h_3",
+    "delta_market_breadth_ema_fast_slow_1h",
+    "market_breadth_ema_fast_slow_1h_zscore",
+    "ema_fast_slow_x_market_breadth_ema_fast_slow_1h",
+    "trend_efficiency_24h_x_volatility_regime_change_1h",
 ]
-if bool(getattr(cfg, "ENABLE_TEST_PRICE_ACTION_FEATURES", False)):
-    FEATURE_OUTPUT_COLUMNS.extend(TEST_FEATURE_COLUMNS_V2)
-OUTPUT_COLUMNS = BASE_OUTPUT_COLUMNS + FEATURE_OUTPUT_COLUMNS + ["Target", "MFE_long", "MFE_short"]
+if bool(getattr(cfg, "ENABLE_TEST_FEATURES", False)):
+    FEATURE_OUTPUT_COLUMNS.extend(TEST_FEATURE_COLUMNS)
+BARRIER_OUTPUT_COLUMNS = ["barrier_stop_pct", "barrier_take_pct"]
+OUTPUT_COLUMNS = BASE_OUTPUT_COLUMNS + FEATURE_OUTPUT_COLUMNS + BARRIER_OUTPUT_COLUMNS + ["Target"]
 
 
 def init_db():
-    """Создание таблицы если не существует"""
+    """Ð¡Ð¾Ð·Ð´Ð°Ð½Ð¸Ðµ Ñ‚Ð°Ð±Ð»Ð¸Ñ†Ñ‹ ÐµÑÐ»Ð¸ Ð½Ðµ ÑÑƒÑ‰ÐµÑÑ‚Ð²ÑƒÐµÑ‚"""
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
@@ -163,20 +160,6 @@ def init_db():
             close REAL,
             volume REAL,
             quote_volume REAL,
-            PRIMARY KEY (symbol, timeframe, open_time)
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS market_context (
-            symbol TEXT,
-            timeframe TEXT,
-            open_time INTEGER,
-            mark_close REAL,
-            index_close REAL,
-            premium_close REAL,
-            open_interest REAL,
-            funding_rate REAL,
-            long_short_ratio REAL,
             PRIMARY KEY (symbol, timeframe, open_time)
         )
     """)
@@ -334,204 +317,6 @@ def clear_sync_state(conn, dataset, symbol, timeframe):
     conn.commit()
 
 
-def upsert_market_context_rows(conn, rows):
-    if not rows:
-        return 0
-
-    rows.sort(key=lambda row: row[2])
-    before_changes = conn.total_changes
-    conn.executemany(
-        """
-        INSERT INTO market_context (
-            symbol, timeframe, open_time, mark_close, index_close, premium_close,
-            open_interest, funding_rate, long_short_ratio
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(symbol, timeframe, open_time) DO UPDATE SET
-            mark_close = COALESCE(excluded.mark_close, market_context.mark_close),
-            index_close = COALESCE(excluded.index_close, market_context.index_close),
-            premium_close = COALESCE(excluded.premium_close, market_context.premium_close),
-            open_interest = COALESCE(excluded.open_interest, market_context.open_interest),
-            funding_rate = COALESCE(excluded.funding_rate, market_context.funding_rate),
-            long_short_ratio = COALESCE(excluded.long_short_ratio, market_context.long_short_ratio)
-        """,
-        rows,
-    )
-    conn.commit()
-    return conn.total_changes - before_changes
-
-
-def fetch_context_kline_series(url, api_symbol, timeframe, start_ts, end_ts):
-    bybit_interval = BYBIT_INTERVALS.get(timeframe)
-    timeframe_ms = TF_MS.get(timeframe)
-    if bybit_interval is None or timeframe_ms is None:
-        raise ValueError(f"Unsupported timeframe for market context: {timeframe}")
-
-    windows = build_request_windows(start_ts, end_ts, timeframe_ms, page_limit=BYBIT_CONTEXT_LIMIT)
-    rows = []
-    for window_start, window_end in windows:
-        payload = request_bybit_json(
-            url,
-            {
-                "category": BYBIT_CATEGORY,
-                "symbol": api_symbol,
-                "interval": bybit_interval,
-                "start": window_start,
-                "end": window_end,
-                "limit": BYBIT_CONTEXT_LIMIT,
-            },
-            f"context-kline-{api_symbol}-{timeframe}-{window_start}-{window_end}",
-        )
-        rows.extend(payload.get("result", {}).get("list", []))
-    return rows
-
-
-def fetch_open_interest_series(api_symbol, timeframe, start_ts, end_ts):
-    timeframe_ms = TF_MS.get(timeframe)
-    interval_time = timeframe
-    windows = build_request_windows(start_ts, end_ts, timeframe_ms, page_limit=BYBIT_OI_LIMIT)
-    rows = []
-    for window_start, window_end in windows:
-        payload = request_bybit_json(
-            OPEN_INTEREST_URL,
-            {
-                "category": BYBIT_CATEGORY,
-                "symbol": api_symbol,
-                "intervalTime": interval_time,
-                "startTime": window_start,
-                "endTime": window_end,
-                "limit": BYBIT_OI_LIMIT,
-            },
-            f"open-interest-{api_symbol}-{timeframe}-{window_start}-{window_end}",
-        )
-        rows.extend(payload.get("result", {}).get("list", []))
-    return rows
-
-
-def fetch_account_ratio_series(api_symbol, timeframe, start_ts, end_ts):
-    timeframe_ms = TF_MS.get(timeframe)
-    period = timeframe
-    windows = build_request_windows(start_ts, end_ts, timeframe_ms, page_limit=BYBIT_RATIO_LIMIT)
-    rows = []
-    for window_start, window_end in windows:
-        payload = request_bybit_json(
-            ACCOUNT_RATIO_URL,
-            {
-                "category": BYBIT_CATEGORY,
-                "symbol": api_symbol,
-                "period": period,
-                "startTime": window_start,
-                "endTime": window_end,
-                "limit": BYBIT_RATIO_LIMIT,
-            },
-            f"account-ratio-{api_symbol}-{timeframe}-{window_start}-{window_end}",
-        )
-        rows.extend(payload.get("result", {}).get("list", []))
-    return rows
-
-
-def fetch_funding_series(api_symbol, start_ts, end_ts):
-    rows = []
-    current_end = end_ts
-
-    while True:
-        payload = request_bybit_json(
-            FUNDING_HISTORY_URL,
-            {
-                "category": BYBIT_CATEGORY,
-                "symbol": api_symbol,
-                "endTime": current_end,
-                "limit": BYBIT_FUNDING_LIMIT,
-            },
-            f"funding-history-{api_symbol}-{current_end}",
-        )
-        batch = payload.get("result", {}).get("list", [])
-        if not batch:
-            break
-
-        rows.extend(batch)
-        min_ts = min(int(item["fundingRateTimestamp"]) for item in batch)
-        if min_ts <= start_ts:
-            break
-        current_end = min_ts - 1
-
-    return [item for item in rows if int(item["fundingRateTimestamp"]) >= start_ts]
-
-
-def fetch_market_context(conn, symbol, timeframe):
-    api_symbol = symbol.replace("/", "")
-    timeframe_ms = TF_MS.get(timeframe)
-    if timeframe_ms is None:
-        raise ValueError(f"Unsupported timeframe for market context: {timeframe}")
-
-    cur = conn.cursor()
-    cur.execute("SELECT MAX(open_time) FROM market_context WHERE symbol=? AND timeframe=?", (symbol, timeframe))
-    last_ts = cur.fetchone()[0]
-
-    if last_ts:
-        start_ts = last_ts + timeframe_ms
-    else:
-        start_ts = int(datetime.fromisoformat(START_DATE).timestamp() * 1000)
-
-    end_ts = int(datetime.fromisoformat(END_DATE).timestamp() * 1000) if END_DATE else int(time.time() * 1000)
-    if start_ts > end_ts:
-        logger.info(f"[{symbol}-{timeframe}] market context is already loaded up to {END_DATE}")
-        return 0
-
-    context_map = {}
-
-    def ensure_row(ts):
-        if ts not in context_map:
-            context_map[ts] = {
-                "mark_close": None,
-                "index_close": None,
-                "premium_close": None,
-                "open_interest": None,
-                "funding_rate": None,
-                "long_short_ratio": None,
-            }
-        return context_map[ts]
-
-    for candle in fetch_context_kline_series(MARK_KLINE_URL, api_symbol, timeframe, start_ts, end_ts):
-        ensure_row(int(candle[0]))["mark_close"] = float(candle[4])
-
-    for candle in fetch_context_kline_series(INDEX_KLINE_URL, api_symbol, timeframe, start_ts, end_ts):
-        ensure_row(int(candle[0]))["index_close"] = float(candle[4])
-
-    for candle in fetch_context_kline_series(PREMIUM_KLINE_URL, api_symbol, timeframe, start_ts, end_ts):
-        ensure_row(int(candle[0]))["premium_close"] = float(candle[4])
-
-    for item in fetch_open_interest_series(api_symbol, timeframe, start_ts, end_ts):
-        ensure_row(int(item["timestamp"]))["open_interest"] = float(item["openInterest"])
-
-    for item in fetch_funding_series(api_symbol, start_ts, end_ts):
-        ensure_row(int(item["fundingRateTimestamp"]))["funding_rate"] = float(item["fundingRate"])
-
-    for item in fetch_account_ratio_series(api_symbol, timeframe, start_ts, end_ts):
-        ts = int(item["timestamp"])
-        buy_ratio = float(item["buyRatio"])
-        sell_ratio = float(item["sellRatio"])
-        ensure_row(ts)["long_short_ratio"] = buy_ratio / sell_ratio if sell_ratio != 0 else np.nan
-
-    rows = [
-        (
-            symbol,
-            timeframe,
-            ts,
-            values["mark_close"],
-            values["index_close"],
-            values["premium_close"],
-            values["open_interest"],
-            values["funding_rate"],
-            values["long_short_ratio"],
-        )
-        for ts, values in context_map.items()
-    ]
-
-    loaded = upsert_market_context_rows(conn, rows)
-    logger.info(f"[{symbol}-{timeframe}] market context rows upserted: {loaded}")
-    return loaded
-
-
 def fetch_data(conn, symbol, timeframe):
     """
     Load candles from Bybit V5 starting from START_DATE or from the last saved candle.
@@ -560,6 +345,9 @@ def fetch_data(conn, symbol, timeframe):
     if sync_state and sync_state.get("empty_since_ts") is not None:
         empty_since_ts = int(sync_state["empty_since_ts"])
         last_checked_ts = int(sync_state.get("last_checked_ts") or end_ts)
+        # If we already proved that the range [empty_since_ts, last_checked_ts] is empty,
+        # don't scan it again; continue only from the next unseen candle slot.
+        start_ts = max(start_ts, last_checked_ts + timeframe_ms)
         next_retry_ts = last_checked_ts + timeframe_ms
         if start_ts >= empty_since_ts and end_ts < next_retry_ts:
             logger.info(
@@ -579,7 +367,7 @@ def fetch_data(conn, symbol, timeframe):
 
     total_loaded = 0
     pending_rows = []
-    fetched_any_candles = False
+    latest_fetched_ts = None
     total_windows = len(windows)
     progress_step = max(1, total_windows // 10)
 
@@ -600,7 +388,7 @@ def fetch_data(conn, symbol, timeframe):
                 candles = future.result()
 
                 if candles:
-                    fetched_any_candles = True
+                    latest_fetched_ts = max(latest_fetched_ts or candles[-1][0], candles[-1][0])
                     pending_rows.extend(
                         (
                             symbol,
@@ -630,52 +418,34 @@ def fetch_data(conn, symbol, timeframe):
         logger.error(f"load error for {symbol}-{timeframe}: {exc}")
 
     total_loaded += flush_rows(conn, pending_rows)
-    if total_loaded > 0 or fetched_any_candles:
+    if total_loaded > 0:
         clear_sync_state(conn, dataset="candles", symbol=symbol, timeframe=timeframe)
     else:
+        empty_since_ts = start_ts
+        if latest_fetched_ts is not None:
+            # Bybit can occasionally return only already-known/duplicate candles.
+            # Mark everything after the last fetched candle as empty to avoid rescanning
+            # the same dead range on every ETL run.
+            empty_since_ts = max(empty_since_ts, int(latest_fetched_ts) + timeframe_ms)
         upsert_sync_state(
             conn,
             dataset="candles",
             symbol=symbol,
             timeframe=timeframe,
-            empty_since_ts=start_ts,
+            empty_since_ts=empty_since_ts,
             last_checked_ts=end_ts,
         )
     return total_loaded
 
 
 def load_from_db(conn, symbol, timeframe):
-    """Загрузка данных из БД в DataFrame"""
+    """Ð—Ð°Ð³Ñ€ÑƒÐ·ÐºÐ° Ð´Ð°Ð½Ð½Ñ‹Ñ… Ð¸Ð· Ð‘Ð” Ð² DataFrame"""
     df = pd.read_sql_query(
         "SELECT open_time as timestamp, open, high, low, close, volume FROM candles WHERE symbol=? AND timeframe=? ORDER BY open_time",
         conn,
         params=(symbol, timeframe)
     )
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    return df
-
-
-def load_market_context_from_db(conn, symbol, timeframe):
-    df = pd.read_sql_query(
-        """
-        SELECT
-            open_time as timestamp,
-            mark_close,
-            index_close,
-            premium_close,
-            open_interest,
-            funding_rate,
-            long_short_ratio
-        FROM market_context
-        WHERE symbol=? AND timeframe=?
-        ORDER BY open_time
-        """,
-        conn,
-        params=(symbol, timeframe),
-    )
-    if df.empty:
-        return df
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
     return df
 
 
@@ -759,32 +529,46 @@ def compute_adx(high, low, close, length=14):
     return dx.ewm(alpha=1 / length, adjust=False).mean()
 
 
-def add_test_price_action_features(df, atr_14):
-    """Test Features V2: price-action / level-behavior block."""
+def compute_dynamic_barrier_stop_pct(close, atr_14, realized_vol_1h):
+    atr_pct = safe_ratio(atr_14, close).abs()
+    horizon_vol_pct = realized_vol_1h.abs() * np.sqrt(HORIZON)
+
+    stop_pct = pd.concat(
+        [
+            atr_pct * float(getattr(cfg, "BARRIER_ATR_MULTIPLIER", 1.25)),
+            horizon_vol_pct * float(getattr(cfg, "BARRIER_RVOL_MULTIPLIER", 0.75)),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    min_pct = float(getattr(cfg, "BARRIER_MIN_PCT", SL_PCT))
+    max_pct = float(getattr(cfg, "BARRIER_MAX_PCT", TP_PCT))
+    return stop_pct.clip(lower=min_pct, upper=max_pct)
+
+
+def compute_dynamic_barrier_take_pct(stop_pct):
+    return stop_pct * float(getattr(cfg, "BARRIER_TP_TO_SL_RATIO", 2.0))
+
+
+def normalize_rank(series):
+    if len(series) == 1:
+        return pd.Series(0.5, index=series.index)
+    ranked = series.rank(method="average")
+    return (ranked - 1) / (len(series) - 1)
+
+
+def compute_trend_efficiency(close, window):
+    directional_move = (close - close.shift(window)).abs()
+    path_length = close.diff().abs().rolling(window).sum()
+    return safe_ratio(directional_move, path_length)
+
+
+def add_test_features(df, atr_14, ema_fast_slow, atr_ratio_1h):
+    """Test features block."""
     df = df.copy()
     close = df["close"]
     high = df["high"]
     low = df["low"]
-
-    prior_resistance_1h = high.shift(1).rolling(PRICE_ACTION_LEVEL_WINDOW_1H).max()
-    prior_support_1h = low.shift(1).rolling(PRICE_ACTION_LEVEL_WINDOW_1H).min()
-
-    bullish_rejection_1h = (prior_support_1h - low).clip(lower=0) * (close - prior_support_1h).clip(lower=0)
-    bearish_rejection_1h = (high - prior_resistance_1h).clip(lower=0) * (prior_resistance_1h - close).clip(lower=0)
-    df["rejection_strength_1h"] = safe_ratio(
-        bullish_rejection_1h - bearish_rejection_1h,
-        atr_14 * atr_14,
-    )
-
-    sweep_low_1h = safe_ratio((prior_support_1h - low).clip(lower=0), atr_14).where(
-        (low < prior_support_1h) & (close > prior_support_1h),
-        0.0,
-    )
-    sweep_high_1h = safe_ratio((high - prior_resistance_1h).clip(lower=0), atr_14).where(
-        (high > prior_resistance_1h) & (close < prior_resistance_1h),
-        0.0,
-    )
-    df["liquidity_sweep_proxy_1h"] = sweep_low_1h - sweep_high_1h
 
     range_short_1h = high.rolling(RANGE_COMPRESSION_SHORT_WINDOW_1H).max() - low.rolling(RANGE_COMPRESSION_SHORT_WINDOW_1H).min()
     range_long_1h = high.rolling(RANGE_COMPRESSION_LONG_WINDOW_1H).max() - low.rolling(RANGE_COMPRESSION_LONG_WINDOW_1H).min()
@@ -795,11 +579,27 @@ def add_test_price_action_features(df, atr_14):
     session_low_1h = low.groupby(session_key).cummin()
     df["distance_to_session_high_1h"] = safe_ratio(session_high_1h - close, atr_14)
     df["distance_to_session_low_1h"] = safe_ratio(close - session_low_1h, atr_14)
+
+    signed_step = np.sign(close.diff())
+    df["trend_persistence_score_12"] = signed_step.rolling(12).mean()
+    df["trend_persistence_score_24"] = signed_step.rolling(24).mean()
+
+    df["trend_efficiency_24h"] = compute_trend_efficiency(close, 24)
+    slope_12 = compute_linear_regression_slope(close, 12)
+    slope_24 = compute_linear_regression_slope(close, 24)
+    df["slope_acceleration_1h_12_24"] = safe_ratio(slope_12 - slope_24, atr_14)
+    df["ema_slope_acceleration_1h"] = ema_fast_slow - ema_fast_slow.shift(3)
+    df["volatility_acceleration_1h"] = atr_ratio_1h - atr_ratio_1h.shift(3)
+
+    hour = df["timestamp"].dt.hour
+    df["hour_sin_1h"] = np.sin(2.0 * np.pi * hour / 24.0)
+    df["hour_cos_1h"] = np.cos(2.0 * np.pi * hour / 24.0)
+    df["is_weekend_1h"] = (df["timestamp"].dt.dayofweek >= 5).astype(float)
     return df
 
 
 def add_features(df):
-    """Только 1H фичи из текущего набора."""
+    """Ð¢Ð¾Ð»ÑŒÐºÐ¾ 1H Ñ„Ð¸Ñ‡Ð¸ Ð¸Ð· Ñ‚ÐµÐºÑƒÑ‰ÐµÐ³Ð¾ Ð½Ð°Ð±Ð¾Ñ€Ð°."""
     df = df.copy().sort_values("timestamp").reset_index(drop=True)
     close = df["close"]
     high = df["high"]
@@ -808,7 +608,7 @@ def add_features(df):
     volume = df["volume"]
     candle_range = (high - low).replace(0, np.nan)
 
-    for period in (1, 3, 6, 12, 24):
+    for period in (6, 12, 24):
         df[f"return_1h_{period}"] = np.log(close / close.shift(period))
 
     log_return_1h_1 = np.log(close / close.shift(1))
@@ -825,9 +625,6 @@ def add_features(df):
     df["atr_ratio_1h"] = safe_ratio(atr_14, atr_100)
     df["volatility_regime_change_1h"] = safe_ratio(atr_6, atr_48)
 
-    volume_mean_24 = volume.rolling(24).mean()
-    volume_std_24 = volume.rolling(24).std().replace(0, np.nan)
-    df["volume_zscore_1h"] = (volume - volume_mean_24) / volume_std_24
     # beta disabled: signed-volume imbalance over the last 12 hourly candles
     # signed_volume_1h = volume * np.sign(close - open_)
     # df["volume_imbalance_1h_12"] = safe_ratio(
@@ -862,19 +659,22 @@ def add_features(df):
     df["price_position_1h"] = safe_ratio(close - low_24, high_24 - low_24)
     df["distance_to_support_1h"] = safe_ratio(close - low_24, atr_14)
     df["distance_to_resistance_1h"] = safe_ratio(high_24 - close, atr_14)
-    if bool(getattr(cfg, "ENABLE_TEST_PRICE_ACTION_FEATURES", False)):
-        df = add_test_price_action_features(df, atr_14)
+    if bool(getattr(cfg, "ENABLE_TEST_FEATURES", False)):
+        df = add_test_features(df, atr_14, df["ema_fast_slow"], df["atr_ratio_1h"])
     df["linear_regression_slope_atr_1h_12"] = safe_ratio(compute_linear_regression_slope(close, 12), atr_14)
     df["linear_regression_slope_atr_1h_24"] = safe_ratio(compute_linear_regression_slope(close, 24), atr_14)
-    close_mean_24 = close.rolling(24).mean()
-    close_std_24 = close.rolling(24).std().replace(0, np.nan)
-    df["price_zscore_1h"] = (close - close_mean_24) / close_std_24
     df["volume_mean_3_1h"] = volume.rolling(3).mean()
+    if bool(getattr(cfg, "USE_DYNAMIC_BARRIERS", True)):
+        df["barrier_stop_pct"] = compute_dynamic_barrier_stop_pct(close, atr_14, df["realized_vol_1h"])
+        df["barrier_take_pct"] = compute_dynamic_barrier_take_pct(df["barrier_stop_pct"])
+    else:
+        df["barrier_stop_pct"] = float(SL_PCT)
+        df["barrier_take_pct"] = float(TP_PCT)
     return df
 
 
 def build_htf_feature_frame(htf_df, symbol):
-    """Фичи 4H со сдвигом на одну свечу, чтобы не смотреть в незакрытый HTF-бар."""
+    """Ð¤Ð¸Ñ‡Ð¸ 4H ÑÐ¾ ÑÐ´Ð²Ð¸Ð³Ð¾Ð¼ Ð½Ð° Ð¾Ð´Ð½Ñƒ ÑÐ²ÐµÑ‡Ñƒ, Ñ‡Ñ‚Ð¾Ð±Ñ‹ Ð½Ðµ ÑÐ¼Ð¾Ñ‚Ñ€ÐµÑ‚ÑŒ Ð² Ð½ÐµÐ·Ð°ÐºÑ€Ñ‹Ñ‚Ñ‹Ð¹ HTF-Ð±Ð°Ñ€."""
     htf = htf_df.copy().sort_values("timestamp").reset_index(drop=True)
     close = htf["close"]
     high = htf["high"]
@@ -921,117 +721,184 @@ def build_htf_feature_frame(htf_df, symbol):
     return htf[["timestamp", "symbol"] + htf_feature_columns]
 
 
-def build_cross_sectional_rank(htf_feature_map):
+def build_cross_sectional_feature_map(feature_map, source_column, output_column):
     rank_frames = []
-    for symbol, htf in htf_feature_map.items():
-        frame = htf[["timestamp", "symbol", "return_4h_3"]].copy()
-        frame = frame.dropna(subset=["return_4h_3"])
-        if not frame.empty:
-            rank_frames.append(frame)
+    for symbol, source_df in feature_map.items():
+        if source_column not in source_df.columns:
+            continue
+        frame = source_df[["timestamp", source_column]].copy()
+        frame = frame.dropna(subset=[source_column])
+        if frame.empty:
+            continue
+        frame["symbol"] = symbol
+        rank_frames.append(frame)
 
     if not rank_frames:
         return {}
 
     rank_df = pd.concat(rank_frames, ignore_index=True)
+    rank_df[output_column] = rank_df.groupby("timestamp")[source_column].transform(normalize_rank)
 
-    def normalize_rank(series):
-        if len(series) == 1:
-            return pd.Series(0.5, index=series.index)
-        ranked = series.rank(method="average")
-        return (ranked - 1) / (len(series) - 1)
-
-    rank_df["cross_sectional_rank_4h"] = rank_df.groupby("timestamp")["return_4h_3"].transform(normalize_rank)
-
-    rank_map = {}
-    for symbol in htf_feature_map:
-        symbol_rank_df = rank_df.loc[rank_df["symbol"] == symbol, ["timestamp", "cross_sectional_rank_4h"]].copy()
-        rank_map[symbol] = symbol_rank_df
-    return rank_map
+    feature_map_by_symbol = {}
+    for symbol in feature_map:
+        symbol_rank_df = rank_df.loc[rank_df["symbol"] == symbol, ["timestamp", output_column]].copy()
+        feature_map_by_symbol[symbol] = symbol_rank_df
+    return feature_map_by_symbol
 
 
-def add_cross_sectional_rank(htf_feature_map):
-    rank_map = build_cross_sectional_rank(htf_feature_map)
+def merge_feature_map(feature_map, extra_feature_map, output_columns):
+    if isinstance(output_columns, str):
+        output_columns = [output_columns]
+
     enriched = {}
-    for symbol, htf in htf_feature_map.items():
-        rank_df = rank_map.get(symbol)
-        merged = htf.copy()
-        if rank_df is not None and not rank_df.empty:
-            merged = merged.merge(rank_df, on="timestamp", how="left")
+    for symbol, source_df in feature_map.items():
+        extra_df = extra_feature_map.get(symbol)
+        merged = source_df.copy()
+        if extra_df is not None and not extra_df.empty:
+            merged = merged.merge(extra_df, on="timestamp", how="left")
         else:
-            merged["cross_sectional_rank_4h"] = np.nan
+            for column in output_columns:
+                merged[column] = np.nan
         enriched[symbol] = merged
     return enriched
 
 
-def add_relative_strength_vs_btc(df, btc_df, symbol):
-    df = df.copy()
+def build_shared_market_context_frame(feature_map, source_column, context_builders):
+    context_frames = []
+    for source_df in feature_map.values():
+        if source_column not in source_df.columns:
+            continue
+        frame = source_df[["timestamp", source_column]].copy()
+        frame = frame.dropna(subset=[source_column])
+        if not frame.empty:
+            context_frames.append(frame)
+
+    if not context_frames:
+        return pd.DataFrame(columns=["timestamp"] + list(context_builders.keys()))
+
+    context_source = pd.concat(context_frames, ignore_index=True)
+    grouped = context_source.groupby("timestamp")[source_column]
+    context_df = pd.DataFrame({"timestamp": grouped.size().index})
+    for output_column, builder in context_builders.items():
+        context_df[output_column] = grouped.apply(builder).values
+    return context_df
+
+
+def add_shared_market_context(feature_map, context_df, output_columns):
+    enriched = {}
+    for symbol, source_df in feature_map.items():
+        merged = source_df.copy()
+        if context_df is not None and not context_df.empty:
+            merged = merged.merge(context_df, on="timestamp", how="left")
+        else:
+            for column in output_columns:
+                merged[column] = np.nan
+        enriched[symbol] = merged
+    return enriched
+
+
+def build_cross_sectional_rank(htf_feature_map):
+    return build_cross_sectional_feature_map(
+        htf_feature_map,
+        source_column="return_4h_3",
+        output_column="cross_sectional_rank_4h",
+    )
+
+
+def add_cross_sectional_rank(htf_feature_map):
+    rank_map = build_cross_sectional_rank(htf_feature_map)
+    return merge_feature_map(htf_feature_map, rank_map, "cross_sectional_rank_4h")
+
+
+def add_btc_relative_feature_block(base_feature_map):
+    btc_df = base_feature_map.get("BTC/USDT")
     if btc_df is None or btc_df.empty:
-        logger.warning("%s: BTC reference data is unavailable, relative strength will be NaN", symbol)
-        df["relative_strength_vs_btc_6h"] = np.nan
-        return df
+        logger.warning("BTC/USDT base feature frame is unavailable, BTC-relative features will be NaN")
+        enriched = {}
+        for symbol, df in base_feature_map.items():
+            merged = df.copy()
+            merged["relative_strength_vs_btc_24h"] = np.nan
+            merged["beta_to_btc_24h"] = np.nan
+            merged["residual_return_24h"] = np.nan
+            enriched[symbol] = merged
+        return enriched
 
-    btc_reference = btc_df[["timestamp", "return_1h_6"]].rename(columns={"return_1h_6": "btc_return_1h_6"})
-    df = df.merge(btc_reference, on="timestamp", how="left")
-    df["relative_strength_vs_btc_6h"] = df["return_1h_6"] - df["btc_return_1h_6"]
-    if symbol == BTC_REFERENCE_SYMBOL:
-        df["relative_strength_vs_btc_6h"] = 0.0
-    df.drop(columns=["btc_return_1h_6"], inplace=True)
-    return df
+    btc_reference = btc_df[["timestamp", "close", "return_1h_6", "return_1h_24"]].copy().rename(
+        columns={
+            "close": "btc_close",
+            "return_1h_6": "btc_return_1h_6",
+            "return_1h_24": "btc_return_1h_24",
+        }
+    )
+
+    enriched = {}
+    for symbol, df in base_feature_map.items():
+        merged = df.copy().merge(btc_reference, on="timestamp", how="left")
+        asset_return_1h = np.log(merged["close"] / merged["close"].shift(1))
+        btc_return_1h = np.log(merged["btc_close"] / merged["btc_close"].shift(1))
+        btc_var_24h = btc_return_1h.rolling(24).var().replace(0, np.nan)
+        beta_24h = asset_return_1h.rolling(24).cov(btc_return_1h)
+        beta_24h = safe_ratio(beta_24h, btc_var_24h)
+
+        merged["relative_strength_vs_btc_24h"] = merged["return_1h_24"] - merged["btc_return_1h_24"]
+        merged["beta_to_btc_24h"] = beta_24h
+        merged["residual_return_24h"] = merged["return_1h_24"] - (beta_24h * merged["btc_return_1h_24"])
+
+        if symbol == "BTC/USDT":
+            merged["relative_strength_vs_btc_24h"] = 0.0
+            merged["beta_to_btc_24h"] = 1.0
+            merged["residual_return_24h"] = 0.0
+
+        merged.drop(columns=["btc_close", "btc_return_1h_6", "btc_return_1h_24"], inplace=True)
+        enriched[symbol] = merged
+    return enriched
 
 
-def add_test_market_context_features(df, context_df, symbol):
-    """Test Features V1: market-context / derivatives block."""
-    df = df.copy().sort_values("timestamp").reset_index(drop=True)
-    if context_df is None or context_df.empty:
-        logger.warning("%s: market context is unavailable, test market-context features will be NaN", symbol)
-        for column in TEST_FEATURE_COLUMNS_V1:
-            df[column] = np.nan
-        return df
+def build_test_feature_context(base_feature_map, htf_feature_map):
+    base_feature_map = add_btc_relative_feature_block(base_feature_map)
+    base_feature_map = merge_feature_map(
+        base_feature_map,
+        build_cross_sectional_feature_map(
+            base_feature_map,
+            source_column="ema_fast_slow",
+            output_column="cross_sectional_rank_ema_fast_slow_1h",
+        ),
+        "cross_sectional_rank_ema_fast_slow_1h",
+    )
 
-    context = context_df.copy().sort_values("timestamp").reset_index(drop=True)
-    df = pd.merge_asof(df, context, on="timestamp", direction="backward")
-    context_columns = [
-        "mark_close",
-        "index_close",
-        "premium_close",
-        "open_interest",
-        "funding_rate",
-        "long_short_ratio",
-    ]
-    for column in context_columns:
-        if column in df.columns:
-            df[column] = df[column].ffill()
+    market_breadth_1h = build_shared_market_context_frame(
+        base_feature_map,
+        source_column="ema_fast_slow",
+        context_builders={
+            "market_breadth_ema_fast_slow_1h": lambda series: float((series > 0).mean()),
+        },
+    )
+    base_feature_map = add_shared_market_context(
+        base_feature_map,
+        market_breadth_1h,
+        ["market_breadth_ema_fast_slow_1h"],
+    )
 
-    spread_mark_index = safe_ratio(df["mark_close"], df["index_close"]) - 1.0
-    spread_premium_index = safe_ratio(df["premium_close"], df["index_close"])
-
-    spread_mark_mean = spread_mark_index.rolling(MARKET_CONTEXT_ZSCORE_WINDOW).mean()
-    spread_mark_std = spread_mark_index.rolling(MARKET_CONTEXT_ZSCORE_WINDOW).std().replace(0, np.nan)
-    df["mark_to_index_spread_zscore"] = (spread_mark_index - spread_mark_mean) / spread_mark_std
-
-    spread_premium_mean = spread_premium_index.rolling(MARKET_CONTEXT_ZSCORE_WINDOW).mean()
-    spread_premium_std = spread_premium_index.rolling(MARKET_CONTEXT_ZSCORE_WINDOW).std().replace(0, np.nan)
-    df["premium_to_index_zscore"] = (spread_premium_index - spread_premium_mean) / spread_premium_std
-
-    df["oi_change_1h"] = np.log(safe_ratio(df["open_interest"], df["open_interest"].shift(1)))
-    oi_mean_24 = df["open_interest"].rolling(MARKET_CONTEXT_ZSCORE_WINDOW).mean()
-    oi_std_24 = df["open_interest"].rolling(MARKET_CONTEXT_ZSCORE_WINDOW).std().replace(0, np.nan)
-    df["oi_zscore_24"] = (df["open_interest"] - oi_mean_24) / oi_std_24
-
-    funding_mean_24 = df["funding_rate"].rolling(MARKET_CONTEXT_ZSCORE_WINDOW).mean()
-    funding_std_24 = df["funding_rate"].rolling(MARKET_CONTEXT_ZSCORE_WINDOW).std().replace(0, np.nan)
-    df["funding_zscore_24"] = (df["funding_rate"] - funding_mean_24) / funding_std_24
-
-    df["oi_price_divergence"] = df["oi_change_1h"] - df["return_1h_1"]
-
-    df.drop(columns=[column for column in context_columns if column in df.columns], inplace=True)
-    return df
+    market_context_4h = build_shared_market_context_frame(
+        htf_feature_map,
+        source_column="return_4h_3",
+        context_builders={
+            "market_breadth_pos_return_4h_3": lambda series: float((series > 0).mean()),
+            "market_dispersion_return_4h_3": lambda series: float(np.nanstd(series.to_numpy(dtype=float), ddof=0)),
+        },
+    )
+    htf_feature_map = add_shared_market_context(
+        htf_feature_map,
+        market_context_4h,
+        ["market_breadth_pos_return_4h_3", "market_dispersion_return_4h_3"],
+    )
+    return base_feature_map, htf_feature_map
 
 
 def add_htf_features(df, htf_df):
     """
-    Добавление только заданных 4H фичей.
-    HTF-фрейм уже подготовлен со shift(1), чтобы не использовать незакрытую 4H свечу.
+    Ð”Ð¾Ð±Ð°Ð²Ð»ÐµÐ½Ð¸Ðµ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð·Ð°Ð´Ð°Ð½Ð½Ñ‹Ñ… 4H Ñ„Ð¸Ñ‡ÐµÐ¹.
+    HTF-Ñ„Ñ€ÐµÐ¹Ð¼ ÑƒÐ¶Ðµ Ð¿Ð¾Ð´Ð³Ð¾Ñ‚Ð¾Ð²Ð»ÐµÐ½ ÑÐ¾ shift(1), Ñ‡Ñ‚Ð¾Ð±Ñ‹ Ð½Ðµ Ð¸ÑÐ¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ñ‚ÑŒ Ð½ÐµÐ·Ð°ÐºÑ€Ñ‹Ñ‚ÑƒÑŽ 4H ÑÐ²ÐµÑ‡Ñƒ.
     """
     df = df.copy().sort_values("timestamp").reset_index(drop=True)
     htf = htf_df.copy().sort_values("timestamp").reset_index(drop=True)
@@ -1055,6 +922,8 @@ def add_htf_features(df, htf_df):
         "distance_to_rolling_low_4h",
         "volume_mean_3_4h_per_hour",
         "cross_sectional_rank_4h",
+        "market_breadth_pos_return_4h_3",
+        "market_dispersion_return_4h_3",
     ]
     available_htf_columns = [column for column in htf_merge_columns if column in htf.columns]
     df = pd.merge_asof(
@@ -1068,8 +937,24 @@ def add_htf_features(df, htf_df):
             df[required_column] = np.nan
     realized_vol_4h_per_hour = df["realized_vol_4h_returns_20"] / np.sqrt(4.0)
     df["vol_ratio"] = safe_ratio(df["realized_vol_1h"], realized_vol_4h_per_hour)
-    df["volume_ratio_1h_vs_4h"] = safe_ratio(df["volume_mean_3_1h"], df["volume_mean_3_4h_per_hour"])
     df.drop(columns=["volume_mean_3_1h", "volume_mean_3_4h_per_hour"], inplace=True)
+    return df
+
+
+def add_post_merge_test_features(df):
+    df = df.copy()
+
+    breadth = df["market_breadth_ema_fast_slow_1h"]
+    dispersion = df["market_dispersion_return_4h_3"]
+    breadth_mean = breadth.rolling(MARKET_ZSCORE_WINDOW).mean()
+    breadth_std = breadth.rolling(MARKET_ZSCORE_WINDOW).std().replace(0, np.nan)
+
+    df["delta_market_breadth_ema_fast_slow_1h"] = breadth.diff(1)
+    df["market_breadth_ema_fast_slow_1h_zscore"] = (breadth - breadth_mean) / breadth_std
+    df["ema_fast_slow_x_market_breadth_ema_fast_slow_1h"] = df["ema_fast_slow"] * breadth
+    df["trend_efficiency_24h_x_volatility_regime_change_1h"] = (
+        df["trend_efficiency_24h"] * df["volatility_regime_change_1h"]
+    )
     return df
 
 
@@ -1081,10 +966,10 @@ def compute_clean_pnl(direction, entry_price, exit_price):
     return raw_pnl - (TAKER_COM + TAKER_COM)
 
 
-def resolve_trade_exit(direction, entry_price, next_open, next_high, next_low):
+def resolve_trade_exit(direction, entry_price, next_open, next_high, next_low, stop_pct, take_pct):
     if direction == 1:
-        stop_price = entry_price * (1 - SL_PCT)
-        take_price = entry_price * (1 + TP_PCT)
+        stop_price = entry_price * (1 - stop_pct)
+        take_price = entry_price * (1 + take_pct)
 
         if next_low <= stop_price:
             exit_price = (next_open if next_open < stop_price else stop_price) * (1 - SLIPPAGE)
@@ -1093,8 +978,8 @@ def resolve_trade_exit(direction, entry_price, next_open, next_high, next_low):
             exit_price = take_price * (1 - SLIPPAGE)
             return exit_price, "TP"
     else:
-        stop_price = entry_price * (1 + SL_PCT)
-        take_price = entry_price * (1 - TP_PCT)
+        stop_price = entry_price * (1 + stop_pct)
+        take_price = entry_price * (1 - take_pct)
 
         if next_high >= stop_price:
             exit_price = (next_open if next_open > stop_price else stop_price) * (1 + SLIPPAGE)
@@ -1106,9 +991,14 @@ def resolve_trade_exit(direction, entry_price, next_open, next_high, next_low):
     return None, None
 
 
-def simulate_trade_outcome(opens, highs, lows, start_idx, direction):
+def simulate_trade_outcome(opens, highs, lows, stop_pcts, take_pcts, start_idx, direction):
     base_open = opens[start_idx + 1]
     entry_price = base_open * (1 + SLIPPAGE) if direction == 1 else base_open * (1 - SLIPPAGE)
+    stop_pct = stop_pcts[start_idx]
+    take_pct = take_pcts[start_idx]
+
+    if np.isnan(stop_pct) or np.isnan(take_pct):
+        return 0.0, None
 
     for j in range(1, HORIZON + 1):
         candle_idx = start_idx + j
@@ -1121,6 +1011,8 @@ def simulate_trade_outcome(opens, highs, lows, start_idx, direction):
             opens[candle_idx],
             highs[candle_idx],
             lows[candle_idx],
+            stop_pct,
+            take_pct,
         )
         if exit_price is not None:
             return compute_clean_pnl(direction, entry_price, exit_price), reason
@@ -1129,18 +1021,20 @@ def simulate_trade_outcome(opens, highs, lows, start_idx, direction):
 
 
 def triple_barrier_labeling(df):
-    """Разметка данных (Teacher) — барьеры = фиксированные TP_PCT / SL_PCT.
-    Если внутри одной свечи задеты оба барьера, приоритет всегда у SL."""
+    """Ð Ð°Ð·Ð¼ÐµÑ‚ÐºÐ° Ð´Ð°Ð½Ð½Ñ‹Ñ… (Teacher) â€” dynamic ATR/realized-vol stop Ð¸ TP Ð¾Ñ‚ RR.
+    Ð•ÑÐ»Ð¸ Ð²Ð½ÑƒÑ‚Ñ€Ð¸ Ð¾Ð´Ð½Ð¾Ð¹ ÑÐ²ÐµÑ‡Ð¸ Ð·Ð°Ð´ÐµÑ‚Ñ‹ Ð¾Ð±Ð° Ð±Ð°Ñ€ÑŒÐµÑ€Ð°, Ð¿Ñ€Ð¸Ð¾Ñ€Ð¸Ñ‚ÐµÑ‚ Ð²ÑÐµÐ³Ð´Ð° Ñƒ SL."""
     labels = []
 
     opens = df['open'].values
     highs = df['high'].values
     lows = df['low'].values
+    stop_pcts = df["barrier_stop_pct"].values
+    take_pcts = df["barrier_take_pct"].values
 
     for i in range(len(df) - HORIZON):
         label = 0
-        long_pnl, _ = simulate_trade_outcome(opens, highs, lows, i, direction=1)
-        short_pnl, _ = simulate_trade_outcome(opens, highs, lows, i, direction=-1)
+        long_pnl, _ = simulate_trade_outcome(opens, highs, lows, stop_pcts, take_pcts, i, direction=1)
+        short_pnl, _ = simulate_trade_outcome(opens, highs, lows, stop_pcts, take_pcts, i, direction=-1)
 
         if long_pnl > 0 and short_pnl <= 0:
             label = 1
@@ -1153,36 +1047,6 @@ def triple_barrier_labeling(df):
     df['Target'] = labels
     return df
 
-
-def add_mfe_targets(df):
-    """MFE таргеты для регрессионной модели.
-    MFE_long  = max % движение вверх за HORIZON свечей
-    MFE_short = max % движение вниз за HORIZON свечей
-    """
-    opens = df['open'].values
-    highs = df['high'].values
-    lows = df['low'].values
-    
-    mfe_long = []
-    mfe_short = []
-    
-    for i in range(len(df) - HORIZON):
-        long_entry_price = opens[i + 1] * (1 + SLIPPAGE)
-        short_entry_price = opens[i + 1] * (1 - SLIPPAGE)
-        future_highs = highs[i + 1 : i + HORIZON + 1]
-        future_lows = lows[i + 1 : i + HORIZON + 1]
-        best_long_exit = future_highs.max() * (1 - SLIPPAGE)
-        best_short_exit = future_lows.min() * (1 + SLIPPAGE)
-        mfe_long.append(compute_clean_pnl(1, long_entry_price, best_long_exit))
-        mfe_short.append(compute_clean_pnl(-1, short_entry_price, best_short_exit))
-    
-    # Последние HORIZON строк — фейковые (как в классификации)
-    mfe_long.extend([0.0] * HORIZON)
-    mfe_short.extend([0.0] * HORIZON)
-    
-    df['MFE_long'] = mfe_long
-    df['MFE_short'] = mfe_short
-    return df
 
 
 def finalize_feature_frame(df):
@@ -1200,19 +1064,18 @@ def finalize_feature_frame(df):
 
 
 def save_processed(df, symbol):
-    """Сохранение обработанных данных в отдельную таблицу"""
+    """Ð¡Ð¾Ñ…Ñ€Ð°Ð½ÐµÐ½Ð¸Ðµ Ð¾Ð±Ñ€Ð°Ð±Ð¾Ñ‚Ð°Ð½Ð½Ñ‹Ñ… Ð´Ð°Ð½Ð½Ñ‹Ñ… Ð² Ð¾Ñ‚Ð´ÐµÐ»ÑŒÐ½ÑƒÑŽ Ñ‚Ð°Ð±Ð»Ð¸Ñ†Ñƒ"""
     conn = sqlite3.connect(DB_PATH)
     table_name = symbol.replace('/', '_') + "_features"
     df.to_sql(table_name, conn, if_exists='replace', index=False)
     conn.close()
-    logger.info(f"💾 {symbol} features сохранены ({len(df)} строк)")
+    logger.info(f"ðŸ’¾ {symbol} features ÑÐ¾Ñ…Ñ€Ð°Ð½ÐµÐ½Ñ‹ ({len(df)} ÑÑ‚Ñ€Ð¾Ðº)")
 
 
 def main():
     conn = init_db()
-    enable_test_market_context_features = bool(getattr(cfg, "ENABLE_TEST_MARKET_CONTEXT_FEATURES", False))
 
-    symbols_to_load = list(dict.fromkeys(SYMBOLS + [BTC_REFERENCE_SYMBOL]))
+    symbols_to_load = list(dict.fromkeys(SYMBOLS))
     for symbol in symbols_to_load:
         logger.info(f"Loading {symbol} {TIMEFRAME} from {START_DATE}...")
         loaded = fetch_data(conn, symbol, TIMEFRAME)
@@ -1222,14 +1085,8 @@ def main():
         htf_loaded = fetch_data(conn, symbol, HTF_TIMEFRAME)
         logger.info(f"{symbol} {HTF_TIMEFRAME}: {htf_loaded} new candles")
 
-        if enable_test_market_context_features:
-            logger.info(f"Loading {symbol} market context {TIMEFRAME} from {START_DATE}...")
-            context_loaded = fetch_market_context(conn, symbol, TIMEFRAME)
-            logger.info(f"{symbol} market context {TIMEFRAME}: {context_loaded} new rows")
-
     base_1h_map = {}
     htf_feature_map = {}
-    market_context_map = {}
     for symbol in symbols_to_load:
         df = load_from_db(conn, symbol, TIMEFRAME)
         htf_df = load_from_db(conn, symbol, HTF_TIMEFRAME)
@@ -1240,8 +1097,6 @@ def main():
         logger.info(f"{symbol}: 1h={len(df)}, 4h={len(htf_df)} rows")
         base_1h_map[symbol] = add_features(df)
         htf_feature_map[symbol] = build_htf_feature_frame(htf_df, symbol)
-        if enable_test_market_context_features:
-            market_context_map[symbol] = load_market_context_from_db(conn, symbol, TIMEFRAME)
 
     rank_source_map = {symbol: htf_feature_map[symbol] for symbol in SYMBOLS if symbol in htf_feature_map}
     ranked_map = add_cross_sectional_rank(rank_source_map)
@@ -1251,7 +1106,14 @@ def main():
         if symbol not in ranked_map:
             htf_feature_map[symbol]["cross_sectional_rank_4h"] = np.nan
 
-    btc_df = base_1h_map.get(BTC_REFERENCE_SYMBOL)
+    if bool(getattr(cfg, "ENABLE_TEST_FEATURES", False)):
+        base_test_source_map = {symbol: base_1h_map[symbol] for symbol in SYMBOLS if symbol in base_1h_map}
+        htf_test_source_map = {symbol: htf_feature_map[symbol] for symbol in SYMBOLS if symbol in htf_feature_map}
+        enriched_base_map, enriched_htf_map = build_test_feature_context(base_test_source_map, htf_test_source_map)
+        for symbol, enriched_base in enriched_base_map.items():
+            base_1h_map[symbol] = enriched_base
+        for symbol, enriched_htf in enriched_htf_map.items():
+            htf_feature_map[symbol] = enriched_htf
 
     for symbol in SYMBOLS:
         df = base_1h_map.get(symbol)
@@ -1260,12 +1122,10 @@ def main():
             logger.warning(f"{symbol}: skipped, missing prepared feature inputs")
             continue
 
-        df = add_relative_strength_vs_btc(df, btc_df, symbol)
         df = add_htf_features(df, htf_df)
-        if enable_test_market_context_features:
-            df = add_test_market_context_features(df, market_context_map.get(symbol), symbol)
+        if bool(getattr(cfg, "ENABLE_TEST_FEATURES", False)):
+            df = add_post_merge_test_features(df)
         df = triple_barrier_labeling(df)
-        df = add_mfe_targets(df)
         df = finalize_feature_frame(df)
         save_processed(df, symbol)
         logger.info(f"{symbol}: saved {len(df)} rows with the requested feature set")
@@ -1275,3 +1135,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
