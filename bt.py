@@ -1,4 +1,3 @@
-import sqlite3
 import json
 import sys
 from pathlib import Path
@@ -8,6 +7,7 @@ import joblib
 import matplotlib.pyplot as plt
 import etl
 from config import *
+from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
 
 # Futures settings come from config.py
 TAKER_COM = globals().get("TAKER_COM", 0.0004)
@@ -177,18 +177,8 @@ def print_table(headers: list[str], rows: list[list[str]], right_align: set[int]
 
 
 def load_raw_candles(symbol: str, timeframe: str) -> pd.DataFrame:
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query(
-        """
-        SELECT open_time as timestamp, open, high, low, close, volume
-        FROM candles
-        WHERE symbol=? AND timeframe=?
-        ORDER BY open_time
-        """,
-        conn,
-        params=(symbol, timeframe),
-    )
-    conn.close()
+    repository = HistoricalKlineRepository()
+    df = repository.load_candles(symbol, timeframe)
 
     if df.empty:
         return df
@@ -231,32 +221,23 @@ def load_all_raw_data(symbols):
 
 
 def load_precomputed_features(symbol: str, symbol_categories=None, required_columns: list | None = None) -> pd.DataFrame:
-    table_name = symbol.replace("/", "_") + "_features"
-    conn = sqlite3.connect(DB_PATH)
+    repository = HistoricalKlineRepository()
     try:
-        select_columns = ["timestamp"]
-        if required_columns:
-            select_columns.extend(column for column in required_columns if column != "timestamp")
-        else:
-            select_columns.append("*")
-
-        if select_columns[-1] == "*":
-            query = f"SELECT * FROM {table_name}"
-        else:
-            quoted_columns = ", ".join(f'"{column}"' for column in dict.fromkeys(select_columns))
-            query = f"SELECT {quoted_columns} FROM {table_name}"
-        df = pd.read_sql_query(query, conn)
+        df = repository.load_features(symbol)
     except Exception:
-        conn.close()
         return pd.DataFrame()
-    conn.close()
 
     if df.empty:
         return df
 
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    if required_columns:
+        required_order = list(dict.fromkeys(["timestamp"] + required_columns + ["symbol"]))
+        missing_columns = [column for column in required_order if column not in df.columns]
+        if missing_columns:
+            return pd.DataFrame()
+        df = df[required_order].copy()
+
     df = apply_end_date_cutoff(df)
-    df["symbol"] = symbol
     if symbol_categories is None:
         df["symbol"] = df["symbol"].astype("category")
     else:

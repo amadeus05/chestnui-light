@@ -1,8 +1,6 @@
 import argparse
 import json
 import logging
-import sqlite3
-from pathlib import Path
 
 import joblib
 import lightgbm as lgb
@@ -11,6 +9,7 @@ import pandas as pd
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, classification_report, confusion_matrix, f1_score
 
 import config as cfg
+from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
@@ -86,48 +85,9 @@ def parse_args():
         help="After validation, retrain the final model on the full dataset.",
     )
     return parser.parse_args()
-
-
-def table_name_for_symbol(symbol):
-    return symbol.replace("/", "_") + "_features"
-
-
-def list_tables(conn):
-    query = "SELECT name FROM sqlite_master WHERE type='table'"
-    return {row[0] for row in conn.execute(query).fetchall()}
-
-
-def load_symbol_frame(conn, symbol, available_tables):
-    table_name = table_name_for_symbol(symbol)
-    if table_name not in available_tables:
-        logger.warning("Skipping %s: table %s not found in DB", symbol, table_name)
-        return pd.DataFrame()
-
-    query = f'SELECT * FROM "{table_name}" ORDER BY "{TIMESTAMP_COLUMN}"'
-    frame = pd.read_sql_query(query, conn)
-    if frame.empty:
-        logger.warning("Skipping %s: table %s is empty", symbol, table_name)
-        return frame
-
-    frame[TIMESTAMP_COLUMN] = pd.to_datetime(frame[TIMESTAMP_COLUMN], errors="coerce")
-    frame[SYMBOL_COLUMN] = symbol
-    return frame
-
-
 def load_training_frame(db_path, symbols):
-    db_file = Path(db_path)
-    if not db_file.exists():
-        raise FileNotFoundError(f"Database file not found: {db_file}")
-
-    with sqlite3.connect(db_file) as conn:
-        tables = list_tables(conn)
-        frames = [load_symbol_frame(conn, symbol, tables) for symbol in symbols]
-
-    frames = [frame for frame in frames if not frame.empty]
-    if not frames:
-        raise RuntimeError("No feature tables found. Run etl.py first to populate *_features tables.")
-
-    dataset = pd.concat(frames, ignore_index=True)
+    repository = HistoricalKlineRepository(db_path=db_path)
+    dataset = repository.load_feature_dataset(symbols)
     dataset = dataset.dropna(subset=[TIMESTAMP_COLUMN, TARGET_COLUMN]).sort_values(TIMESTAMP_COLUMN).reset_index(drop=True)
     dataset.replace([np.inf, -np.inf], np.nan, inplace=True)
 
