@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -278,9 +278,13 @@ class HistoricalKlineRepository:
         if last_ts:
             start_ts = last_ts + timeframe_ms
         else:
-            start_ts = int(datetime.fromisoformat(start_date).timestamp() * 1000)
+            start_ts = self._parse_iso_datetime_to_utc_ms(start_date)
 
-        end_ts = int(datetime.fromisoformat(end_date).timestamp() * 1000) if end_date else int(datetime.now().timestamp() * 1000)
+        end_ts = (
+            self._parse_iso_datetime_to_utc_ms(end_date)
+            if end_date
+            else int(datetime.now(timezone.utc).timestamp() * 1000)
+        )
         logger.info(
             f"[{normalized_symbol}-{timeframe}] sync plan: "
             f"rows_in_db={existing_row_count}, "
@@ -297,8 +301,8 @@ class HistoricalKlineRepository:
             if start_ts >= empty_since_ts and end_ts < next_retry_ts:
                 logger.info(
                     f"[{normalized_symbol}-{timeframe}] no newer candles after "
-                    f"{datetime.fromtimestamp(empty_since_ts / 1000)}; "
-                    f"skipping repeated empty backfill until {datetime.fromtimestamp(next_retry_ts / 1000)}"
+                    f"{self._format_ts(empty_since_ts)}; "
+                    f"skipping repeated empty backfill until {self._format_ts(next_retry_ts)}"
                 )
                 return 0
 
@@ -345,7 +349,16 @@ class HistoricalKlineRepository:
     def _format_ts(timestamp_ms: int | None) -> str:
         if timestamp_ms is None:
             return "None"
-        return datetime.fromtimestamp(timestamp_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
+        return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    @staticmethod
+    def _parse_iso_datetime_to_utc_ms(value: str) -> int:
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        else:
+            parsed = parsed.astimezone(timezone.utc)
+        return int(parsed.timestamp() * 1000)
 
     @staticmethod
     def _normalize_exchange_code(exchange_code: str) -> str:
