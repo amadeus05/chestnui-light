@@ -1,5 +1,7 @@
 ﻿import logging
 
+from datetime import datetime
+
 import config as cfg
 import numpy as np
 import pandas as pd
@@ -13,6 +15,9 @@ from src.persistence.repositories.historical_kline_repo import HistoricalKlineRe
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+ANSI_YELLOW = "\033[93m"
+ANSI_RESET = "\033[0m"
 
 MARKET_ZSCORE_WINDOW = max(10, int(getattr(cfg, "MARKET_ZSCORE_WINDOW", 96)))
 EMA_FAST_WINDOW = max(2, int(getattr(cfg, "EMA_FAST_WINDOW", 12)))
@@ -726,6 +731,32 @@ def create_exchange_service() -> ExchangeContract:
     raise ValueError(f"Unsupported ACTIVE_EXCHANGE: {exchange_name}")
 
 
+def format_yellow_warning(message: str) -> str:
+    return f"{ANSI_YELLOW}{message}{ANSI_RESET}"
+
+
+def warn_if_history_starts_late(
+    repository: HistoricalKlineRepository,
+    symbol: str,
+    timeframe: str,
+    requested_start_date: str,
+) -> None:
+    requested_start_ts = int(datetime.fromisoformat(requested_start_date).timestamp() * 1000)
+    first_open_time = repository.get_first_open_time(symbol, timeframe)
+    if first_open_time is None or first_open_time <= requested_start_ts:
+        return
+
+    logger.warning(
+        format_yellow_warning(
+            f"[{symbol}-{timeframe}] incomplete history: requested from "
+            f"{datetime.fromtimestamp(requested_start_ts / 1000):%Y-%m-%d %H:%M:%S}, "
+            f"but first available candle starts at "
+            f"{datetime.fromtimestamp(first_open_time / 1000):%Y-%m-%d %H:%M:%S}. "
+            "The asset was likely listed after the requested start date."
+        )
+    )
+
+
 def main():
     exchange_service = create_exchange_service()
     repository = HistoricalKlineRepository(exchange_code=exchange_service.get_exchange_code())
@@ -739,10 +770,12 @@ def main():
         logger.info(f"Loading {symbol_name} {TIMEFRAME} from {START_DATE}...")
         loaded = repository.sync_candles(exchange_service, symbol, TIMEFRAME, START_DATE, END_DATE)
         logger.info(f"{symbol_name} {TIMEFRAME}: {loaded} new candles")
+        warn_if_history_starts_late(repository, symbol_name, TIMEFRAME, START_DATE)
 
         logger.info(f"Loading {symbol_name} {HTF_TIMEFRAME} from {START_DATE}...")
         htf_loaded = repository.sync_candles(exchange_service, symbol, HTF_TIMEFRAME, START_DATE, END_DATE)
         logger.info(f"{symbol_name} {HTF_TIMEFRAME}: {htf_loaded} new candles")
+        warn_if_history_starts_late(repository, symbol_name, HTF_TIMEFRAME, START_DATE)
 
     base_1h_map = {}
     htf_feature_map = {}

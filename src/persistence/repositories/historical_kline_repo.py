@@ -74,6 +74,15 @@ class HistoricalKlineRepository:
             )
             return cur.fetchone()[0]
 
+    def get_first_open_time(self, symbol: str | Symbol, timeframe: str) -> int | None:
+        with self.connection_factory() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT MIN(open_time) FROM {self._candles_table_name()} WHERE symbol=? AND timeframe=?",
+                (self._symbol_name(symbol), timeframe),
+            )
+            return cur.fetchone()[0]
+
     def get_candle_count(self, symbol: str | Symbol, timeframe: str) -> int:
         with self.connection_factory() as conn:
             cur = conn.cursor()
