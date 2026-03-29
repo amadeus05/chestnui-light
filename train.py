@@ -6,7 +6,16 @@ import joblib
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, classification_report, confusion_matrix, f1_score
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    balanced_accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    matthews_corrcoef,
+    roc_auc_score,
+)
 
 import config as cfg
 from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
@@ -120,7 +129,7 @@ def load_training_frame(db_path, symbols):
 def select_feature_columns(dataset):
     feature_columns = []
     use_symbol_feature = bool(getattr(cfg, "USE_SYMBOL_FEATURE", True))
-    disabled_feature_columns = set()
+    disabled_feature_columns = set(getattr(cfg, "MANUAL_DISABLED_FEATURE_COLUMNS", []))
     if not bool(getattr(cfg, "ENABLE_TEST_FEATURES", False)):
         disabled_feature_columns.update(TEST_FEATURE_COLUMNS)
 
@@ -271,6 +280,7 @@ def evaluate_model(model, valid_df, feature_columns):
     y_true = valid_df[TARGET_COLUMN]
     y_pred = model.predict(x_valid)
     y_proba = model.predict_proba(x_valid)
+    p_long = y_proba[:, 1]
 
     report = classification_report(
         y_true,
@@ -292,7 +302,6 @@ def evaluate_model(model, valid_df, feature_columns):
     )
     probability_threshold_metrics = {}
     p_short = y_proba[:, 0]
-    p_long = y_proba[:, 1]
     y_true_series = pd.Series(y_true).reset_index(drop=True)
     for threshold in confidence_thresholds:
         threshold = float(threshold)
@@ -361,6 +370,9 @@ def evaluate_model(model, valid_df, feature_columns):
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
         "f1_macro": float(f1_score(y_true, y_pred, average="macro")),
+        "roc_auc": float(roc_auc_score(y_true, p_long)),
+        "pr_auc": float(average_precision_score(y_true, p_long)),
+        "mcc": float(matthews_corrcoef(y_true, y_pred)),
         "confusion_matrix": confusion_matrix(y_true, y_pred, labels=[0, 1]).tolist(),
         "classification_report": report,
         "validation_rows": int(len(valid_df)),
@@ -489,10 +501,13 @@ def main():
         }
 
         logger.info(
-            "Validation metrics | accuracy=%.4f | balanced_accuracy=%.4f | f1_macro=%.4f",
+            "Validation metrics | accuracy=%.4f | balanced_accuracy=%.4f | f1_macro=%.4f | roc_auc=%.4f | pr_auc=%.4f | mcc=%.4f",
             metrics["accuracy"],
             metrics["balanced_accuracy"],
             metrics["f1_macro"],
+            metrics["roc_auc"],
+            metrics["pr_auc"],
+            metrics["mcc"],
         )
 
         model_to_save = model
