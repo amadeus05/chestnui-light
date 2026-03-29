@@ -37,3 +37,6 @@ htmlcov/
 
 # Local tool metadata
 .python-version
+
+#model artifacts
+models/
