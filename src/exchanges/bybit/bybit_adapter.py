@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+import logging
+import threading
+import time
+
+import config as cfg
+import requests
+from requests.adapters import HTTPAdapter
+
+
+logger = logging.getLogger(__name__)
+
+
+class BybitAdapter:
+    def __init__(self) -> None:
+        self.kline_url = getattr(cfg, "BYBIT_KLINE_URL", "https://api.bybit.com/v5/market/kline")
+        self.category = getattr(cfg, "BYBIT_CATEGORY", "linear")
+        self.limit = min(1000, max(1, int(getattr(cfg, "BYBIT_LIMIT", 1000))))
+        self.timeout = float(getattr(cfg, "BYBIT_TIMEOUT", 20))
+        self.retry_count = max(1, int(getattr(cfg, "BYBIT_RETRY_COUNT", 5)))
+        self.retry_sleep = float(getattr(cfg, "BYBIT_RETRY_SLEEP", 0.3))
+        self.max_workers = max(1, int(getattr(cfg, "BYBIT_MAX_WORKERS", 6)))
+        self._thread_local = threading.local()
+
+    def get_http_session(self) -> requests.Session:
+        session = getattr(self._thread_local, "session", None)
+        if session is None:
+            session = requests.Session()
+            adapter = HTTPAdapter(
+                pool_connections=max(8, self.max_workers * 2),
+                pool_maxsize=max(8, self.max_workers * 2),
+            )
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+            session.headers.update({"User-Agent": "mlV2-etl-bybit/1.0"})
+            self._thread_local.session = session
+        return session
+
+    def request_json(self, url: str, params: dict, request_name: str) -> dict:
+        last_error = None
+
+        for attempt in range(self.retry_count):
+            try:
+                response = self.get_http_session().get(url, params=params, timeout=self.timeout)
+                response.raise_for_status()
+                payload = response.json()
+                ret_code = payload.get("retCode")
+                if ret_code == 0:
+                    return payload
+
+                last_error = RuntimeError(f"Bybit retCode={ret_code}, retMsg={payload.get('retMsg')}")
+                if ret_code not in {10000, 10006, 10016}:
+                    raise last_error
+            except (requests.RequestException, ValueError, RuntimeError) as exc:
+                last_error = exc
+
+            if attempt + 1 < self.retry_count:
+                sleep_s = self.retry_sleep * (2 ** attempt)
+                logger.warning(
+                    f"[{request_name}] retry {attempt + 1}/{self.retry_count}: {last_error}"
+                )
+                time.sleep(sleep_s)
+
+        raise RuntimeError(f"Bybit request failed for {request_name}: {last_error}")
+
+    def fetch_kline_window(
+        self,
+        api_symbol: str,
+        interval: str,
+        window_start: int,
+        window_end: int,
+    ) -> dict:
+        params = {
+            "category": self.category,
+            "symbol": api_symbol,
+            "interval": interval,
+            "start": window_start,
+            "end": window_end,
+            "limit": self.limit,
+        }
+        return self.request_json(
+            self.kline_url,
+            params,
+            f"{api_symbol}-{interval}-{window_start}-{window_end}",
+        )
