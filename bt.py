@@ -16,6 +16,12 @@ MAKER_COM = globals().get("MAKER_COM", 0.0002)
 SLIPPAGE = globals().get("SLIPPAGE", 0.0003)
 LEVERAGE = globals().get("LEVERAGE", 1)
 RISK_PER_TRADE = globals().get("RISK_PER_TRADE", 0.01)
+BACKTEST_SL_COOLDOWN_BARS = int(globals().get("BACKTEST_SL_COOLDOWN_BARS", 0))
+BACKTEST_MAX_SL_PER_DAY = int(globals().get("BACKTEST_MAX_SL_PER_DAY", 0))
+BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES = int(
+    globals().get("BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES", 0)
+)
+BACKTEST_REDUCED_RISK_PER_TRADE = float(globals().get("BACKTEST_REDUCED_RISK_PER_TRADE", RISK_PER_TRADE))
 DIRECTIONAL_PROBA_THRESHOLD = globals().get(
     "DIRECTIONAL_PROBA_THRESHOLD",
     globals().get("CONFIDENCE_THRESHOLD", 0.5),
@@ -693,6 +699,11 @@ def backtest():
     max_drawdown = 0.0
     used_margin = 0.0
     next_trade_number = 1
+    stop_cooldown_until_index = {sym: -1 for sym in all_raw}
+    current_trade_day = None
+    daily_sl_count = 0
+    daily_stop_announced = False
+    consecutive_loss_count = 0
 
     print("\n📋 Backtest Configuration:")
     print(f"   Period: {test_timestamps[0].isoformat()} to {test_timestamps[-1].isoformat()}")
@@ -712,6 +723,12 @@ def backtest():
     print(f"   Min signal gap: {MIN_SIGNAL_GAP:.2f}")
     print(f"   Batch entries per bar: {BACKTEST_MAX_NEW_POSITIONS_PER_BAR}")
     print(f"   Max open positions: {BACKTEST_MAX_OPEN_POSITIONS}")
+    print(f"   SL cooldown bars: {BACKTEST_SL_COOLDOWN_BARS}")
+    print(f"   Max SL per day: {BACKTEST_MAX_SL_PER_DAY}")
+    print(
+        "   Reduced risk after consecutive losses: "
+        f"{BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES} -> {BACKTEST_REDUCED_RISK_PER_TRADE * 100:.2f}%"
+    )
     if USE_DYNAMIC_BARRIERS:
         print(
             "   Dynamic barriers: "
@@ -729,6 +746,11 @@ def backtest():
     for i in range(num_candles - 1):
         current_ts = test_timestamps[i]
         next_ts = test_timestamps[i + 1]
+        trade_day = next_ts.normalize()
+        if current_trade_day is None or trade_day != current_trade_day:
+            current_trade_day = trade_day
+            daily_sl_count = 0
+            daily_stop_announced = False
 
         month_key = next_ts.strftime("%Y-%m")
         if month_key not in monthly_stats:
@@ -808,6 +830,7 @@ def backtest():
                 continue
 
             pnl_clean, trade_profit, commission = compute_trade_outcome(pos, exit_price)
+            previous_loss_streak = consecutive_loss_count
 
             used_margin -= pos["margin"]
             if used_margin < 0:
@@ -831,8 +854,15 @@ def backtest():
             monthly_stats[month_key]["trades"] += 1
             if pnl_clean > 0:
                 monthly_stats[month_key]["wins"] += 1
+                consecutive_loss_count = 0
             else:
                 monthly_stats[month_key]["losses"] += 1
+                consecutive_loss_count += 1
+
+            if reason == "SL":
+                if BACKTEST_SL_COOLDOWN_BARS > 0:
+                    stop_cooldown_until_index[sym] = i + BACKTEST_SL_COOLDOWN_BARS
+                daily_sl_count += 1
 
             positions[sym] = None
 
@@ -843,13 +873,58 @@ def backtest():
                 f"Com: {commission:.2f}$ | "
                 f"Bal: {balance:.2f}"
             )
+            if (
+                BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES > 0
+                and BACKTEST_REDUCED_RISK_PER_TRADE < RISK_PER_TRADE
+            ):
+                if (
+                    previous_loss_streak < BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES
+                    <= consecutive_loss_count
+                ):
+                    print(
+                        f"[{next_ts}] \u26A0\uFE0F Loss streak {consecutive_loss_count}: "
+                        f"risk per trade reduced to {BACKTEST_REDUCED_RISK_PER_TRADE * 100:.2f}%"
+                    )
+                elif (
+                    pnl_clean > 0
+                    and previous_loss_streak >= BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES
+                ):
+                    print(
+                        f"[{next_ts}] \u2139\uFE0F Loss streak reset: "
+                        f"risk per trade restored to {RISK_PER_TRADE * 100:.2f}%"
+                    )
+            if (
+                reason == "SL"
+                and BACKTEST_MAX_SL_PER_DAY > 0
+                and daily_sl_count >= BACKTEST_MAX_SL_PER_DAY
+                and not daily_stop_announced
+            ):
+                daily_stop_announced = True
+                print(
+                    f"[{next_ts}] \u26D4 Daily SL limit reached ({daily_sl_count}), "
+                    "new entries are paused until next day"
+                )
 
         # Phase 2: collect all entry candidates first, then rank them.
+        effective_risk_per_trade = RISK_PER_TRADE
+        if (
+            BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES > 0
+            and BACKTEST_REDUCED_RISK_PER_TRADE > 0
+            and BACKTEST_REDUCED_RISK_PER_TRADE < RISK_PER_TRADE
+            and consecutive_loss_count >= BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES
+        ):
+            effective_risk_per_trade = BACKTEST_REDUCED_RISK_PER_TRADE
+
+        if BACKTEST_MAX_SL_PER_DAY > 0 and daily_sl_count >= BACKTEST_MAX_SL_PER_DAY:
+            continue
+
         snapshot_balance = balance
         entry_candidates = []
         if BACKTEST_REALTIME_FEATURES:
             for sym, ctx in market_batch.items():
                 if positions[sym] is not None:
+                    continue
+                if i < stop_cooldown_until_index.get(sym, -1):
                     continue
 
                 latest_row = build_feature_row_at_time(
@@ -897,7 +972,7 @@ def backtest():
                     direction_str = "SHORT"
                     entry_price = ctx["next_open"] * (1 - SLIPPAGE)
 
-                risk_capital = snapshot_balance * RISK_PER_TRADE
+                risk_capital = snapshot_balance * effective_risk_per_trade
                 position_notional = min(risk_capital / stop_pct, snapshot_balance * LEVERAGE)
                 required_margin = position_notional / LEVERAGE
 
@@ -923,7 +998,11 @@ def backtest():
         else:
             candidate_symbols = [
                 sym for sym in market_batch
-                if positions[sym] is None and sym in all_features_prepared
+                if (
+                    positions[sym] is None
+                    and sym in all_features_prepared
+                    and i >= stop_cooldown_until_index.get(sym, -1)
+                )
             ]
             batch_symbols, batch_features = get_feature_batch_precomputed(
                 all_features_prepared,
@@ -964,7 +1043,7 @@ def backtest():
                         direction_str = "SHORT"
                         entry_price = ctx["next_open"] * (1 - SLIPPAGE)
 
-                    risk_capital = snapshot_balance * RISK_PER_TRADE
+                    risk_capital = snapshot_balance * effective_risk_per_trade
                     position_notional = min(risk_capital / stop_pct, snapshot_balance * LEVERAGE)
                     required_margin = position_notional / LEVERAGE
 

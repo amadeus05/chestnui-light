@@ -42,8 +42,8 @@ TIMEFRAME = "1h"
 HTF_TIMEFRAME = "4h"  # Старший таймфрейм для мульти-TF фичей
 
 # --- DATA LOADING ---
-ACTIVE_EXCHANGE = "binance"  # bybit: bybit, binance
-START_DATE = "2023-01-01"
+ACTIVE_EXCHANGE = "bybit"  # bybit: bybit, binance
+START_DATE = "2022-01-01"
 END_DATE = "2026-03-27 21:00:00"
 BYBIT_LIMIT = 1000
 BYBIT_RETRY_SLEEP = 0.33
@@ -61,29 +61,32 @@ ENABLE_FEATURE_CLIP = True
 FEATURE_CLIP_LOWER_Q = 0.01
 FEATURE_CLIP_UPPER_Q = 0.99
 USE_SYMBOL_FEATURE = False
-MANUAL_DISABLED_FEATURE_COLUMNS = []
+MANUAL_DISABLED_FEATURE_COLUMNS = [
+    "return_1h_24",
+    "return_4h_3",
+]
 
 # --- FEATURE BUILD ---
 FEATURE_PROFILES = {
     "all": "__all__",
     "empty": [],
     "base_only": [
-        "return_1h_6",
-        "return_1h_12",
-        "return_1h_24",
         "realized_vol_1h",
         "ema_fast_slow",
-        "linear_regression_slope_atr_1h_12",
+        "return_1h_24",
         "linear_regression_slope_atr_1h_24",
-        "volatility_regime_change_1h",
+        "trend_efficiency_24h",
         "atr_ratio_1h",
+        "range_compression_1h",
         "price_position_1h",
-        "return_4h_1",
+        "relative_strength_vs_btc_24h",
+        "residual_return_24h",
         "return_4h_3",
-        "return_4h_7",
         "return_4h_14",
         "ema_slope_4h",
         "realized_vol_4h_returns_20",
+        "market_breadth_pos_return_4h_3",
+        "market_dispersion_return_4h_3",
         "zscore_vs_vwap_4h",
         "vol_ratio",
         "price_position_4h",
@@ -93,7 +96,10 @@ FEATURE_PROFILES = {
 FEATURE_BUILD_REQUEST = {
     "profile": "base_only",
     "include_features": [],
-    "exclude_features": [],
+    "exclude_features": [
+        "return_1h_6",
+        "return_4h_1",
+    ],
     "exclude_blocks": [],
 }
 
@@ -127,13 +133,17 @@ SLIPPAGE = 0.0003
 LEVERAGE = 1
 RISK_PER_TRADE = 0.01
 DIRECTIONAL_PROBA_THRESHOLD = 0.55
-CONFIDENCE_THRESHOLD = 0.65
+CONFIDENCE_THRESHOLD = 0.55
 MIN_SIGNAL_GAP = 0.01
 ALLOW_LONGS = True
 ALLOW_SHORTS = True
 BACKTEST_REALTIME_FEATURES = False
-BACKTEST_MAX_NEW_POSITIONS_PER_BAR = 3     # 1 = берем лучший сигнал на баре, >1 = топ-N сигналов
-BACKTEST_MAX_OPEN_POSITIONS = 3            # максимум одновременно открытых позиций
+BACKTEST_MAX_NEW_POSITIONS_PER_BAR = 10     # 1 = берем лучший сигнал на баре, >1 = топ-N сигналов
+BACKTEST_MAX_OPEN_POSITIONS = 10            # максимум одновременно открытых позиций
+BACKTEST_SL_COOLDOWN_BARS = 8
+BACKTEST_MAX_SL_PER_DAY = 3
+BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES = 2
+BACKTEST_REDUCED_RISK_PER_TRADE = 0.005
 # --- PATHS ---
 MODELS_DIR = Path("models")
 MODELS_DIR.mkdir(exist_ok=True)
