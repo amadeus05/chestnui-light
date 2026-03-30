@@ -6,30 +6,33 @@ SYMBOLS = [
     "BNB/USDT",
     "ETH/USDT",
     "SOL/USDT",
+
     "XRP/USDT",
-    "XMR/USDT",
-    "LINK/USDT",
-    "NEAR/USDT",
-    "RENDER/USDT",
-    "TRX/USDT",
-    "ADA/USDT",
-    "ATOM/USDT",
-    "ARB/USDT",
-    "AVAX/USDT",
     "XLM/USDT",
-    "HBAR/USDT",
-    "MATIC/USDT",
-    "OP/USDT",
-    "TIA/USDT",
-    "FET/USDT",
-    "SEI/USDT",
-    "WLD/USDT",
-    "SUI/USDT",
-    "STX/USDT",
-    "INJ/USDT",
+    "ADA/USDT",
+    "TRX/USDT",
+    "XMR/USDT",
+
+    # "LINK/USDT",
+    # "NEAR/USDT",
+    # "RENDER/USDT",
+    "ATOM/USDT",
+    # "ARB/USDT",
+    # "HBAR/USDT",
+    # "MATIC/USDT",
+    # "OP/USDT",
+    # "TIA/USDT",
+    # "FET/USDT",
+    # "SEI/USDT",
+    # "WLD/USDT",
+    # "INJ/USDT",
+
+    # "AVAX/USDT",
+    # "SUI/USDT",
+    # "STX/USDT",
 
 
-    # "DOGE/USDT",
+    "DOGE/USDT",
     # "TON/USDT",
     # "APT/USDT",
     # "TAO/USDT",
@@ -58,6 +61,41 @@ ENABLE_FEATURE_CLIP = True
 FEATURE_CLIP_LOWER_Q = 0.01
 FEATURE_CLIP_UPPER_Q = 0.99
 USE_SYMBOL_FEATURE = False
+MANUAL_DISABLED_FEATURE_COLUMNS = []
+
+# --- FEATURE BUILD ---
+FEATURE_PROFILES = {
+    "all": "__all__",
+    "empty": [],
+    "base_only": [
+        "return_1h_6",
+        "return_1h_12",
+        "return_1h_24",
+        "realized_vol_1h",
+        "ema_fast_slow",
+        "linear_regression_slope_atr_1h_12",
+        "linear_regression_slope_atr_1h_24",
+        "volatility_regime_change_1h",
+        "atr_ratio_1h",
+        "price_position_1h",
+        "return_4h_1",
+        "return_4h_3",
+        "return_4h_7",
+        "return_4h_14",
+        "ema_slope_4h",
+        "realized_vol_4h_returns_20",
+        "zscore_vs_vwap_4h",
+        "vol_ratio",
+        "price_position_4h",
+        "adx_4h",
+    ],
+}
+FEATURE_BUILD_REQUEST = {
+    "profile": "base_only",
+    "include_features": [],
+    "exclude_features": [],
+    "exclude_blocks": [],
+}
 
 # --- ML LABELING (Triple Barrier) ---
 HORIZON = 16
@@ -75,9 +113,9 @@ BARRIER_MAX_PCT = 0.06
 # --- EVENT FILTER (binary side model candidate universe) ---
 ENABLE_EVENT_FILTER = True
 EVENT_FILTER_MIN_ABS_EMA_FAST_SLOW = 0.003
-EVENT_FILTER_MIN_ADX_4H = 18.0
-EVENT_FILTER_MIN_REALIZED_VOL_1H = 0.003
-EVENT_FILTER_MAX_REALIZED_VOL_1H = 0.05
+EVENT_FILTER_MIN_ADX_HTF = 18.0
+EVENT_FILTER_MIN_REALIZED_VOL_MAIN = 0.003
+EVENT_FILTER_MAX_REALIZED_VOL_MAIN = 0.05
 
 # --- RAW REBUILD SAFETY ---
 ALLOW_REBUILD_RAW_FROM_FEATURE_ONLY = False
@@ -88,17 +126,14 @@ MAKER_COM = 0.0002
 SLIPPAGE = 0.0003
 LEVERAGE = 1
 RISK_PER_TRADE = 0.01
-TRADEABILITY_PROBA_THRESHOLD = 0.30
-DIRECTIONAL_PROBA_THRESHOLD = 0.30
+DIRECTIONAL_PROBA_THRESHOLD = 0.55
 CONFIDENCE_THRESHOLD = TRADEABILITY_PROBA_THRESHOLD
 MIN_SIGNAL_GAP = 0.01
 ALLOW_LONGS = True
 ALLOW_SHORTS = True
 BACKTEST_REALTIME_FEATURES = False
-BACKTEST_MAX_NEW_POSITIONS_PER_BAR = 10     # 1 = берем лучший сигнал на баре, >1 = топ-N сигналов
-BACKTEST_MAX_OPEN_POSITIONS = 10            # максимум одновременно открытых позиций
-ENABLE_TEST_FEATURES = True   # Включать ли test features в трейдинг
-
+BACKTEST_MAX_NEW_POSITIONS_PER_BAR = 3     # 1 = берем лучший сигнал на баре, >1 = топ-N сигналов
+BACKTEST_MAX_OPEN_POSITIONS = 3            # максимум одновременно открытых позиций
 # --- PATHS ---
 MODELS_DIR = Path("models")
 MODELS_DIR.mkdir(exist_ok=True)

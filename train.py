@@ -40,31 +40,6 @@ EXCLUDED_RAW_FEATURE_COLUMNS = {
     "close",
     "volume",
 }
-TEST_FEATURE_COLUMNS = {
-    "range_compression_1h",
-    "distance_to_session_high_1h",
-    "distance_to_session_low_1h",
-    "trend_persistence_score_12",
-    "trend_persistence_score_24",
-    "trend_efficiency_24h",
-    "slope_acceleration_1h_12_24",
-    "ema_slope_acceleration_1h",
-    "volatility_acceleration_1h",
-    "hour_sin_1h",
-    "hour_cos_1h",
-    "is_weekend_1h",
-    "relative_strength_vs_btc_24h",
-    "beta_to_btc_24h",
-    "residual_return_24h",
-    "cross_sectional_rank_ema_fast_slow_1h",
-    "market_breadth_ema_fast_slow_1h",
-    "market_breadth_pos_return_4h_3",
-    "market_dispersion_return_4h_3",
-    "delta_market_breadth_ema_fast_slow_1h",
-    "market_breadth_ema_fast_slow_1h_zscore",
-    "ema_fast_slow_x_market_breadth_ema_fast_slow_1h",
-    "trend_efficiency_24h_x_volatility_regime_change_1h",
-}
 LABEL_TO_CLASS = {-1: 0, 1: 1}
 CLASS_TO_LABEL = {0: -1, 1: 1}
 
@@ -141,8 +116,6 @@ def select_feature_columns(dataset):
     feature_columns = []
     use_symbol_feature = bool(getattr(cfg, "USE_SYMBOL_FEATURE", True))
     disabled_feature_columns = set(getattr(cfg, "MANUAL_DISABLED_FEATURE_COLUMNS", []))
-    if not bool(getattr(cfg, "ENABLE_TEST_FEATURES", False)):
-        disabled_feature_columns.update(TEST_FEATURE_COLUMNS)
 
     for column in dataset.columns:
         if column in RESERVED_COLUMNS:
