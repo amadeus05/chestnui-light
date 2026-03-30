@@ -39,4 +39,6 @@ htmlcov/
 .python-version
 
 #model artifacts
-models/
+models/*.joblib
+models/*.json
+models/*.csv
