@@ -18,6 +18,7 @@ from sklearn.metrics import (
 )
 
 import config as cfg
+from signal_filter import build_candidate_event_mask, resolve_event_filter_config
 from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -119,7 +120,14 @@ def load_training_frame(db_path, symbols):
     if unknown_labels:
         raise ValueError(f"Unexpected labels in {TARGET_COLUMN}: {unknown_labels}")
 
-    directional_mask = raw_labels != 0
+    event_filter_config = resolve_event_filter_config()
+    candidate_mask = build_candidate_event_mask(dataset, event_filter_config)
+    dataset.attrs["event_filter_config"] = event_filter_config
+    dataset.attrs["candidate_rows"] = int(candidate_mask.sum())
+    dataset.attrs["excluded_by_event_filter_rows"] = int((~candidate_mask).sum())
+    dataset = dataset.loc[candidate_mask].copy()
+
+    directional_mask = dataset[TARGET_COLUMN].astype(int) != 0
     excluded_non_directional_rows = int((~directional_mask).sum())
     dataset = dataset.loc[directional_mask].copy()
     raw_directional_labels = dataset[TARGET_COLUMN].astype(int)
@@ -475,6 +483,7 @@ def save_directional_artifacts(model, metrics, dataset, feature_columns, clip_bo
         "validation_period": metrics.get("validation_period"),
         "test_period": metrics.get("test_period"),
         "split_sizes": metrics.get("split_sizes"),
+        "event_filter": metrics.get("event_filter"),
         "feature_clip": {
             "enabled": bool(getattr(cfg, "ENABLE_FEATURE_CLIP", False)),
             "lower_q": float(getattr(cfg, "FEATURE_CLIP_LOWER_Q", 0.01)),
@@ -503,7 +512,12 @@ def main():
         logger.info("Loaded %s rows with %s features", len(dataset), len(feature_columns))
         logger.info("Using symbols: %s", ", ".join(args.symbols))
         logger.info(
-            "Directional baseline: excluded %s non-directional rows with Target=0 before split",
+            "Candidate universe: kept %s rows after deterministic event filter, excluded %s rows",
+            int(dataset.attrs.get("candidate_rows", len(dataset))),
+            int(dataset.attrs.get("excluded_by_event_filter_rows", 0)),
+        )
+        logger.info(
+            "Directional baseline inside candidate universe: excluded %s non-directional rows with Target=0 before split",
             int(dataset.attrs.get("excluded_non_directional_rows", 0)),
         )
 
@@ -541,6 +555,9 @@ def main():
             "test_rows": int(len(test_df)),
             "feature_count": int(len(feature_columns)),
             "excluded_non_directional_rows": int(dataset.attrs.get("excluded_non_directional_rows", 0)),
+            "candidate_rows": int(dataset.attrs.get("candidate_rows", len(dataset))),
+            "excluded_by_event_filter_rows": int(dataset.attrs.get("excluded_by_event_filter_rows", 0)),
+            "event_filter": dataset.attrs.get("event_filter_config"),
             "train_period": build_period_payload(train_df),
             "validation_period": build_period_payload(valid_df),
             "test_period": build_period_payload(test_df),

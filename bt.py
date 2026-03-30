@@ -7,6 +7,7 @@ import joblib
 import matplotlib.pyplot as plt
 import etl
 from config import *
+from signal_filter import build_candidate_event_mask, resolve_event_filter_config
 from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
 
 # Futures settings come from config.py
@@ -458,6 +459,13 @@ def get_feature_row_precomputed_index(indexed_rows: dict, ts: pd.Timestamp, feat
     return latest_row
 
 
+def is_candidate_event(feature_row: pd.DataFrame, event_filter_config: dict) -> bool:
+    if feature_row is None or feature_row.empty:
+        return False
+    mask = build_candidate_event_mask(feature_row, event_filter_config)
+    return bool(mask.iloc[0]) if not mask.empty else False
+
+
 def normalize_features_for_model(latest_row: pd.DataFrame, feature_names: list, symbol_categories=None):
     features = latest_row[feature_names].copy()
     if "symbol" in features.columns:
@@ -565,6 +573,11 @@ def backtest():
     except RuntimeError as exc:
         print(f"Error: {exc}")
         return
+    event_filter_meta = features_meta.get("event_filter")
+    if event_filter_meta is None:
+        print("Error: model metadata does not include event_filter. Re-run train.py first.")
+        return
+    event_filter_config = resolve_event_filter_config(event_filter_meta)
 
     trained_symbols = list(features_meta.get("symbols", SYMBOLS))
     use_symbol_feature = "symbol" in feature_names
@@ -589,6 +602,14 @@ def backtest():
             f"{feature_clip_meta.get('upper_q', 0.99) * 100:.2f}%]"
         )
     print(f"Holdout test window: {test_start_ts.isoformat()} to {test_end_ts.isoformat()}")
+    if event_filter_config.get("enabled", False):
+        print(
+            "Event filter: "
+            f"|ema_fast_slow|>={event_filter_config.get('min_abs_ema_fast_slow', 0.0):.4f}, "
+            f"adx_4h>={event_filter_config.get('min_adx_4h', 0.0):.1f}, "
+            f"realized_vol_1h in [{event_filter_config.get('min_realized_vol_1h', 0.0):.4f}, "
+            f"{event_filter_config.get('max_realized_vol_1h', 1.0):.4f}]"
+        )
 
     all_raw = load_all_raw_data(SYMBOLS)
     if not all_raw:
@@ -847,6 +868,8 @@ def backtest():
                     symbol_categories=symbol_categories,
                 )
                 current_features = apply_feature_clip_bounds(current_features, clip_bounds)
+                if not is_candidate_event(latest_row, event_filter_config):
+                    continue
                 stop_pct, take_pct = get_barrier_pcts(latest_row)
                 if stop_pct is None or take_pct is None:
                     continue
@@ -916,6 +939,8 @@ def backtest():
                     )
                     stop_pct, take_pct = get_barrier_pcts(feature_row)
                     if stop_pct is None or take_pct is None:
+                        continue
+                    if not is_candidate_event(feature_row, event_filter_config):
                         continue
                     p_short = float(proba[0])
                     p_long = float(proba[1])
