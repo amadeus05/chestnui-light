@@ -147,6 +147,49 @@ def format_percent_value(value: float) -> str:
     return f"{sign}{abs(value):.2f}%"
 
 
+def compute_net_pnl_pct(direction: int, entry_price: float, exit_price: float) -> float:
+    if direction == 1:
+        raw_pnl = (exit_price - entry_price) / entry_price
+    else:
+        raw_pnl = (entry_price - exit_price) / entry_price
+    return raw_pnl - (TAKER_COM + TAKER_COM)
+
+
+def compute_trade_outcome(position: dict, exit_price: float) -> tuple[float, float, float]:
+    pnl_clean = compute_net_pnl_pct(position["dir"], position["entry"], exit_price)
+    position_notional = float(position["size"])
+    commission = position_notional * (TAKER_COM + TAKER_COM)
+    trade_profit = position_notional * pnl_clean
+    return pnl_clean, trade_profit, commission
+
+
+def compute_portfolio_equity(balance: float, positions: dict, mark_prices: dict[str, float]) -> float:
+    equity = float(balance)
+    for sym, position in positions.items():
+        if position is None:
+            continue
+
+        mark_price = mark_prices.get(sym)
+        if mark_price is None or not np.isfinite(mark_price):
+            continue
+
+        pnl_clean = compute_net_pnl_pct(position["dir"], position["entry"], float(mark_price))
+        equity += float(position["size"]) * pnl_clean
+    return equity
+
+
+def update_drawdown_stats(equity: float, peak_equity: float, max_drawdown: float) -> tuple[float, float]:
+    if equity > peak_equity:
+        peak_equity = equity
+
+    if peak_equity > 0:
+        current_dd = (peak_equity - equity) / peak_equity * 100
+        if current_dd > max_drawdown:
+            max_drawdown = current_dd
+
+    return peak_equity, max_drawdown
+
+
 def print_table(headers: list[str], rows: list[list[str]], right_align: set[int] | None = None) -> None:
     right_align = right_align or set()
     widths = [len(str(header)) for header in headers]
@@ -580,7 +623,7 @@ def backtest():
     equity_curve = []
     equity_timestamps = []
     monthly_stats = {}
-    peak_balance = balance
+    peak_equity = balance
     max_drawdown = 0.0
     used_margin = 0.0
 
@@ -620,9 +663,6 @@ def backtest():
         current_ts = test_timestamps[i]
         next_ts = test_timestamps[i + 1]
 
-        equity_curve.append(balance)
-        equity_timestamps.append(current_ts)
-
         month_key = next_ts.strftime("%Y-%m")
         if month_key not in monthly_stats:
             monthly_stats[month_key] = {
@@ -643,10 +683,17 @@ def backtest():
             market_batch[sym] = {
                 "main": payload["main"],
                 "htf": payload["htf"],
+                "current_close": float(curr_exec["close"]),
                 "next_open": float(next_exec["open"]),
                 "next_high": float(next_exec["high"]),
                 "next_low": float(next_exec["low"]),
             }
+
+        current_mark_prices = {sym: ctx["current_close"] for sym, ctx in market_batch.items()}
+        current_equity = compute_portfolio_equity(balance, positions, current_mark_prices)
+        equity_curve.append(current_equity)
+        equity_timestamps.append(current_ts)
+        peak_equity, max_drawdown = update_drawdown_stats(current_equity, peak_equity, max_drawdown)
 
         # Phase 1: all exits are evaluated on the same market snapshot.
         for sym, ctx in market_batch.items():
@@ -656,7 +703,6 @@ def backtest():
             pos = positions[sym]
             entry_price = pos["entry"]
             direction = pos["dir"]
-            position_notional = pos["size"]
             stop_pct = pos["stop_pct"]
             take_pct = pos["take_pct"]
             next_open = ctx["next_open"]
@@ -694,14 +740,7 @@ def backtest():
             if not exit_signal:
                 continue
 
-            if direction == 1:
-                raw_pnl = (exit_price - entry_price) / entry_price
-            else:
-                raw_pnl = (entry_price - exit_price) / entry_price
-
-            commission = position_notional * (TAKER_COM + TAKER_COM)
-            pnl_clean = raw_pnl - (TAKER_COM + TAKER_COM)
-            trade_profit = position_notional * pnl_clean
+            pnl_clean, trade_profit, commission = compute_trade_outcome(pos, exit_price)
 
             used_margin -= pos["margin"]
             if used_margin < 0:
@@ -726,13 +765,6 @@ def backtest():
                 monthly_stats[month_key]["wins"] += 1
             else:
                 monthly_stats[month_key]["losses"] += 1
-
-            if balance > peak_balance:
-                peak_balance = balance
-
-            current_dd = (peak_balance - balance) / peak_balance * 100
-            if current_dd > max_drawdown:
-                max_drawdown = current_dd
 
             positions[sym] = None
 
@@ -934,6 +966,71 @@ def backtest():
                 f"Size: {position_notional:.2f}$ "
                 f"Margin: {required_margin:.2f}$"
             )
+
+    last_timestamp = test_timestamps[-1]
+    last_mark_prices = {}
+    for sym in all_raw:
+        last_exec = get_exec_row_by_ts_index(all_main_index[sym], last_timestamp)
+        if last_exec is None:
+            continue
+        last_mark_prices[sym] = float(last_exec["close"])
+
+    final_month_key = last_timestamp.strftime("%Y-%m")
+    if final_month_key not in monthly_stats:
+        monthly_stats[final_month_key] = {
+            "pnl_abs": 0.0,
+            "trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "start_balance": balance,
+        }
+
+    for sym, pos in list(positions.items()):
+        if pos is None:
+            continue
+
+        mark_price = last_mark_prices.get(sym)
+        if mark_price is None or not np.isfinite(mark_price):
+            continue
+
+        exit_price = mark_price * (1 - SLIPPAGE) if pos["dir"] == 1 else mark_price * (1 + SLIPPAGE)
+        pnl_clean, trade_profit, commission = compute_trade_outcome(pos, exit_price)
+
+        used_margin -= pos["margin"]
+        if used_margin < 0:
+            used_margin = 0.0
+
+        balance += trade_profit
+        trades.append(
+            {
+                "sym": sym,
+                "direction": "LONG" if pos["dir"] == 1 else "SHORT",
+                "reason": "FINAL",
+                "pnl_pct": pnl_clean,
+                "pnl_abs": trade_profit,
+                "commission": commission,
+                "ts": last_timestamp,
+            }
+        )
+        monthly_stats[final_month_key]["pnl_abs"] += trade_profit
+        monthly_stats[final_month_key]["trades"] += 1
+        if pnl_clean > 0:
+            monthly_stats[final_month_key]["wins"] += 1
+        else:
+            monthly_stats[final_month_key]["losses"] += 1
+
+        positions[sym] = None
+        print(
+            f"[{last_timestamp}] \u23F9 CLOSE {sym}: FINAL | "
+            f"PnL: {format_pnl_pct(pnl_clean * 100)} | "
+            f"Com: {commission:.2f}$ | "
+            f"Bal: {balance:.2f}"
+        )
+
+    final_equity = compute_portfolio_equity(balance, positions, last_mark_prices)
+    equity_curve.append(final_equity)
+    equity_timestamps.append(last_timestamp)
+    peak_equity, max_drawdown = update_drawdown_stats(final_equity, peak_equity, max_drawdown)
 
     if len(equity_curve) > 0:
         equity_series = pd.Series(equity_curve, index=equity_timestamps)
