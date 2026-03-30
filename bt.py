@@ -62,6 +62,21 @@ def apply_end_date_cutoff(df: pd.DataFrame, timestamp_column: str = "timestamp")
 
     return df.loc[df[timestamp_column] <= end_cutoff].copy()
 
+
+def parse_period_payload(period_payload: dict | None, period_name: str) -> tuple[pd.Timestamp, pd.Timestamp]:
+    if not period_payload:
+        raise RuntimeError(
+            f"Model metadata does not include {period_name}. Re-run train.py with holdout-aware artifacts first."
+        )
+
+    start = pd.to_datetime(period_payload.get("start"), errors="coerce")
+    end = pd.to_datetime(period_payload.get("end"), errors="coerce")
+    if pd.isna(start) or pd.isna(end):
+        raise RuntimeError(f"Model metadata has an invalid {period_name}: {period_payload}")
+    if start > end:
+        raise RuntimeError(f"Model metadata has {period_name} start after end: {period_payload}")
+    return start, end
+
 # LightGBM binary directional mapping (from train.py)
 LABEL_TO_CLASS = {-1: 0, 1: 1}
 CLASS_TO_LABEL = {v: k for k, v in LABEL_TO_CLASS.items()}
@@ -322,6 +337,24 @@ def filter_symbols_with_recent_data(all_data: dict, min_common_candles: int = 30
     return filtered, dropped
 
 
+def filter_symbols_with_period_overlap(all_data: dict, start_ts: pd.Timestamp, end_ts: pd.Timestamp, min_candles: int = 2):
+    if not all_data:
+        return {}, []
+
+    filtered = {}
+    dropped = []
+    for symbol, payload in all_data.items():
+        period_rows = payload["main"].loc[
+            (payload["main"]["timestamp"] >= start_ts) & (payload["main"]["timestamp"] <= end_ts)
+        ]
+        if len(period_rows) < min_candles:
+            dropped.append(symbol)
+            continue
+        filtered[symbol] = payload
+
+    return filtered, dropped
+
+
 def prepare_dataset_for_time(df: pd.DataFrame, analysis_ts: pd.Timestamp) -> pd.DataFrame:
     if df is None or df.empty:
         return df
@@ -520,6 +553,19 @@ def backtest():
         features_meta = json.load(f)
 
     feature_names = features_meta["feature_columns"]
+    if bool(features_meta.get("prod_train")):
+        print(
+            "Error: this model artifact was retrained on the full dataset (`prod_train=true`), "
+            "so the holdout window is no longer out-of-sample. Re-run train.py without --prod-train."
+        )
+        return
+
+    try:
+        test_start_ts, test_end_ts = parse_period_payload(features_meta.get("test_period"), "test_period")
+    except RuntimeError as exc:
+        print(f"Error: {exc}")
+        return
+
     trained_symbols = list(features_meta.get("symbols", SYMBOLS))
     use_symbol_feature = "symbol" in feature_names
     unseen_symbols = [symbol for symbol in SYMBOLS if symbol not in trained_symbols]
@@ -542,6 +588,7 @@ def backtest():
             f"[{feature_clip_meta.get('lower_q', 0.01) * 100:.2f}%, "
             f"{feature_clip_meta.get('upper_q', 0.99) * 100:.2f}%]"
         )
+    print(f"Holdout test window: {test_start_ts.isoformat()} to {test_end_ts.isoformat()}")
 
     all_raw = load_all_raw_data(SYMBOLS)
     if not all_raw:
@@ -594,26 +641,24 @@ def backtest():
             print("Error: no symbols with prepared precomputed features available.")
             return
 
-    all_raw, stale_symbols = filter_symbols_with_recent_data(all_raw, min_common_candles=300)
-    if stale_symbols:
+    all_raw, dropped_symbols = filter_symbols_with_period_overlap(all_raw, test_start_ts, test_end_ts, min_candles=2)
+    if dropped_symbols:
         print(
-            "Warning: dropped symbols without enough recent overlap for the backtest window: "
-            + ", ".join(stale_symbols)
+            "Warning: dropped symbols without enough overlap inside the saved holdout window: "
+            + ", ".join(dropped_symbols)
         )
     if not all_raw:
-        print("Error: no symbols with enough recent overlap for backtest.")
+        print("Error: no symbols with enough overlap inside the saved holdout window.")
         return
 
     common_timestamps = get_common_main_timestamps(all_raw)
-    if len(common_timestamps) < 300:
-        print("Error: too few common timestamps for test.")
-        return
-
-    split_idx = int(len(common_timestamps) * 0.85)
-    test_timestamps = common_timestamps[split_idx:]
+    test_timestamps = [
+        ts for ts in common_timestamps
+        if test_start_ts <= ts <= test_end_ts
+    ]
 
     if len(test_timestamps) < 2:
-        print("Error: too little data for test period.")
+        print("Error: too little common data inside the saved holdout test period.")
         return
 
     balance = BACKTEST_INITIAL_BALANCE

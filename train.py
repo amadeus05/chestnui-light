@@ -85,6 +85,7 @@ def parse_args():
         help="Symbols to load, for example ETH/USDT SOL/USDT.",
     )
     parser.add_argument("--val-size", type=float, default=0.15, help="Validation share for chronological split.")
+    parser.add_argument("--test-size", type=float, default=0.15, help="Holdout test share for chronological split.")
     parser.add_argument("--model-name", default="lightgbm_target", help="Base filename for saved artifacts.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument(
@@ -94,6 +95,8 @@ def parse_args():
         help="After validation, retrain the final model on the full dataset.",
     )
     return parser.parse_args()
+
+
 def load_training_frame(db_path, symbols):
     repository = HistoricalKlineRepository(db_path=db_path)
     dataset = repository.load_feature_dataset(symbols)
@@ -204,31 +207,61 @@ def apply_feature_clip_bounds(frame, clip_bounds):
     return clipped
 
 
-def time_split(dataset, val_size):
+def build_period_payload(frame):
+    if frame.empty:
+        return None
+    return {
+        "start": str(frame[TIMESTAMP_COLUMN].iloc[0]),
+        "end": str(frame[TIMESTAMP_COLUMN].iloc[-1]),
+    }
+
+
+def time_split(dataset, val_size, test_size):
     if not 0 < val_size < 1:
         raise ValueError("--val-size must be between 0 and 1.")
+    if not 0 < test_size < 1:
+        raise ValueError("--test-size must be between 0 and 1.")
+    if (val_size + test_size) >= 1:
+        raise ValueError("--val-size + --test-size must be less than 1.")
 
     unique_timestamps = dataset[TIMESTAMP_COLUMN].drop_duplicates().sort_values().reset_index(drop=True)
-    if len(unique_timestamps) < 2:
-        raise RuntimeError("Need at least 2 unique timestamps for a chronological train/validation split.")
+    if len(unique_timestamps) < 3:
+        raise RuntimeError("Need at least 3 unique timestamps for a chronological train/validation/test split.")
 
-    split_idx = int(len(unique_timestamps) * (1 - val_size))
-    split_idx = max(1, min(split_idx, len(unique_timestamps) - 1))
-    valid_start_ts = unique_timestamps.iloc[split_idx]
+    train_end_idx = int(len(unique_timestamps) * (1 - val_size - test_size))
+    valid_end_idx = int(len(unique_timestamps) * (1 - test_size))
+
+    train_end_idx = max(1, train_end_idx)
+    valid_end_idx = max(train_end_idx + 1, valid_end_idx)
+    valid_end_idx = min(valid_end_idx, len(unique_timestamps) - 1)
+    if train_end_idx >= valid_end_idx:
+        raise RuntimeError("Chronological split is too small for separate validation and test windows.")
+
+    valid_start_ts = unique_timestamps.iloc[train_end_idx]
+    test_start_ts = unique_timestamps.iloc[valid_end_idx]
 
     train_df = dataset.loc[dataset[TIMESTAMP_COLUMN] < valid_start_ts].copy()
-    valid_df = dataset.loc[dataset[TIMESTAMP_COLUMN] >= valid_start_ts].copy()
-    return train_df, valid_df
+    valid_df = dataset.loc[
+        (dataset[TIMESTAMP_COLUMN] >= valid_start_ts) & (dataset[TIMESTAMP_COLUMN] < test_start_ts)
+    ].copy()
+    test_df = dataset.loc[dataset[TIMESTAMP_COLUMN] >= test_start_ts].copy()
+    return train_df, valid_df, test_df
 
 
-def validate_split(train_df, valid_df):
-    if train_df.empty or valid_df.empty:
-        raise RuntimeError("Train/validation split produced an empty part. Adjust --val-size or prepare more data.")
+def validate_split(train_df, valid_df, test_df):
+    if train_df.empty or valid_df.empty or test_df.empty:
+        raise RuntimeError(
+            "Train/validation/test split produced an empty part. Adjust split sizes or prepare more data."
+        )
 
     train_last_ts = train_df[TIMESTAMP_COLUMN].max()
     valid_first_ts = valid_df[TIMESTAMP_COLUMN].min()
+    valid_last_ts = valid_df[TIMESTAMP_COLUMN].max()
+    test_first_ts = test_df[TIMESTAMP_COLUMN].min()
     if train_last_ts >= valid_first_ts:
         raise RuntimeError("Train/validation split has overlapping timestamps, which would leak validation context.")
+    if valid_last_ts >= test_first_ts:
+        raise RuntimeError("Validation/test split has overlapping timestamps, which would leak holdout context.")
 
     train_classes = sorted(train_df[TARGET_COLUMN].unique().tolist())
     if len(train_classes) < 2:
@@ -275,11 +308,11 @@ def train_validation_model(train_df, valid_df, feature_columns, seed):
     return model
 
 
-def evaluate_model(model, valid_df, feature_columns):
-    x_valid = valid_df[feature_columns]
-    y_true = valid_df[TARGET_COLUMN]
-    y_pred = model.predict(x_valid)
-    y_proba = model.predict_proba(x_valid)
+def evaluate_model(model, eval_df, feature_columns, split_name):
+    x_eval = eval_df[feature_columns]
+    y_true = eval_df[TARGET_COLUMN]
+    y_pred = model.predict(x_eval)
+    y_proba = model.predict_proba(x_eval)
     p_long = y_proba[:, 1]
 
     report = classification_report(
@@ -305,12 +338,12 @@ def evaluate_model(model, valid_df, feature_columns):
     y_true_series = pd.Series(y_true).reset_index(drop=True)
     for threshold in confidence_thresholds:
         threshold = float(threshold)
-        signal = np.full(len(valid_df), -1, dtype=int)
+        signal = np.full(len(eval_df), -1, dtype=int)
         signal[p_long >= threshold] = 1
         signal[p_short >= threshold] = 0
         mask = signal != -1
         selected = int(mask.sum())
-        coverage = float(selected / len(valid_df)) if len(valid_df) else 0.0
+        coverage = float(selected / len(eval_df)) if len(eval_df) else 0.0
         long_signals = int((signal == 1).sum())
         short_signals = int((signal == 0).sum())
         no_trade = int((signal == -1).sum())
@@ -375,7 +408,7 @@ def evaluate_model(model, valid_df, feature_columns):
         "mcc": float(matthews_corrcoef(y_true, y_pred)),
         "confusion_matrix": confusion_matrix(y_true, y_pred, labels=[0, 1]).tolist(),
         "classification_report": report,
-        "validation_rows": int(len(valid_df)),
+        f"{split_name}_rows": int(len(eval_df)),
         "probability_threshold_metrics": probability_threshold_metrics,
     }
     return metrics
@@ -438,6 +471,10 @@ def save_directional_artifacts(model, metrics, dataset, feature_columns, clip_bo
         "rows": int(len(dataset)),
         "prod_train": bool(args.prod_train),
         "task_type": "binary_directional",
+        "train_period": metrics.get("train_period"),
+        "validation_period": metrics.get("validation_period"),
+        "test_period": metrics.get("test_period"),
+        "split_sizes": metrics.get("split_sizes"),
         "feature_clip": {
             "enabled": bool(getattr(cfg, "ENABLE_FEATURE_CLIP", False)),
             "lower_q": float(getattr(cfg, "FEATURE_CLIP_LOWER_Q", 0.01)),
@@ -470,16 +507,19 @@ def main():
             int(dataset.attrs.get("excluded_non_directional_rows", 0)),
         )
 
-        train_df, valid_df = time_split(dataset, args.val_size)
-        validate_split(train_df, valid_df)
+        train_df, valid_df, test_df = time_split(dataset, args.val_size, args.test_size)
+        validate_split(train_df, valid_df, test_df)
         clip_bounds = build_feature_clip_bounds(train_df, feature_columns)
         train_df = apply_feature_clip_bounds(train_df, clip_bounds)
         valid_df = apply_feature_clip_bounds(valid_df, clip_bounds)
+        test_df = apply_feature_clip_bounds(test_df, clip_bounds)
         logger.info(
-            "Chronological split: train=%s rows, valid=%s rows, valid starts at %s",
+            "Chronological split: train=%s rows, valid=%s rows, test=%s rows | valid starts at %s | test starts at %s",
             len(train_df),
             len(valid_df),
+            len(test_df),
             valid_df[TIMESTAMP_COLUMN].iloc[0],
+            test_df[TIMESTAMP_COLUMN].iloc[0],
         )
         if clip_bounds:
             logger.info(
@@ -490,30 +530,53 @@ def main():
             )
 
         model = train_validation_model(train_df, valid_df, feature_columns, args.seed)
-        metrics = evaluate_model(model, valid_df, feature_columns)
-        metrics["best_iteration"] = int(model.best_iteration_ or model.n_estimators_)
-        metrics["train_rows"] = int(len(train_df))
-        metrics["feature_count"] = int(len(feature_columns))
-        metrics["excluded_non_directional_rows"] = int(dataset.attrs.get("excluded_non_directional_rows", 0))
-        metrics["validation_period"] = {
-            "start": str(valid_df[TIMESTAMP_COLUMN].iloc[0]),
-            "end": str(valid_df[TIMESTAMP_COLUMN].iloc[-1]),
+        validation_metrics = evaluate_model(model, valid_df, feature_columns, split_name="validation")
+        test_metrics = evaluate_model(model, test_df, feature_columns, split_name="test")
+        metrics = {
+            "validation_metrics": validation_metrics,
+            "test_metrics": test_metrics,
+            "best_iteration": int(model.best_iteration_ or model.n_estimators_),
+            "train_rows": int(len(train_df)),
+            "validation_rows": int(len(valid_df)),
+            "test_rows": int(len(test_df)),
+            "feature_count": int(len(feature_columns)),
+            "excluded_non_directional_rows": int(dataset.attrs.get("excluded_non_directional_rows", 0)),
+            "train_period": build_period_payload(train_df),
+            "validation_period": build_period_payload(valid_df),
+            "test_period": build_period_payload(test_df),
+            "split_sizes": {
+                "validation": float(args.val_size),
+                "test": float(args.test_size),
+            },
         }
 
         logger.info(
             "Validation metrics | accuracy=%.4f | balanced_accuracy=%.4f | f1_macro=%.4f | roc_auc=%.4f | pr_auc=%.4f | mcc=%.4f",
-            metrics["accuracy"],
-            metrics["balanced_accuracy"],
-            metrics["f1_macro"],
-            metrics["roc_auc"],
-            metrics["pr_auc"],
-            metrics["mcc"],
+            validation_metrics["accuracy"],
+            validation_metrics["balanced_accuracy"],
+            validation_metrics["f1_macro"],
+            validation_metrics["roc_auc"],
+            validation_metrics["pr_auc"],
+            validation_metrics["mcc"],
+        )
+        logger.info(
+            "Holdout test metrics | accuracy=%.4f | balanced_accuracy=%.4f | f1_macro=%.4f | roc_auc=%.4f | pr_auc=%.4f | mcc=%.4f",
+            test_metrics["accuracy"],
+            test_metrics["balanced_accuracy"],
+            test_metrics["f1_macro"],
+            test_metrics["roc_auc"],
+            test_metrics["pr_auc"],
+            test_metrics["mcc"],
         )
 
         model_to_save = model
         clip_bounds_to_save = clip_bounds
         if args.prod_train:
-            logger.info("ENABLE_PROD_TRAINING is enabled, retraining final model on the full dataset")
+            logger.warning(
+                "ENABLE_PROD_TRAINING is enabled: the saved model will be retrained on the full dataset, "
+                "including the holdout test window. Use the saved test metrics for evaluation, but do not treat "
+                "subsequent backtests with this retrained artifact as out-of-sample."
+            )
             clip_bounds_to_save = build_feature_clip_bounds(dataset, feature_columns)
             dataset = apply_feature_clip_bounds(dataset, clip_bounds_to_save)
             model_to_save = retrain_full_model(dataset, feature_columns, args.seed, metrics["best_iteration"])
