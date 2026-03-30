@@ -692,6 +692,7 @@ def backtest():
     peak_equity = balance
     max_drawdown = 0.0
     used_margin = 0.0
+    next_trade_number = 1
 
     print("\n📋 Backtest Configuration:")
     print(f"   Period: {test_timestamps[0].isoformat()} to {test_timestamps[-1].isoformat()}")
@@ -816,6 +817,7 @@ def backtest():
 
             trades.append(
                 {
+                    "trade_number": pos["trade_number"],
                     "sym": sym,
                     "direction": "LONG" if direction == 1 else "SHORT",
                     "reason": reason,
@@ -836,7 +838,7 @@ def backtest():
 
             exit_icon = "\u274C" if reason == "SL" else "\u2705" if reason == "TP" else "\u2139\uFE0F"
             print(
-                f"[{next_ts}] {exit_icon} {sym}: {format_reason(reason)} | "
+                f"[{next_ts}] \u2116 {pos['trade_number']} {exit_icon} {sym}: {format_reason(reason)} | "
                 f"PnL: {format_pnl_pct(pnl_clean * 100)} | "
                 f"Com: {commission:.2f}$ | "
                 f"Bal: {balance:.2f}"
@@ -1015,8 +1017,11 @@ def backtest():
             if position_notional < 10 or required_margin <= 0:
                 continue
 
+            trade_number = next_trade_number
+            next_trade_number += 1
             used_margin += required_margin
             positions[candidate["sym"]] = {
+                "trade_number": trade_number,
                 "dir": candidate["signal"],
                 "entry": candidate["entry_price"],
                 "size": position_notional,
@@ -1029,7 +1034,7 @@ def backtest():
             open_positions_count += 1
 
             print(
-                f"[{next_ts}] \U0001F525 OPEN {candidate['direction_str']}: {candidate['sym']} "
+                f"[{next_ts}] \u2116 {trade_number} \U0001F525 OPEN {candidate['direction_str']}: {candidate['sym']} "
                 f"(Long={candidate['p_long']:.2f}, Short={candidate['p_short']:.2f}, "
                 f"Score={candidate['score']:.3f}) "
                 f"at {candidate['entry_price']:.4f} | "
@@ -1073,6 +1078,7 @@ def backtest():
         balance += trade_profit
         trades.append(
             {
+                "trade_number": pos["trade_number"],
                 "sym": sym,
                 "direction": "LONG" if pos["dir"] == 1 else "SHORT",
                 "reason": "FINAL",
@@ -1091,7 +1097,7 @@ def backtest():
 
         positions[sym] = None
         print(
-            f"[{last_timestamp}] \u23F9 CLOSE {sym}: FINAL | "
+            f"[{last_timestamp}] \u2116 {pos['trade_number']} \u23F9 CLOSE {sym}: FINAL | "
             f"PnL: {format_pnl_pct(pnl_clean * 100)} | "
             f"Com: {commission:.2f}$ | "
             f"Bal: {balance:.2f}"
