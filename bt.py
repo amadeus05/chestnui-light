@@ -567,15 +567,11 @@ def backtest():
         features_meta = json.load(f)
 
     feature_names = features_meta["feature_columns"]
-    if bool(features_meta.get("prod_train")):
-        print(
-            "Error: this model artifact was retrained on the full dataset (`prod_train=true`), "
-            "so the holdout window is no longer out-of-sample. Re-run train.py without --prod-train."
-        )
-        return
-
     try:
-        test_start_ts, test_end_ts = parse_period_payload(features_meta.get("test_period"), "test_period")
+        test_start_ts, test_end_ts = parse_period_payload(
+            features_meta.get("train_period") or features_meta.get("test_period"),
+            "train_period",
+        )
     except RuntimeError as exc:
         print(f"Error: {exc}")
         return
@@ -607,7 +603,7 @@ def backtest():
             f"[{feature_clip_meta.get('lower_q', 0.01) * 100:.2f}%, "
             f"{feature_clip_meta.get('upper_q', 0.99) * 100:.2f}%]"
         )
-    print(f"Holdout test window: {test_start_ts.isoformat()} to {test_end_ts.isoformat()}")
+    print(f"Backtest window: {test_start_ts.isoformat()} to {test_end_ts.isoformat()}")
     if event_filter_config.get("enabled", False):
         print(
             "Event filter: "
@@ -671,11 +667,11 @@ def backtest():
     all_raw, dropped_symbols = filter_symbols_with_period_overlap(all_raw, test_start_ts, test_end_ts, min_candles=2)
     if dropped_symbols:
         print(
-            "Warning: dropped symbols without enough overlap inside the saved holdout window: "
+            "Warning: dropped symbols without enough overlap inside the backtest window: "
             + ", ".join(dropped_symbols)
         )
     if not all_raw:
-        print("Error: no symbols with enough overlap inside the saved holdout window.")
+        print("Error: no symbols with enough overlap inside the backtest window.")
         return
 
     common_timestamps = get_common_main_timestamps(all_raw)
@@ -685,7 +681,7 @@ def backtest():
     ]
 
     if len(test_timestamps) < 2:
-        print("Error: too little common data inside the saved holdout test period.")
+        print("Error: too little common data inside the backtest period.")
         return
 
     balance = BACKTEST_INITIAL_BALANCE

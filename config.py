@@ -2,21 +2,21 @@ from pathlib import Path
 # --- BASE ---
 DB_PATH = "market_data.db"
 SYMBOLS = [
-    "BTC/USDT",
-    "BNB/USDT",
-    "ETH/USDT",
-    "SOL/USDT",
+    # "BTC/USDT",
+    # "BNB/USDT",
+    # "ETH/USDT",
+    # "SOL/USDT",
 
-    "XRP/USDT",
-    "XLM/USDT",
-    "ADA/USDT",
-    "TRX/USDT",
-    "XMR/USDT",
+    # "XRP/USDT",
+    # "XLM/USDT",
+    # "ADA/USDT",
+    # "TRX/USDT",
+    # "XMR/USDT",
 
     # "LINK/USDT",
     # "NEAR/USDT",
     # "RENDER/USDT",
-    "ATOM/USDT",
+    # "ATOM/USDT",
     # "ARB/USDT",
     # "HBAR/USDT",
     # "MATIC/USDT",
