@@ -6,3 +6,5 @@ pandas-ta
 requests
 lightgbm
 scikit-learn
+flask
+supabase
