@@ -2,15 +2,15 @@ from pathlib import Path
 # --- BASE ---
 DB_PATH = "market_data.db"
 SYMBOLS = [
-    # "BTC/USDT",
-    # "BNB/USDT",
-    # "ETH/USDT",
-    # "SOL/USDT",
+    "BTC/USDT",
+    "BNB/USDT",
+    "ETH/USDT",
+    "SOL/USDT",
 
-    # "XRP/USDT",
-    # "XLM/USDT",
-    # "ADA/USDT",
-    # "TRX/USDT",
+    "XRP/USDT",
+    "XLM/USDT",
+    "ADA/USDT",
+    "TRX/USDT",
     # "XMR/USDT",
 
     # "LINK/USDT",
@@ -162,7 +162,7 @@ EXECUTION_DB_TYPE = "supabase"
 SUPABASE_URL = "https://jjuatlyxubeglxkrpaji.supabase.co"
 # SUPABASE_KEY должен быть задан в переменных окружения:
 # export SUPABASE_KEY="your-anon-key-or-service-key"
-SUPABASE_KEY = None  # Не указываем ключ в коде для безопасности
+SUPABASE_KEY = None
 
 PAPER_CLOCK_SYMBOL = "BTC/USDT"
 PAPER_MODEL_NAME = "lightgbm_target"

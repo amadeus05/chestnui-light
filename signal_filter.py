@@ -9,13 +9,28 @@ EVENT_FILTER_REQUIRED_COLUMNS = [
 ]
 
 
+def _resolve_float_config(*names: str, default: float) -> float:
+    for name in names:
+        if hasattr(cfg, name):
+            return float(getattr(cfg, name))
+    return float(default)
+
+
 def resolve_event_filter_config(override: dict | None = None) -> dict:
     base = {
         "enabled": bool(getattr(cfg, "ENABLE_EVENT_FILTER", False)),
-        "min_abs_ema_fast_slow": float(getattr(cfg, "EVENT_FILTER_MIN_ABS_EMA_FAST_SLOW", 0.0)),
-        "min_adx_4h": float(getattr(cfg, "EVENT_FILTER_MIN_ADX_4H", 0.0)),
-        "min_realized_vol_1h": float(getattr(cfg, "EVENT_FILTER_MIN_REALIZED_VOL_1H", 0.0)),
-        "max_realized_vol_1h": float(getattr(cfg, "EVENT_FILTER_MAX_REALIZED_VOL_1H", 1.0)),
+        "min_abs_ema_fast_slow": _resolve_float_config("EVENT_FILTER_MIN_ABS_EMA_FAST_SLOW", default=0.0),
+        "min_adx_4h": _resolve_float_config("EVENT_FILTER_MIN_ADX_HTF", "EVENT_FILTER_MIN_ADX_4H", default=0.0),
+        "min_realized_vol_1h": _resolve_float_config(
+            "EVENT_FILTER_MIN_REALIZED_VOL_MAIN",
+            "EVENT_FILTER_MIN_REALIZED_VOL_1H",
+            default=0.0,
+        ),
+        "max_realized_vol_1h": _resolve_float_config(
+            "EVENT_FILTER_MAX_REALIZED_VOL_MAIN",
+            "EVENT_FILTER_MAX_REALIZED_VOL_1H",
+            default=1.0,
+        ),
         "required_columns": list(EVENT_FILTER_REQUIRED_COLUMNS),
     }
     if override:
