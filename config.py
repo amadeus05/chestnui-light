@@ -94,17 +94,14 @@ FEATURE_PROFILES = {
     ],
 }
 FEATURE_BUILD_REQUEST = {
-    "profile": "base_only",
+    "profile": "all",
     "include_features": [],
-    "exclude_features": [
-        "return_1h_6",
-        "return_4h_1",
-    ],
+    "exclude_features": [],
     "exclude_blocks": [],
 }
 
 # --- ML LABELING (Triple Barrier) ---
-HORIZON = 16
+HORIZON = 12
 TP_PCT = 0.03   # legacy fixed TP, kept for backward compatibility
 SL_PCT = 0.015  # legacy fixed SL, kept for backward compatibility
 
@@ -150,3 +147,28 @@ MODELS_DIR.mkdir(exist_ok=True)
 
 BACKTEST_CHARTS_DIR = Path("backtest_charts")
 BACKTEST_CHARTS_DIR.mkdir(exist_ok=True)
+
+# --- EXECUTION LOG (paper / live, paper.py) ---
+# None → та же БД, что и ETL (DB_PATH). Отдельный файл — только если нужно изолировать WAL.
+EXECUTION_DB_PATH = None
+
+# --- EXECUTION DB TYPE ---
+# "sqlite" - локальная SQLite база (по умолчанию)
+# "supabase" - облачная PostgreSQL через Supabase
+EXECUTION_DB_TYPE = "supabase"
+
+# --- SUPABASE CONFIG (только если EXECUTION_DB_TYPE = "supabase") ---
+# URL проекта Supabase (например: "https://xxxxxx.supabase.co")
+SUPABASE_URL = "https://jjuatlyxubeglxkrpaji.supabase.co"
+# SUPABASE_KEY должен быть задан в переменных окружения:
+# export SUPABASE_KEY="your-anon-key-or-service-key"
+SUPABASE_KEY = None  # Не указываем ключ в коде для безопасности
+
+PAPER_CLOCK_SYMBOL = "BTC/USDT"
+PAPER_MODEL_NAME = "lightgbm_target"
+PAPER_INITIAL_BALANCE = BACKTEST_INITIAL_BALANCE
+PAPER_MAIN_BARS = 3000
+PAPER_HTF_BARS = 900
+PAPER_MIN_MAIN_ROWS = 400
+PAPER_MIN_HTF_ROWS = 120
+PAPER_DAEMON_POLL_SEC = 45.0
