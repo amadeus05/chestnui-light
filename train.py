@@ -211,18 +211,27 @@ def apply_feature_clip_bounds(frame, clip_bounds):
 #  Model building
 # ═══════════════════════════════════════════════════════════════════════════
 
+def compute_sample_weights(timestamps: pd.Series, half_life_days: float = 365.0) -> np.ndarray:
+    ts = pd.to_datetime(timestamps)
+    days_ago = (ts.max() - ts).dt.total_seconds() / 86400.0
+    decay = np.log(2) / half_life_days
+    weights = np.exp(-decay * days_ago.values)
+    return weights
+
+
 def build_model(seed, n_estimators=800):
     """Instantiate LightGBM binary classifier. class_weight=None → calibrated probs."""
     return lgb.LGBMClassifier(
         objective="binary",
         n_estimators=n_estimators,
-        learning_rate=0.03,
-        num_leaves=63,
-        min_child_samples=40,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        reg_alpha=0.1,
-        reg_lambda=0.5,
+        learning_rate=0.01,
+        num_leaves=31,
+        min_child_samples=80,
+        max_depth=6,
+        subsample=0.7,
+        colsample_bytree=0.6,
+        reg_alpha=0.5,
+        reg_lambda=2.0,
         class_weight=None,
         random_state=seed,
         n_jobs=-1,
@@ -439,6 +448,7 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
         y_train = train_df[TARGET_COLUMN]
         x_test = test_df[feature_columns]
         y_test = test_df[TARGET_COLUMN]
+        w_train = compute_sample_weights(train_df[TIMESTAMP_COLUMN])
 
         # --- Train -------------------------------------------------------
         model = build_model(seed=seed)
@@ -447,12 +457,14 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
         internal_eval_size = max(1, int(len(x_train) * 0.2))
         x_fit = x_train.iloc[:-internal_eval_size]
         y_fit = y_train.iloc[:-internal_eval_size]
+        w_fit = w_train[:-internal_eval_size]
         x_eval = x_train.iloc[-internal_eval_size:]
         y_eval = y_train.iloc[-internal_eval_size:]
 
         model.fit(
             x_fit,
             y_fit,
+            sample_weight=w_fit,
             eval_set=[(x_eval, y_eval)],
             eval_metric="binary_logloss",
             categorical_feature=[SYMBOL_COLUMN] if SYMBOL_COLUMN in feature_columns else "auto",
@@ -565,9 +577,11 @@ def train_production_model(dataset, feature_columns, seed, n_estimators):
         len(dataset), n_estimators,
     )
     model = build_model(seed=seed, n_estimators=n_estimators)
+    w_prod = compute_sample_weights(dataset[TIMESTAMP_COLUMN])
     model.fit(
         dataset[feature_columns],
         dataset[TARGET_COLUMN],
+        sample_weight=w_prod,
         categorical_feature=[SYMBOL_COLUMN] if SYMBOL_COLUMN in feature_columns else "auto",
     )
     return model
