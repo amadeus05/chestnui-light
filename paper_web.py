@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,6 +31,62 @@ except ImportError:
 app = Flask(__name__)
 
 EXEC_TYPE = "paper"
+EXIT_REASONS_CACHE_TTL_SEC = 60.0
+
+_repo_lock = threading.Lock()
+_repo_instance: BaseTradesRepository | None = None
+_repo_initialized = False
+_repo_signature: tuple[str, str | None, str | None, str | None] | None = None
+_exit_reasons_cache: tuple[float, list[str]] | None = None
+
+
+def _get_repo_signature() -> tuple[str, str | None, str | None, str | None]:
+    """Собрать сигнатуру текущей конфигурации backend-репозитория."""
+    db_type = str(getattr(cfg, "EXECUTION_DB_TYPE", "sqlite")).lower()
+    if db_type == "sqlite":
+        db_path = str(getattr(cfg, "EXECUTION_DB_PATH", None) or getattr(cfg, "DB_PATH", ""))
+        return (db_type, db_path, None, None)
+
+    supabase_url = getattr(cfg, "SUPABASE_URL", None)
+    supabase_key = (
+        os.getenv("SUPABASE_KEY")
+        or os.getenv("SUPABASE_SERVICE_KEY")
+        or getattr(cfg, "SUPABASE_KEY", None)
+    )
+    return (db_type, None, str(supabase_url) if supabase_url else None, supabase_key)
+
+
+def _invalidate_repo_cache() -> None:
+    """Сбросить кэш репозитория и производных данных."""
+    global _repo_instance, _repo_initialized, _repo_signature, _exit_reasons_cache
+    _repo_instance = None
+    _repo_initialized = False
+    _repo_signature = None
+    _exit_reasons_cache = None
+
+
+def _get_repo() -> BaseTradesRepository:
+    """Вернуть общий репозиторий, инициализируя схему только один раз."""
+    global _repo_instance, _repo_initialized, _repo_signature
+    current_signature = _get_repo_signature()
+
+    if (
+        _repo_instance is not None
+        and _repo_initialized
+        and _repo_signature == current_signature
+    ):
+        return _repo_instance
+
+    with _repo_lock:
+        if _repo_signature != current_signature:
+            _invalidate_repo_cache()
+            _repo_signature = current_signature
+        if _repo_instance is None:
+            _repo_instance = create_trades_repository_from_config()
+        if not _repo_initialized:
+            _repo_instance.init_schema()
+            _repo_initialized = True
+        return _repo_instance
 
 
 def _get_available_symbols() -> list[str]:
@@ -105,7 +164,13 @@ def _fetch_closed_trades(
 
 def _get_exit_reasons(repo: BaseTradesRepository) -> list[str]:
     """Получить уникальные причины выхода из БД."""
+    global _exit_reasons_cache
     default_reasons = ["TP", "SL", "timeout", "manual"]
+    now = time.time()
+    if _exit_reasons_cache is not None:
+        cached_at, cached_values = _exit_reasons_cache
+        if now - cached_at < EXIT_REASONS_CACHE_TTL_SEC:
+            return cached_values
     try:
         rows = _fetch_closed_trades(
             repo,
@@ -114,7 +179,9 @@ def _get_exit_reasons(repo: BaseTradesRepository) -> list[str]:
             limit=1000,
         )
         reasons = sorted({str(r.get("exit_reason")) for r in rows if r.get("exit_reason")})
-        return reasons or default_reasons
+        result = reasons or default_reasons
+        _exit_reasons_cache = (now, result)
+        return result
     except Exception:
         return default_reasons
 
@@ -227,6 +294,9 @@ def calculate_metrics(
     symbols: list[str] | None = None,
     direction: str | None = None,
     exit_reasons: list[str] | None = None,
+    open_trades: list | None = None,
+    all_closed_trades: list[dict] | None = None,
+    filtered_closed_trades: list[dict] | None = None,
 ) -> DashboardMetrics:
     """Рассчитать все метрики для дашборда с учетом фильтров."""
     leverage = _get_leverage()
@@ -236,27 +306,34 @@ def calculate_metrics(
     open_margin = repo.sum_open_margin_quote(EXEC_TYPE, leverage)
     available = wallet - open_margin
 
-    open_trades = repo.list_open_trades(EXEC_TYPE)
+    if open_trades is None:
+        open_trades = repo.list_open_trades(EXEC_TYPE)
     open_count = len(open_trades)
 
     # Получаем закрытые сделки для статистики (без фильтров для общих метрик)
-    all_closed_trades = _fetch_closed_trades(
-        repo,
-        columns=["direction", "pnl_quote", "pnl_pct", "exit_reason"],
-        order_desc=False,
-    )
+    if all_closed_trades is None:
+        all_closed_trades = _fetch_closed_trades(
+            repo,
+            columns=["direction", "pnl_quote", "pnl_pct", "exit_reason"],
+            order_desc=False,
+        )
 
     # Получаем отфильтрованные сделки
-    filtered_closed_trades = _fetch_closed_trades(
-        repo,
-        columns=["direction", "pnl_quote", "pnl_pct", "exit_reason"],
-        date_from_ms=date_from_ms,
-        date_to_ms=date_to_ms,
-        symbols=symbols,
-        direction=direction,
-        exit_reasons=exit_reasons,
-        order_desc=False,
-    )
+    if filtered_closed_trades is None:
+        has_active_filters = bool(date_from_ms or date_to_ms or symbols or direction or exit_reasons)
+        if has_active_filters:
+            filtered_closed_trades = _fetch_closed_trades(
+                repo,
+                columns=["direction", "pnl_quote", "pnl_pct", "exit_reason"],
+                date_from_ms=date_from_ms,
+                date_to_ms=date_to_ms,
+                symbols=symbols,
+                direction=direction,
+                exit_reasons=exit_reasons,
+                order_desc=False,
+            )
+        else:
+            filtered_closed_trades = all_closed_trades
 
     closed_count = len(all_closed_trades)
     total_trades = open_count + closed_count
@@ -342,9 +419,13 @@ def _calculate_max_drawdown(trades: list, initial_balance: float) -> float:
     return max_dd
 
 
-def get_open_positions(repo: BaseTradesRepository) -> list[dict]:
+def get_open_positions(
+    repo: BaseTradesRepository,
+    trades: list | None = None,
+) -> list[dict]:
     """Получить список открытых позиций."""
-    trades = repo.list_open_trades(EXEC_TYPE)
+    if trades is None:
+        trades = repo.list_open_trades(EXEC_TYPE)
     positions = []
     for t in trades:
         p_long = getattr(t, "p_long", None)
@@ -418,6 +499,29 @@ def get_filtered_trades(
     return trades
 
 
+def _format_recent_trades(rows: list[dict], limit: int = 100) -> list[dict]:
+    """Преобразовать строки сделок в формат для UI, начиная с самых свежих."""
+    trades: list[dict] = []
+    for row in reversed(rows[-limit:]):
+        trades.append(
+            {
+                "symbol": row["symbol"],
+                "direction": "LONG" if row["direction"] == 1 else "SHORT",
+                "entry_price": round(row["entry_price"], 8),
+                "exit_price": round(row["exit_price"], 8),
+                "notional": round(row["entry_notional"], 2),
+                "pnl": round(row["pnl_quote"], 2),
+                "pnl_pct": round(row["pnl_pct"], 2),
+                "exit_reason": row["exit_reason"],
+                "exit_time": datetime.fromtimestamp(
+                    row["exit_ts_ms"] / 1000, tz=timezone.utc
+                ).strftime("%Y-%m-%d %H:%M UTC"),
+                "is_win": row["pnl_quote"] > 0,
+            }
+        )
+    return trades
+
+
 def get_equity_curve(
     repo: BaseTradesRepository,
     date_from_ms: int | None = None,
@@ -452,6 +556,36 @@ def get_equity_curve(
             }
         )
     return equity
+
+
+def _build_equity_curve_from_rows(rows: list[dict]) -> list[dict]:
+    """Собрать equity curve из уже загруженных закрытых сделок."""
+    initial = _get_initial_balance()
+    equity: list[dict] = []
+    balance = initial
+    for row in rows:
+        balance += row["pnl_quote"]
+        equity.append(
+            {
+                "time": datetime.fromtimestamp(
+                    row["exit_ts_ms"] / 1000, tz=timezone.utc
+                ).strftime("%Y-%m-%d %H:%M"),
+                "balance": round(balance, 2),
+            }
+        )
+    return equity
+
+
+def _get_request_filters() -> tuple[str, str, list[str], str, list[str], int | None, int | None]:
+    """Прочитать фильтры из query string и сразу подготовить timestamps."""
+    date_from = request.args.get("date_from", "")
+    date_to = request.args.get("date_to", "")
+    symbols = request.args.getlist("symbols")
+    direction = request.args.get("direction", "")
+    exit_reasons = request.args.getlist("exit_reasons")
+    date_from_ms = _parse_date(date_from) if date_from else None
+    date_to_ms = _parse_date(date_to) if date_to else None
+    return date_from, date_to, symbols, direction, exit_reasons, date_from_ms, date_to_ms
 
 
 def _get_demo_recent_trades() -> list[dict]:
@@ -1406,22 +1540,49 @@ HTML_TEMPLATE = """
 
 def index():
     """Главная страница дашборда."""
-    repo = create_trades_repository_from_config()
-    repo.init_schema()
-
-    # Получаем параметры фильтров
-    date_from = request.args.get("date_from", "")
-    date_to = request.args.get("date_to", "")
-    symbols = request.args.getlist("symbols")
-    direction = request.args.get("direction", "")
-    exit_reasons = request.args.getlist("exit_reasons")
-
-    # Парсим даты
-    date_from_ms = _parse_date(date_from) if date_from else None
-    date_to_ms = _parse_date(date_to) if date_to else None
+    repo = _get_repo()
+    (
+        date_from,
+        date_to,
+        symbols,
+        direction,
+        exit_reasons,
+        date_from_ms,
+        date_to_ms,
+    ) = _get_request_filters()
 
     # Определяем есть ли активные фильтры
     has_active_filters = bool(date_from or date_to or symbols or direction or exit_reasons)
+
+    open_trades = repo.list_open_trades(EXEC_TYPE)
+    filtered_closed_rows = _fetch_closed_trades(
+        repo,
+        columns=[
+            "symbol",
+            "direction",
+            "entry_price",
+            "exit_price",
+            "entry_notional",
+            "pnl_quote",
+            "pnl_pct",
+            "exit_reason",
+            "exit_ts_ms",
+        ],
+        date_from_ms=date_from_ms,
+        date_to_ms=date_to_ms,
+        symbols=symbols if symbols else None,
+        direction=direction if direction else None,
+        exit_reasons=exit_reasons if exit_reasons else None,
+        order_desc=False,
+    )
+    if has_active_filters:
+        all_closed_rows = _fetch_closed_trades(
+            repo,
+            columns=["direction", "pnl_quote", "pnl_pct", "exit_reason"],
+            order_desc=False,
+        )
+    else:
+        all_closed_rows = filtered_closed_rows
 
     # Получаем данные с фильтрами
     metrics = calculate_metrics(
@@ -1431,25 +1592,13 @@ def index():
         symbols=symbols if symbols else None,
         direction=direction if direction else None,
         exit_reasons=exit_reasons if exit_reasons else None,
+        open_trades=open_trades,
+        all_closed_trades=all_closed_rows,
+        filtered_closed_trades=filtered_closed_rows,
     )
-    open_positions = get_open_positions(repo)
-    recent_trades = get_filtered_trades(
-        repo,
-        date_from_ms=date_from_ms,
-        date_to_ms=date_to_ms,
-        symbols=symbols if symbols else None,
-        direction=direction if direction else None,
-        exit_reasons=exit_reasons if exit_reasons else None,
-        limit=100,
-    )
-    equity_curve = get_equity_curve(
-        repo,
-        date_from_ms=date_from_ms,
-        date_to_ms=date_to_ms,
-        symbols=symbols if symbols else None,
-        direction=direction if direction else None,
-        exit_reasons=exit_reasons if exit_reasons else None,
-    )
+    open_positions = get_open_positions(repo, open_trades)
+    recent_trades = _format_recent_trades(filtered_closed_rows, limit=100)
+    equity_curve = _build_equity_curve_from_rows(filtered_closed_rows)
     demo_mode = False
     demo_message = ""
     if not recent_trades and not equity_curve:
@@ -1492,17 +1641,8 @@ app.add_url_rule("/", "index", index)
 @app.route("/api/metrics")
 def api_metrics():
     """JSON API для метрик."""
-    repo = create_trades_repository_from_config()
-    repo.init_schema()
-
-    date_from = request.args.get("date_from", "")
-    date_to = request.args.get("date_to", "")
-    symbols = request.args.getlist("symbols")
-    direction = request.args.get("direction", "")
-    exit_reasons = request.args.getlist("exit_reasons")
-
-    date_from_ms = _parse_date(date_from) if date_from else None
-    date_to_ms = _parse_date(date_to) if date_to else None
+    repo = _get_repo()
+    _, _, symbols, direction, exit_reasons, date_from_ms, date_to_ms = _get_request_filters()
 
     metrics = calculate_metrics(
         repo,
@@ -1538,26 +1678,16 @@ def api_metrics():
 @app.route("/api/positions")
 def api_positions():
     """JSON API для открытых позиций."""
-    repo = create_trades_repository_from_config()
-    repo.init_schema()
+    repo = _get_repo()
     return jsonify(get_open_positions(repo))
 
 
 @app.route("/api/trades")
 def api_trades():
     """JSON API для сделок с фильтрами."""
-    repo = create_trades_repository_from_config()
-    repo.init_schema()
-
-    date_from = request.args.get("date_from", "")
-    date_to = request.args.get("date_to", "")
-    symbols = request.args.getlist("symbols")
-    direction = request.args.get("direction", "")
-    exit_reasons = request.args.getlist("exit_reasons")
+    repo = _get_repo()
+    _, _, symbols, direction, exit_reasons, date_from_ms, date_to_ms = _get_request_filters()
     limit = min(int(request.args.get("limit", 50)), 200)
-
-    date_from_ms = _parse_date(date_from) if date_from else None
-    date_to_ms = _parse_date(date_to) if date_to else None
 
     trades = get_filtered_trades(
         repo,
@@ -1574,17 +1704,8 @@ def api_trades():
 @app.route("/api/equity")
 def api_equity():
     """JSON API для кривой эквити с фильтрами."""
-    repo = create_trades_repository_from_config()
-    repo.init_schema()
-
-    date_from = request.args.get("date_from", "")
-    date_to = request.args.get("date_to", "")
-    symbols = request.args.getlist("symbols")
-    direction = request.args.get("direction", "")
-    exit_reasons = request.args.getlist("exit_reasons")
-
-    date_from_ms = _parse_date(date_from) if date_from else None
-    date_to_ms = _parse_date(date_to) if date_to else None
+    repo = _get_repo()
+    _, _, symbols, direction, exit_reasons, date_from_ms, date_to_ms = _get_request_filters()
 
     equity = get_equity_curve(
         repo,
@@ -1605,8 +1726,7 @@ def main():
     )
     db_type = str(getattr(cfg, "EXECUTION_DB_TYPE", "sqlite")).lower()
     logger.info("Инициализация репозитория сделок (%s)...", db_type)
-    repo = create_trades_repository_from_config()
-    repo.init_schema()
+    _get_repo()
     logger.info("✅ Репозиторий сделок инициализирован (%s)", db_type)
     logger.info("Запуск веб-дашборда на http://localhost:5000")
     app.run(host="0.0.0.0", port=5000, debug=False)
