@@ -74,6 +74,23 @@ class BinanceMapper:
         klines.sort(key=lambda candle: candle.open_time)
         return klines
 
+    def to_price_klines(self, payload: list) -> list[HistoricalKline]:
+        klines = [
+            HistoricalKline(
+                open_time=int(candle[0]),
+                open=float(candle[1]),
+                high=float(candle[2]),
+                low=float(candle[3]),
+                close=float(candle[4]),
+                volume=0.0,
+                quote_volume=0.0,
+            )
+            for candle in payload
+            if len(candle) >= 5
+        ]
+        klines.sort(key=lambda candle: candle.open_time)
+        return klines
+
     def to_funding_rates(self, payload: list) -> list[FundingRatePoint]:
         points = [
             FundingRatePoint(

@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 class BybitAdapter:
     def __init__(self) -> None:
         self.kline_url = getattr(cfg, "BYBIT_KLINE_URL", "https://api.bybit.com/v5/market/kline")
+        self.premium_index_kline_url = getattr(
+            cfg,
+            "BYBIT_PREMIUM_INDEX_KLINE_URL",
+            "https://api.bybit.com/v5/market/premium-index-price-kline",
+        )
         self.funding_rate_url = getattr(cfg, "BYBIT_FUNDING_RATE_URL", "https://api.bybit.com/v5/market/funding/history")
         self.category = getattr(cfg, "BYBIT_CATEGORY", "linear")
         self.limit = min(1000, max(1, int(getattr(cfg, "BYBIT_LIMIT", 1000))))
@@ -105,4 +110,25 @@ class BybitAdapter:
             self.funding_rate_url,
             params,
             f"{api_symbol}-funding-{window_start}-{window_end}",
+        )
+
+    def fetch_premium_index_kline_window(
+        self,
+        api_symbol: str,
+        interval: str,
+        window_start: int,
+        window_end: int,
+    ) -> dict:
+        params = {
+            "category": self.category,
+            "symbol": api_symbol,
+            "interval": interval,
+            "start": window_start,
+            "end": window_end,
+            "limit": self.limit,
+        }
+        return self.request_json(
+            self.premium_index_kline_url,
+            params,
+            f"{api_symbol}-premium-index-{interval}-{window_start}-{window_end}",
         )

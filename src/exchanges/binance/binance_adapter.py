@@ -21,6 +21,7 @@ class BinanceAdapter:
     def __init__(self) -> None:
         self.base_url = getattr(cfg, "BINANCE_BASE_URL", "https://fapi.binance.com")
         self.kline_url = f"{self.base_url}/fapi/v1/klines"
+        self.premium_index_kline_url = f"{self.base_url}/fapi/v1/premiumIndexKlines"
         self.funding_rate_url = f"{self.base_url}/fapi/v1/fundingRate"
         self.exchange_info_url = f"{self.base_url}/fapi/v1/exchangeInfo"
         self.limit = min(1500, max(1, int(getattr(cfg, "BINANCE_LIMIT", 1000))))
@@ -192,5 +193,29 @@ class BinanceAdapter:
         if not isinstance(payload, list):
             raise RuntimeError(
                 f"Unexpected Binance funding payload type for {api_symbol}: {type(payload).__name__}"
+            )
+        return payload
+
+    def fetch_premium_index_kline_window(
+        self,
+        api_symbol: str,
+        interval: str,
+        window_start: int,
+        window_end: int,
+    ) -> list:
+        payload = self.request_json(
+            self.premium_index_kline_url,
+            params={
+                "symbol": api_symbol,
+                "interval": interval,
+                "startTime": window_start,
+                "endTime": window_end,
+                "limit": self.limit,
+            },
+            request_name=f"{api_symbol}-premium-index-{interval}-{window_start}-{window_end}",
+        )
+        if not isinstance(payload, list):
+            raise RuntimeError(
+                f"Unexpected Binance premium-index payload type for {api_symbol}: {type(payload).__name__}"
             )
         return payload

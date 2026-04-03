@@ -12,6 +12,7 @@ from src.features.builders.htf_feature_builder import HtfFeatureBuilder
 from src.features.builders.htf_market_context_feature_builder import HtfMarketContextFeatureBuilder
 from src.features.builders.interaction_feature_builder import InteractionFeatureBuilder
 from src.features.builders.momentum_feature_builder import MomentumFeatureBuilder
+from src.features.builders.premium_feature_builder import PremiumFeatureBuilder
 from src.features.builders.regime_feature_builder import RegimeFeatureBuilder
 from src.features.builders.structure_feature_builder import StructureFeatureBuilder
 from src.features.builders.time_context_feature_builder import TimeContextFeatureBuilder
@@ -30,6 +31,7 @@ class MasterFeatureBuilder:
             StructureFeatureBuilder(),
             TimeContextFeatureBuilder(),
             FundingFeatureBuilder(),
+            PremiumFeatureBuilder(),
         ]
         self.htf_builders: list[FeatureBuilderContract] = [
             HtfFeatureBuilder(),

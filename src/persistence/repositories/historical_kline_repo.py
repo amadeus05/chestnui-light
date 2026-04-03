@@ -34,6 +34,7 @@ class HistoricalKlineRepository:
     def init_schema(self) -> None:
         candles_table = self._candles_table_name()
         funding_table = self._funding_table_name()
+        premium_index_table = self._premium_index_table_name()
         sync_state_table = self._sync_state_table_name()
         with self.connection_factory() as conn:
             conn.execute(
@@ -59,6 +60,20 @@ class HistoricalKlineRepository:
                     funding_time INTEGER,
                     funding_rate REAL,
                     PRIMARY KEY (symbol, funding_time)
+                )
+                """
+            )
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {premium_index_table} (
+                    symbol TEXT,
+                    timeframe TEXT,
+                    open_time INTEGER,
+                    open REAL,
+                    high REAL,
+                    low REAL,
+                    close REAL,
+                    PRIMARY KEY (symbol, timeframe, open_time)
                 )
                 """
             )
@@ -138,6 +153,65 @@ class HistoricalKlineRepository:
             )
             conn.commit()
             return conn.total_changes - before_changes
+
+    def get_last_premium_index_open_time(self, symbol: str | Symbol, timeframe: str) -> int | None:
+        with self.connection_factory() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT MAX(open_time) FROM {self._premium_index_table_name()} WHERE symbol=? AND timeframe=?",
+                (self._symbol_name(symbol), timeframe),
+            )
+            return cur.fetchone()[0]
+
+    def save_premium_index_klines(
+        self,
+        symbol: str | Symbol,
+        timeframe: str,
+        candles: list[HistoricalKline],
+    ) -> int:
+        if not candles:
+            return 0
+
+        rows = [
+            (
+                self._symbol_name(symbol),
+                timeframe,
+                candle.open_time,
+                candle.open,
+                candle.high,
+                candle.low,
+                candle.close,
+            )
+            for candle in candles
+        ]
+        rows.sort(key=lambda row: row[2])
+
+        with self.connection_factory() as conn:
+            before_changes = conn.total_changes
+            conn.executemany(
+                f"INSERT OR IGNORE INTO {self._premium_index_table_name()} VALUES (?,?,?,?,?,?,?)",
+                rows,
+            )
+            conn.commit()
+            return conn.total_changes - before_changes
+
+    def load_premium_index_klines(self, symbol: str | Symbol, timeframe: str) -> pd.DataFrame:
+        with self.connection_factory() as conn:
+            df = pd.read_sql_query(
+                f"""
+                SELECT open_time AS timestamp, close AS premium_index_close
+                FROM {self._premium_index_table_name()}
+                WHERE symbol=? AND timeframe=?
+                ORDER BY open_time
+                """,
+                conn,
+                params=(self._symbol_name(symbol), timeframe),
+            )
+        if df.empty:
+            return df
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df["premium_index_close"] = pd.to_numeric(df["premium_index_close"], errors="coerce")
+        return df
 
     def load_funding_rates(self, symbol: str | Symbol) -> pd.DataFrame:
         with self.connection_factory() as conn:
@@ -337,6 +411,84 @@ class HistoricalKlineRepository:
         )
         return total_loaded
 
+    def sync_premium_index_klines(
+        self,
+        exchange: ExchangeContract,
+        symbol: str | Symbol,
+        timeframe: str,
+        start_date: str,
+        end_date: str | None = None,
+        dataset: str = "premium_index_klines",
+    ) -> int:
+        exchange_code = self._normalize_exchange_code(exchange.get_exchange_code())
+        if exchange_code != self.exchange_code:
+            raise ValueError(
+                f"Repository exchange_code={self.exchange_code} does not match exchange={exchange_code}"
+            )
+
+        normalized_symbol = exchange.normalize_symbol(symbol)
+        timeframe_ms = exchange.get_timeframe_ms(timeframe)
+        last_ts = self.get_last_premium_index_open_time(normalized_symbol, timeframe)
+        if last_ts:
+            start_ts = last_ts + timeframe_ms
+        else:
+            start_ts = self._parse_iso_datetime_to_utc_ms(start_date)
+
+        end_ts = (
+            self._parse_iso_datetime_to_utc_ms(end_date)
+            if end_date
+            else int(datetime.now(timezone.utc).timestamp() * 1000)
+        )
+        logger.info(
+            f"[{normalized_symbol}-premium-{timeframe}] sync plan: "
+            f"last_ts={self._format_ts(last_ts)}, "
+            f"start_ts={self._format_ts(start_ts)}, "
+            f"end_ts={self._format_ts(end_ts)}"
+        )
+
+        sync_state = self.get_sync_state(dataset=dataset, symbol=normalized_symbol, timeframe=timeframe)
+        if sync_state and sync_state.get("empty_since_ts") is not None:
+            empty_since_ts = int(sync_state["empty_since_ts"])
+            last_checked_ts = int(sync_state.get("last_checked_ts") or end_ts)
+            start_ts = max(start_ts, last_checked_ts + timeframe_ms)
+            next_retry_ts = last_checked_ts + timeframe_ms
+            if start_ts >= empty_since_ts and end_ts < next_retry_ts:
+                logger.info(
+                    f"[{normalized_symbol}-premium-{timeframe}] no newer points after "
+                    f"{self._format_ts(empty_since_ts)}; "
+                    f"skipping repeated empty backfill until {self._format_ts(next_retry_ts)}"
+                )
+                return 0
+
+        if start_ts > end_ts:
+            logger.info(f"[{normalized_symbol}-premium-{timeframe}] data is already loaded up to {end_date}")
+            return 0
+
+        try:
+            candles = exchange.fetch_premium_index_klines(normalized_symbol, timeframe, start_ts, end_ts)
+        except Exception as exc:
+            logger.error(f"load error for {normalized_symbol}-premium-{timeframe}: {exc}")
+            return 0
+
+        total_loaded = self.save_premium_index_klines(normalized_symbol, timeframe, candles)
+        if total_loaded > 0:
+            self.clear_sync_state(dataset=dataset, symbol=normalized_symbol, timeframe=timeframe)
+            return total_loaded
+
+        empty_since_ts = start_ts
+        if candles:
+            latest_fetched_ts = max(candle.open_time for candle in candles)
+            empty_since_ts = max(empty_since_ts, int(latest_fetched_ts) + timeframe_ms)
+
+        self.upsert_sync_state(
+            dataset=dataset,
+            symbol=normalized_symbol,
+            timeframe=timeframe,
+            empty_since_ts=empty_since_ts,
+            last_checked_ts=end_ts,
+        )
+        return total_loaded
+
     def save_features(self, symbol: str | Symbol, df: pd.DataFrame) -> None:
         table_name = self.feature_table_name(symbol)
         with self.connection_factory() as conn:
@@ -515,6 +667,11 @@ class HistoricalKlineRepository:
         if self.exchange_code == self.LEGACY_EXCHANGE_CODE:
             return "funding_rates"
         return f"funding_rates_{self.exchange_code}"
+
+    def _premium_index_table_name(self) -> str:
+        if self.exchange_code == self.LEGACY_EXCHANGE_CODE:
+            return "premium_index_klines"
+        return f"premium_index_klines_{self.exchange_code}"
 
     def _sync_state_table_name(self) -> str:
         if self.exchange_code == self.LEGACY_EXCHANGE_CODE:

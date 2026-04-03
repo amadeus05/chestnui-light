@@ -29,6 +29,16 @@ class ExchangeContract(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def fetch_premium_index_klines(
+        self,
+        symbol: str | Symbol,
+        timeframe: str,
+        start_ts: int,
+        end_ts: int,
+    ) -> list[HistoricalKline]:
+        raise NotImplementedError
+
+    @abstractmethod
     def get_funding_interval_ms(self, symbol: str | Symbol) -> int:
         raise NotImplementedError
 

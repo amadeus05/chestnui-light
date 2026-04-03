@@ -109,6 +109,59 @@ class BybitService(ExchangeContract):
         all_klines.sort(key=lambda candle: candle.open_time)
         return all_klines
 
+    def fetch_premium_index_klines(
+        self,
+        symbol: str | Symbol,
+        timeframe: str,
+        start_ts: int,
+        end_ts: int,
+    ) -> list[HistoricalKline]:
+        normalized_symbol = self.normalize_symbol(symbol)
+        timeframe_ms = self.get_timeframe_ms(timeframe)
+        windows = self.build_request_windows(start_ts, end_ts, timeframe_ms)
+        if not windows:
+            return []
+
+        api_symbol = self.mapper.to_api_symbol(normalized_symbol)
+        interval = self.mapper.to_interval(timeframe)
+        total_windows = len(windows)
+        progress_step = max(1, total_windows // 10)
+        all_klines: list[HistoricalKline] = []
+
+        logger.info(
+            f"[{normalized_symbol}-premium-{timeframe}] Bybit backfill: {total_windows} windows, "
+            f"limit={self.adapter.limit}, workers={min(self.adapter.max_workers, total_windows)}"
+        )
+
+        with ThreadPoolExecutor(max_workers=min(self.adapter.max_workers, total_windows)) as executor:
+            future_to_window = {
+                executor.submit(
+                    self.adapter.fetch_premium_index_kline_window,
+                    api_symbol,
+                    interval,
+                    window_start,
+                    window_end,
+                ): (window_start, window_end)
+                for window_start, window_end in windows
+            }
+
+            for completed, future in enumerate(as_completed(future_to_window), start=1):
+                _, window_end = future_to_window[future]
+                payload = future.result()
+                klines = self.mapper.to_price_klines(payload)
+                if klines:
+                    all_klines.extend(klines)
+
+                if completed % progress_step == 0 or completed == total_windows:
+                    progress_ts = klines[-1].open_time if klines else window_end
+                    logger.info(
+                        f"[{normalized_symbol}-premium-{timeframe}] windows {completed}/{total_windows}, "
+                        f"up to {datetime.fromtimestamp(progress_ts / 1000)}"
+                    )
+
+        deduped = {candle.open_time: candle for candle in all_klines}
+        return [deduped[key] for key in sorted(deduped)]
+
     def fetch_funding_rates(
         self,
         symbol: str | Symbol,

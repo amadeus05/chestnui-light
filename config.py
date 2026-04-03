@@ -96,6 +96,9 @@ MANUAL_DISABLED_FEATURE_COLUMNS = [
     "distance_to_rolling_low_4h",
     "residual_return_24h",
     "is_weekend_1h",
+    "crowded_longs_score_1h",
+    "crowded_shorts_score_1h",
+    "premium_index_change_24h",
 ]
 
 # --- FEATURE BUILD ---
