@@ -90,6 +90,12 @@ MANUAL_DISABLED_FEATURE_COLUMNS = [
     "cross_sectional_rank_4h",
     "trend_persistence_score_12",
     "delta_market_breadth_ema_fast_slow_1h",
+    # Additional pruning from WFV: these features were weak / destabilizing.
+    "volatility_regime_change_1h",
+    "linear_regression_slope_atr_1h_24",
+    "distance_to_rolling_low_4h",
+    "residual_return_24h",
+    "is_weekend_1h",
 ]
 
 # --- FEATURE BUILD ---
@@ -147,7 +153,7 @@ ENABLE_EVENT_FILTER = True
 # Более строгие пороги для отбора только высококачественных сигналов:
 EVENT_FILTER_MIN_ABS_EMA_FAST_SLOW = 0.005  # Увеличен (было 0.003) - только заметные тренды
 EVENT_FILTER_MIN_ADX_HTF = 22.0  # Увеличен (было 18.0) - только сильные тренды
-EVENT_FILTER_MIN_REALIZED_VOL_MAIN = 0.005  # Увеличен (было 0.003)
+EVENT_FILTER_MIN_REALIZED_VOL_MAIN = 0.006  # Tightened after WFV sweep for a cleaner candidate universe
 EVENT_FILTER_MAX_REALIZED_VOL_MAIN = 0.035  # Уменьшен максимум (было 0.05)
 
 # --- RAW REBUILD SAFETY ---
@@ -185,7 +191,7 @@ EXECUTION_DB_PATH = None
 # --- EXECUTION DB TYPE ---
 # "sqlite" - локальная SQLite база (по умолчанию)
 # "supabase" - облачная PostgreSQL через Supabase
-EXECUTION_DB_TYPE = "supabase"
+EXECUTION_DB_TYPE = "sqlite"
 
 # --- SUPABASE CONFIG (только если EXECUTION_DB_TYPE = "supabase") ---
 # URL проекта Supabase (например: "https://xxxxxx.supabase.co")
