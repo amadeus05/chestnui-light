@@ -7,7 +7,7 @@ from datetime import datetime
 from src.contracts.exchange_contract import ExchangeContract
 from src.exchanges.bybit.bybit_adapter import BybitAdapter
 from src.exchanges.bybit.bybit_mapper import BybitMapper
-from src.types.common import FundingRatePoint, HistoricalKline, Symbol
+from src.types.common import FundingRatePoint, HistoricalKline, OpenInterestPoint, Symbol
 
 
 logger = logging.getLogger(__name__)
@@ -161,6 +161,64 @@ class BybitService(ExchangeContract):
 
         deduped = {candle.open_time: candle for candle in all_klines}
         return [deduped[key] for key in sorted(deduped)]
+
+    def fetch_open_interest(
+        self,
+        symbol: str | Symbol,
+        timeframe: str,
+        start_ts: int,
+        end_ts: int,
+    ) -> list[OpenInterestPoint]:
+        normalized_symbol = self.normalize_symbol(symbol)
+        timeframe_ms = self.get_timeframe_ms(timeframe)
+        windows = self.build_request_windows(
+            start_ts,
+            end_ts,
+            timeframe_ms,
+            limit=self.adapter.open_interest_limit,
+        )
+        if not windows:
+            return []
+
+        api_symbol = self.mapper.to_api_symbol(normalized_symbol)
+        interval_time = self.mapper.to_open_interest_interval(timeframe)
+        total_windows = len(windows)
+        progress_step = max(1, total_windows // 10)
+        all_points: list[OpenInterestPoint] = []
+
+        logger.info(
+            f"[{normalized_symbol}-{timeframe}-open-interest] Bybit backfill: {total_windows} windows, "
+            f"limit={self.adapter.open_interest_limit}, workers={min(self.adapter.max_workers, total_windows)}"
+        )
+
+        with ThreadPoolExecutor(max_workers=min(self.adapter.max_workers, total_windows)) as executor:
+            future_to_window = {
+                executor.submit(
+                    self.adapter.fetch_open_interest_window,
+                    api_symbol,
+                    interval_time,
+                    window_start,
+                    window_end,
+                ): (window_start, window_end)
+                for window_start, window_end in windows
+            }
+
+            for completed, future in enumerate(as_completed(future_to_window), start=1):
+                _, window_end = future_to_window[future]
+                payload = future.result()
+                points = self.mapper.to_open_interest_points(payload)
+                if points:
+                    all_points.extend(points)
+
+                if completed % progress_step == 0 or completed == total_windows:
+                    progress_ts = points[-1].timestamp if points else window_end
+                    logger.info(
+                        f"[{normalized_symbol}-{timeframe}-open-interest] windows {completed}/{total_windows}, "
+                        f"up to {datetime.fromtimestamp(progress_ts / 1000)}"
+                    )
+
+        deduped_points = {point.timestamp: point for point in all_points}
+        return [deduped_points[key] for key in sorted(deduped_points)]
 
     def fetch_funding_rates(
         self,

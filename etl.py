@@ -290,19 +290,22 @@ def build_candle_maps(
         htf_df = repository.load_candles(symbol, str(getattr(cfg, "HTF_TIMEFRAME", "4h")))
         funding_df = repository.load_funding_rates(symbol)
         premium_index_df = repository.load_premium_index_klines(symbol, str(getattr(cfg, "TIMEFRAME", "1h")))
+        open_interest_df = repository.load_open_interest(symbol, str(getattr(cfg, "TIMEFRAME", "1h")))
         if df.empty or htf_df.empty:
             logger.warning("%s: no data in DB (main=%s, htf=%s)", symbol_name, len(df), len(htf_df))
             continue
 
         df = attach_funding_context(df, funding_df)
         df = attach_premium_index_context(df, premium_index_df)
+        df = attach_open_interest_context(df, open_interest_df)
         logger.info(
-            "%s: main=%s, htf=%s rows, funding=%s points, premium=%s points",
+            "%s: main=%s, htf=%s rows, funding=%s points, premium=%s points, open_interest=%s points",
             symbol_name,
             len(df),
             len(htf_df),
             len(funding_df),
             len(premium_index_df),
+            len(open_interest_df),
         )
         base_candle_map[symbol_name] = df
         htf_candle_map[symbol_name] = htf_df
@@ -347,6 +350,30 @@ def attach_premium_index_context(
     merged = pd.merge_asof(
         output,
         premium_frame,
+        on="timestamp",
+        direction="backward",
+    )
+    return merged
+
+
+def attach_open_interest_context(
+    base_df: pd.DataFrame,
+    open_interest_df: pd.DataFrame,
+) -> pd.DataFrame:
+    output = base_df.copy().sort_values("timestamp").reset_index(drop=True)
+    if open_interest_df is None or open_interest_df.empty:
+        output["open_interest"] = np.nan
+        return output
+
+    open_interest_frame = (
+        open_interest_df[["timestamp", "open_interest"]]
+        .copy()
+        .sort_values("timestamp")
+        .reset_index(drop=True)
+    )
+    merged = pd.merge_asof(
+        output,
+        open_interest_frame,
         on="timestamp",
         direction="backward",
     )
@@ -400,6 +427,10 @@ def main() -> None:
         logger.info("Loading %s premium index %s from %s...", symbol_name, timeframe, start_date)
         premium_loaded = repository.sync_premium_index_klines(exchange_service, symbol, timeframe, start_date, end_date)
         logger.info("%s premium index %s: %s new candles", symbol_name, timeframe, premium_loaded)
+
+        logger.info("Loading %s open interest %s from %s...", symbol_name, timeframe, start_date)
+        open_interest_loaded = repository.sync_open_interest(exchange_service, symbol, timeframe, start_date, end_date)
+        logger.info("%s open interest %s: %s new points", symbol_name, timeframe, open_interest_loaded)
 
     base_candle_map, htf_candle_map = build_candle_maps(repository, symbols_to_load)
     feature_builder = MasterFeatureBuilder()

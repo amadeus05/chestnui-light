@@ -20,10 +20,12 @@ class BybitAdapter:
             "BYBIT_PREMIUM_INDEX_KLINE_URL",
             "https://api.bybit.com/v5/market/premium-index-price-kline",
         )
+        self.open_interest_url = getattr(cfg, "BYBIT_OPEN_INTEREST_URL", "https://api.bybit.com/v5/market/open-interest")
         self.funding_rate_url = getattr(cfg, "BYBIT_FUNDING_RATE_URL", "https://api.bybit.com/v5/market/funding/history")
         self.category = getattr(cfg, "BYBIT_CATEGORY", "linear")
         self.limit = min(1000, max(1, int(getattr(cfg, "BYBIT_LIMIT", 1000))))
         self.funding_limit = min(200, max(1, int(getattr(cfg, "BYBIT_FUNDING_LIMIT", 200))))
+        self.open_interest_limit = min(200, max(1, int(getattr(cfg, "BYBIT_OPEN_INTEREST_LIMIT", 200))))
         self.funding_interval_ms = int(getattr(cfg, "BYBIT_FUNDING_INTERVAL_MS", 8 * 60 * 60 * 1000))
         self.timeout = float(getattr(cfg, "BYBIT_TIMEOUT", 20))
         self.retry_count = max(1, int(getattr(cfg, "BYBIT_RETRY_COUNT", 5)))
@@ -131,4 +133,25 @@ class BybitAdapter:
             self.premium_index_kline_url,
             params,
             f"{api_symbol}-premium-index-{interval}-{window_start}-{window_end}",
+        )
+
+    def fetch_open_interest_window(
+        self,
+        api_symbol: str,
+        interval_time: str,
+        window_start: int,
+        window_end: int,
+    ) -> dict:
+        params = {
+            "category": self.category,
+            "symbol": api_symbol,
+            "intervalTime": interval_time,
+            "startTime": window_start,
+            "endTime": window_end,
+            "limit": self.open_interest_limit,
+        }
+        return self.request_json(
+            self.open_interest_url,
+            params,
+            f"{api_symbol}-open-interest-{interval_time}-{window_start}-{window_end}",
         )

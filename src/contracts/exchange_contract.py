@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from src.types.common import FundingRatePoint, HistoricalKline, Symbol
+from src.types.common import FundingRatePoint, HistoricalKline, OpenInterestPoint, Symbol
 
 
 class ExchangeContract(ABC):
@@ -36,6 +36,16 @@ class ExchangeContract(ABC):
         start_ts: int,
         end_ts: int,
     ) -> list[HistoricalKline]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def fetch_open_interest(
+        self,
+        symbol: str | Symbol,
+        timeframe: str,
+        start_ts: int,
+        end_ts: int,
+    ) -> list[OpenInterestPoint]:
         raise NotImplementedError
 
     @abstractmethod

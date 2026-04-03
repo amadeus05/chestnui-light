@@ -7,7 +7,7 @@ from datetime import datetime
 from src.contracts.exchange_contract import ExchangeContract
 from src.exchanges.binance.binance_adapter import BinanceAdapter
 from src.exchanges.binance.binance_mapper import BinanceMapper
-from src.types.common import FundingRatePoint, HistoricalKline, Symbol
+from src.types.common import FundingRatePoint, HistoricalKline, OpenInterestPoint, Symbol
 
 
 logger = logging.getLogger(__name__)
@@ -192,6 +192,15 @@ class BinanceService(ExchangeContract):
 
         deduped = {candle.open_time: candle for candle in all_klines}
         return [deduped[key] for key in sorted(deduped)]
+
+    def fetch_open_interest(
+        self,
+        symbol: str | Symbol,
+        timeframe: str,
+        start_ts: int,
+        end_ts: int,
+    ) -> list[OpenInterestPoint]:
+        raise NotImplementedError("Open interest backfill is not implemented for Binance yet.")
 
     def fetch_funding_rates(
         self,

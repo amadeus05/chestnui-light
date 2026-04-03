@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.types.common import FundingRatePoint, HistoricalKline, Symbol
+from src.types.common import FundingRatePoint, HistoricalKline, OpenInterestPoint, Symbol
 
 
 BYBIT_INTERVALS = {
@@ -28,6 +28,15 @@ TF_MS = {
     "1d": 86_400_000,
 }
 
+BYBIT_OPEN_INTEREST_INTERVALS = {
+    "5m": "5min",
+    "15m": "15min",
+    "30m": "30min",
+    "1h": "1h",
+    "4h": "4h",
+    "1d": "1d",
+}
+
 
 class BybitMapper:
     def normalize_symbol(self, symbol: str | Symbol) -> Symbol:
@@ -50,6 +59,12 @@ class BybitMapper:
         if timeframe_ms is None:
             raise ValueError(f"timeframe {timeframe} is missing in TF_MS")
         return timeframe_ms
+
+    def to_open_interest_interval(self, timeframe: str) -> str:
+        interval = BYBIT_OPEN_INTEREST_INTERVALS.get(timeframe)
+        if interval is None:
+            raise ValueError(f"Unsupported open interest timeframe for Bybit: {timeframe}")
+        return interval
 
     def to_klines(self, payload: dict) -> list[HistoricalKline]:
         candles = payload.get("result", {}).get("list", [])
@@ -97,4 +112,17 @@ class BybitMapper:
             if row.get("fundingRateTimestamp") is not None and row.get("fundingRate") is not None
         ]
         points.sort(key=lambda point: point.funding_time)
+        return points
+
+    def to_open_interest_points(self, payload: dict) -> list[OpenInterestPoint]:
+        rows = payload.get("result", {}).get("list", [])
+        points = [
+            OpenInterestPoint(
+                timestamp=int(row["timestamp"]),
+                open_interest=float(row["openInterest"]),
+            )
+            for row in rows
+            if row.get("timestamp") is not None and row.get("openInterest") is not None
+        ]
+        points.sort(key=lambda point: point.timestamp)
         return points
