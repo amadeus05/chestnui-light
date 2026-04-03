@@ -59,6 +59,31 @@ def get_end_date_cutoff():
     return pd.to_datetime(end_date, errors="coerce")
 
 
+def build_experiment_snapshot() -> dict:
+    return {
+        "experiment": str(getattr(cfg, "ACTIVE_EXPERIMENT", "default")),
+        "labeling_profile": str(getattr(cfg, "LABELING_PROFILE", "default")),
+        "training_profile": str(getattr(cfg, "TRAINING_PROFILE", "default")),
+        "labeling": {
+            "horizon": int(getattr(cfg, "HORIZON", 0)),
+            "tp_pct": float(getattr(cfg, "TP_PCT", 0.0)),
+            "sl_pct": float(getattr(cfg, "SL_PCT", 0.0)),
+            "use_dynamic_barriers": bool(getattr(cfg, "USE_DYNAMIC_BARRIERS", False)),
+            "barrier_atr_multiplier": float(getattr(cfg, "BARRIER_ATR_MULTIPLIER", 0.0)),
+            "barrier_rvol_multiplier": float(getattr(cfg, "BARRIER_RVOL_MULTIPLIER", 0.0)),
+            "barrier_tp_to_sl_ratio": float(getattr(cfg, "BARRIER_TP_TO_SL_RATIO", 0.0)),
+            "barrier_min_pct": float(getattr(cfg, "BARRIER_MIN_PCT", 0.0)),
+            "barrier_max_pct": float(getattr(cfg, "BARRIER_MAX_PCT", 0.0)),
+        },
+        "training": {
+            "disabled_feature_columns": sorted(getattr(cfg, "MANUAL_DISABLED_FEATURE_COLUMNS", [])),
+            "feature_clip_enabled": bool(getattr(cfg, "ENABLE_FEATURE_CLIP", False)),
+            "feature_clip_lower_q": float(getattr(cfg, "FEATURE_CLIP_LOWER_Q", 0.0)),
+            "feature_clip_upper_q": float(getattr(cfg, "FEATURE_CLIP_UPPER_Q", 1.0)),
+        },
+    }
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train LightGBM classifier on ETL feature tables.")
     parser.add_argument("--db-path", default=cfg.DB_PATH, help="Path to SQLite database.")
@@ -224,18 +249,20 @@ def build_model(seed, n_estimators=800):
     return lgb.LGBMClassifier(
         objective="binary",
         n_estimators=n_estimators,
-        learning_rate=0.01,
-        num_leaves=31,
-        min_child_samples=80,
-        max_depth=6,
-        subsample=0.7,
-        colsample_bytree=0.6,
-        reg_alpha=0.5,
-        reg_lambda=2.0,
-        class_weight=None,
+        learning_rate=0.005,
+        num_leaves=15,
+        min_child_samples=150,
+        max_depth=5,
+        subsample=0.6,
+        colsample_bytree=0.5,
+        reg_alpha=1.0,
+        reg_lambda=3.0,
+        class_weight="balanced",
         random_state=seed,
         n_jobs=-1,
         verbosity=-1,
+        min_split_gain=0.01,
+        subsample_freq=1,
     )
 
 
@@ -452,9 +479,9 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
 
         # --- Train -------------------------------------------------------
         model = build_model(seed=seed)
-        # Use last 20% of the train fold as an internal eval set for
+        # Use last 15% of the train fold as an internal eval set for
         # early stopping, without contaminating the OOS test fold.
-        internal_eval_size = max(1, int(len(x_train) * 0.2))
+        internal_eval_size = max(1, int(len(x_train) * 0.15))
         x_fit = x_train.iloc[:-internal_eval_size]
         y_fit = y_train.iloc[:-internal_eval_size]
         w_fit = w_train[:-internal_eval_size]
@@ -469,7 +496,7 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
             eval_metric="binary_logloss",
             categorical_feature=[SYMBOL_COLUMN] if SYMBOL_COLUMN in feature_columns else "auto",
             callbacks=[
-                lgb.early_stopping(stopping_rounds=100, verbose=False),
+                lgb.early_stopping(stopping_rounds=200, verbose=False),
                 lgb.log_evaluation(period=0),  # silent per-fold
             ],
         )
@@ -675,11 +702,33 @@ def save_directional_artifacts(model, metrics, dataset, feature_columns, clip_bo
 def main():
     try:
         args = parse_args()
+        experiment_snapshot = build_experiment_snapshot()
         dataset = load_training_frame(args.db_path, args.symbols)
         feature_columns = select_feature_columns(dataset)
 
         logger.info("Loaded %s rows with %s features", len(dataset), len(feature_columns))
         logger.info("Using symbols: %s", ", ".join(args.symbols))
+        logger.info(
+            "Experiment=%s | labeling_profile=%s | training_profile=%s",
+            experiment_snapshot["experiment"],
+            experiment_snapshot["labeling_profile"],
+            experiment_snapshot["training_profile"],
+        )
+        logger.info(
+            "Labeling config: horizon=%s | dynamic_barriers=%s | stop[min=%.4f max=%.4f] | tp/sl=%.2f",
+            experiment_snapshot["labeling"]["horizon"],
+            experiment_snapshot["labeling"]["use_dynamic_barriers"],
+            experiment_snapshot["labeling"]["barrier_min_pct"],
+            experiment_snapshot["labeling"]["barrier_max_pct"],
+            experiment_snapshot["labeling"]["barrier_tp_to_sl_ratio"],
+        )
+        logger.info(
+            "Training config: disabled_features=%s | clip=%s [%.2f%%, %.2f%%]",
+            len(experiment_snapshot["training"]["disabled_feature_columns"]),
+            experiment_snapshot["training"]["feature_clip_enabled"],
+            experiment_snapshot["training"]["feature_clip_lower_q"] * 100,
+            experiment_snapshot["training"]["feature_clip_upper_q"] * 100,
+        )
         logger.info(
             "Candidate universe: kept %s rows after deterministic event filter, excluded %s rows",
             int(dataset.attrs.get("candidate_rows", len(dataset))),
@@ -733,6 +782,7 @@ def main():
             "candidate_rows": int(dataset.attrs.get("candidate_rows", len(dataset))),
             "excluded_by_event_filter_rows": int(dataset.attrs.get("excluded_by_event_filter_rows", 0)),
             "event_filter": dataset.attrs.get("event_filter_config"),
+            "experiment": experiment_snapshot,
             "dataset_period": build_period_payload(dataset),
         }
 

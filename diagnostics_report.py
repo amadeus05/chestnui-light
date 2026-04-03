@@ -6,7 +6,7 @@ from pathlib import Path
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, roc_auc_score
 from sklearn.model_selection import TimeSeriesSplit
 
 import config as cfg
@@ -14,6 +14,18 @@ import train
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def parse_csv_grid(raw_value: str, cast_fn):
+    values = []
+    for chunk in str(raw_value).split(","):
+        item = chunk.strip()
+        if not item:
+            continue
+        values.append(cast_fn(item))
+    if not values:
+        raise ValueError("Grid argument must contain at least one value.")
+    return values
 
 
 def parse_args():
@@ -35,6 +47,39 @@ def parse_args():
         help="Threshold used for per-symbol signal diagnostics.",
     )
     parser.add_argument(
+        "--min-signal-gap",
+        type=float,
+        default=float(getattr(cfg, "MIN_SIGNAL_GAP", 0.01)),
+        help="Minimum probability gap between long and short classes for a directional signal.",
+    )
+    parser.add_argument(
+        "--direction-mode",
+        choices=["both", "long_only", "short_only"],
+        default="both",
+        help="Which directions are allowed when scoring thresholded signals.",
+    )
+    parser.add_argument(
+        "--coverage-floor",
+        type=float,
+        default=0.25,
+        help="Minimum signal coverage required for a configuration to be considered viable.",
+    )
+    parser.add_argument(
+        "--threshold-grid",
+        default="0.52,0.55,0.58,0.60,0.62,0.65",
+        help="Comma-separated probability thresholds for signal sweep diagnostics.",
+    )
+    parser.add_argument(
+        "--gap-grid",
+        default="0.00,0.01,0.02,0.03,0.05",
+        help="Comma-separated min-gap values for signal sweep diagnostics.",
+    )
+    parser.add_argument(
+        "--direction-modes",
+        default="both,long_only,short_only",
+        help="Comma-separated direction modes to evaluate in the signal sweep.",
+    )
+    parser.add_argument(
         "--top-k-symbols",
         type=int,
         default=6,
@@ -51,7 +96,11 @@ def parse_args():
         default=str(cfg.MODELS_DIR / "diagnostics_report.json"),
         help="Path to the JSON report file.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.threshold_grid = sorted(set(parse_csv_grid(args.threshold_grid, float)))
+    args.gap_grid = sorted(set(parse_csv_grid(args.gap_grid, float)))
+    args.direction_modes = parse_csv_grid(args.direction_modes, str)
+    return args
 
 
 def run_walk_forward_with_predictions(dataset, feature_columns, seed, n_splits=5, purge_gap=12):
@@ -94,7 +143,7 @@ def run_walk_forward_with_predictions(dataset, feature_columns, seed, n_splits=5
         y_test = test_df[train.TARGET_COLUMN]
         w_train = train.compute_sample_weights(train_df[train.TIMESTAMP_COLUMN])
 
-        internal_eval_size = max(1, int(len(x_train) * 0.2))
+        internal_eval_size = max(1, int(len(x_train) * 0.15))
         x_fit = x_train.iloc[:-internal_eval_size]
         y_fit = y_train.iloc[:-internal_eval_size]
         w_fit = w_train[:-internal_eval_size]
@@ -110,7 +159,7 @@ def run_walk_forward_with_predictions(dataset, feature_columns, seed, n_splits=5
             eval_metric="binary_logloss",
             categorical_feature=[train.SYMBOL_COLUMN] if train.SYMBOL_COLUMN in feature_columns else "auto",
             callbacks=[
-                lgb.early_stopping(stopping_rounds=100, verbose=False),
+                lgb.early_stopping(stopping_rounds=200, verbose=False),
                 lgb.log_evaluation(period=0),
             ],
         )
@@ -165,13 +214,131 @@ def run_walk_forward_with_predictions(dataset, feature_columns, seed, n_splits=5
     }
 
 
-def summarize_per_symbol(predictions: pd.DataFrame, threshold: float) -> list[dict]:
-    rows = []
-    signal_column = np.full(len(predictions), -1, dtype=int)
-    signal_column[predictions["p_long"].to_numpy() >= threshold] = 1
-    signal_column[predictions["p_short"].to_numpy() >= threshold] = 0
+def build_signal_frame(
+    predictions: pd.DataFrame,
+    threshold: float,
+    min_signal_gap: float,
+    direction_mode: str = "both",
+) -> pd.DataFrame:
     prepared = predictions.copy()
-    prepared["signal"] = signal_column
+    p_long = prepared["p_long"].to_numpy()
+    p_short = prepared["p_short"].to_numpy()
+    signal = np.full(len(prepared), -1, dtype=int)
+
+    long_mask = (p_long >= threshold) & ((p_long - p_short) >= min_signal_gap)
+    short_mask = (p_short >= threshold) & ((p_short - p_long) >= min_signal_gap)
+
+    if direction_mode in {"both", "long_only"}:
+        signal[long_mask] = 1
+    if direction_mode in {"both", "short_only"}:
+        signal[short_mask] = 0
+
+    prepared["signal"] = signal
+    prepared["signal_gap"] = np.abs(p_long - p_short)
+    return prepared
+
+
+def compute_signal_metrics(
+    predictions: pd.DataFrame,
+    threshold: float,
+    min_signal_gap: float,
+    direction_mode: str = "both",
+) -> dict:
+    prepared = build_signal_frame(
+        predictions=predictions,
+        threshold=threshold,
+        min_signal_gap=min_signal_gap,
+        direction_mode=direction_mode,
+    )
+    selected = prepared.loc[prepared["signal"] != -1].copy()
+    total_rows = int(len(prepared))
+    selected_rows = int(len(selected))
+    coverage = float(selected_rows / total_rows) if total_rows else 0.0
+    long_signals = int((prepared["signal"] == 1).sum())
+    short_signals = int((prepared["signal"] == 0).sum())
+
+    metrics = {
+        "threshold": float(threshold),
+        "min_signal_gap": float(min_signal_gap),
+        "direction_mode": direction_mode,
+        "rows": selected_rows,
+        "coverage": coverage,
+        "long_signals": long_signals,
+        "short_signals": short_signals,
+        "no_trade": int((prepared["signal"] == -1).sum()),
+        "signal_accuracy": None,
+        "signal_balanced_accuracy": None,
+        "long_precision": None,
+        "short_precision": None,
+    }
+
+    if selected.empty:
+        return metrics
+
+    selected_true = selected[train.TARGET_COLUMN].to_numpy()
+    selected_pred = selected["signal"].to_numpy()
+    metrics["signal_accuracy"] = float(accuracy_score(selected_true, selected_pred))
+    if len(np.unique(selected_true)) == 2:
+        metrics["signal_balanced_accuracy"] = float(balanced_accuracy_score(selected_true, selected_pred))
+
+    long_tp = int(((selected_pred == 1) & (selected_true == 1)).sum())
+    short_tp = int(((selected_pred == 0) & (selected_true == 0)).sum())
+    if long_signals > 0:
+        metrics["long_precision"] = float(long_tp / long_signals)
+    if short_signals > 0:
+        metrics["short_precision"] = float(short_tp / short_signals)
+    return metrics
+
+
+def sweep_signal_configs(
+    predictions: pd.DataFrame,
+    threshold_grid: list[float],
+    gap_grid: list[float],
+    direction_modes: list[str],
+    coverage_floor: float,
+    top_n: int = 10,
+) -> tuple[dict | None, list[dict]]:
+    scored = []
+    for threshold in threshold_grid:
+        for min_signal_gap in gap_grid:
+            for direction_mode in direction_modes:
+                metrics = compute_signal_metrics(
+                    predictions=predictions,
+                    threshold=threshold,
+                    min_signal_gap=min_signal_gap,
+                    direction_mode=direction_mode,
+                )
+                if metrics["signal_accuracy"] is None:
+                    continue
+                if metrics["coverage"] < coverage_floor:
+                    continue
+                scored.append(metrics)
+
+    scored.sort(
+        key=lambda item: (
+            float(item["signal_accuracy"]),
+            float(item["coverage"]),
+            float(item["signal_balanced_accuracy"] or -1.0),
+        ),
+        reverse=True,
+    )
+    best = scored[0] if scored else None
+    return best, scored[:top_n]
+
+
+def summarize_per_symbol(
+    predictions: pd.DataFrame,
+    threshold: float,
+    min_signal_gap: float,
+    direction_mode: str,
+) -> list[dict]:
+    rows = []
+    prepared = build_signal_frame(
+        predictions=predictions,
+        threshold=threshold,
+        min_signal_gap=min_signal_gap,
+        direction_mode=direction_mode,
+    )
 
     for symbol, frame in prepared.groupby(train.SYMBOL_COLUMN):
         y_true = frame[train.TARGET_COLUMN].to_numpy()
@@ -185,6 +352,8 @@ def summarize_per_symbol(predictions: pd.DataFrame, threshold: float) -> list[di
             "majority_baseline": float(max((y_true == 0).mean(), (y_true == 1).mean())),
             "long_share": float((y_true == 1).mean()),
             "threshold": float(threshold),
+            "min_signal_gap": float(min_signal_gap),
+            "direction_mode": direction_mode,
             "threshold_rows": int(len(selected)),
             "threshold_coverage": float(len(selected) / len(frame)) if len(frame) else 0.0,
             "threshold_accuracy": None,
@@ -214,12 +383,25 @@ def summarize_per_symbol(predictions: pd.DataFrame, threshold: float) -> list[di
 
         rows.append(summary)
 
-    rows.sort(key=lambda item: item["accuracy"])
+    rows.sort(
+        key=lambda item: (
+            float(item["threshold_accuracy"]) if item["threshold_accuracy"] is not None else -1.0,
+            float(item["accuracy"]),
+        )
+    )
     return rows
 
 
 def build_subset_candidates(symbols: list[str], per_symbol_metrics: list[dict], top_k: int, drop_bottom_n: int) -> list[dict]:
-    ranked_symbols = [row["symbol"] for row in sorted(per_symbol_metrics, key=lambda item: item["accuracy"], reverse=True)]
+    ranked_rows = sorted(
+        per_symbol_metrics,
+        key=lambda item: (
+            float(item["threshold_accuracy"]) if item["threshold_accuracy"] is not None else -1.0,
+            float(item["accuracy"]),
+        ),
+        reverse=True,
+    )
+    ranked_symbols = [row["symbol"] for row in ranked_rows]
     weakest_symbols = [row["symbol"] for row in per_symbol_metrics[:drop_bottom_n]]
 
     subsets = [{"name": "all_configured", "symbols": list(symbols)}]
@@ -262,8 +444,19 @@ def evaluate_subset(name: str, symbols: list[str], args) -> dict:
         n_splits=args.n_splits,
         purge_gap=args.purge_gap,
     )
-    threshold_key = f"{args.confidence_threshold:.2f}"
-    threshold_metrics = diagnostics["oos_metrics"]["probability_threshold_metrics"].get(threshold_key, {})
+    selected_signal_metrics = compute_signal_metrics(
+        predictions=diagnostics["predictions"],
+        threshold=args.confidence_threshold,
+        min_signal_gap=args.min_signal_gap,
+        direction_mode=args.direction_mode,
+    )
+    best_signal_config, top_signal_configs = sweep_signal_configs(
+        predictions=diagnostics["predictions"],
+        threshold_grid=args.threshold_grid,
+        gap_grid=args.gap_grid,
+        direction_modes=args.direction_modes,
+        coverage_floor=args.coverage_floor,
+    )
 
     return {
         "name": name,
@@ -275,15 +468,14 @@ def evaluate_subset(name: str, symbols: list[str], args) -> dict:
         "balanced_accuracy": float(diagnostics["oos_metrics"]["balanced_accuracy"]),
         "roc_auc": float(diagnostics["oos_metrics"]["roc_auc"]),
         "mcc": float(diagnostics["oos_metrics"]["mcc"]),
-        "threshold": float(args.confidence_threshold),
-        "threshold_accuracy": threshold_metrics.get("signal_accuracy"),
-        "threshold_coverage": threshold_metrics.get("coverage"),
+        "selected_signal_metrics": selected_signal_metrics,
+        "best_signal_config": best_signal_config,
+        "top_signal_configs": top_signal_configs,
     }
 
 
 def main():
     args = parse_args()
-    threshold_key = f"{args.confidence_threshold:.2f}"
 
     dataset = train.load_training_frame(args.db_path, args.symbols)
     feature_columns = train.select_feature_columns(dataset)
@@ -294,7 +486,25 @@ def main():
         n_splits=args.n_splits,
         purge_gap=args.purge_gap,
     )
-    per_symbol_metrics = summarize_per_symbol(diagnostics["predictions"], args.confidence_threshold)
+    selected_signal_metrics = compute_signal_metrics(
+        predictions=diagnostics["predictions"],
+        threshold=args.confidence_threshold,
+        min_signal_gap=args.min_signal_gap,
+        direction_mode=args.direction_mode,
+    )
+    best_signal_config, top_signal_configs = sweep_signal_configs(
+        predictions=diagnostics["predictions"],
+        threshold_grid=args.threshold_grid,
+        gap_grid=args.gap_grid,
+        direction_modes=args.direction_modes,
+        coverage_floor=args.coverage_floor,
+    )
+    per_symbol_metrics = summarize_per_symbol(
+        diagnostics["predictions"],
+        args.confidence_threshold,
+        args.min_signal_gap,
+        args.direction_mode,
+    )
     subset_candidates = build_subset_candidates(args.symbols, per_symbol_metrics, args.top_k_symbols, args.drop_bottom_n)
     subset_report = [evaluate_subset(subset["name"], subset["symbols"], args) for subset in subset_candidates]
 
@@ -306,6 +516,12 @@ def main():
         "n_splits": args.n_splits,
         "purge_gap": args.purge_gap,
         "confidence_threshold": float(args.confidence_threshold),
+        "min_signal_gap": float(args.min_signal_gap),
+        "direction_mode": args.direction_mode,
+        "coverage_floor": float(args.coverage_floor),
+        "threshold_grid": [float(value) for value in args.threshold_grid],
+        "gap_grid": [float(value) for value in args.gap_grid],
+        "direction_modes": list(args.direction_modes),
         "candidate_rows": int(dataset.attrs.get("candidate_rows", len(dataset))),
         "excluded_by_event_filter_rows": int(dataset.attrs.get("excluded_by_event_filter_rows", 0)),
         "excluded_non_directional_rows": int(dataset.attrs.get("excluded_non_directional_rows", 0)),
@@ -314,7 +530,10 @@ def main():
             "balanced_accuracy": float(diagnostics["oos_metrics"]["balanced_accuracy"]),
             "roc_auc": float(diagnostics["oos_metrics"]["roc_auc"]),
             "mcc": float(diagnostics["oos_metrics"]["mcc"]),
-            "threshold_metrics": diagnostics["oos_metrics"]["probability_threshold_metrics"].get(threshold_key),
+            "selected_signal_metrics": selected_signal_metrics,
+            "best_signal_config": best_signal_config,
+            "top_signal_configs": top_signal_configs,
+            "threshold_metrics_from_train_py": diagnostics["oos_metrics"]["probability_threshold_metrics"],
         },
         "subset_report": subset_report,
         "per_symbol_report": per_symbol_metrics,
@@ -326,17 +545,17 @@ def main():
 
     logger.info("Diagnostics report saved to %s", output_path)
     logger.info(
-        "Full universe | rows=%s | acc=%.4f | auc=%.4f | threshold=%s acc=%s cov=%s",
+        "Full universe | rows=%s | acc=%.4f | auc=%.4f | selected signal acc=%s cov=%s | best=%s",
         payload["rows"],
         payload["full_universe_metrics"]["accuracy"],
         payload["full_universe_metrics"]["roc_auc"],
-        threshold_key,
-        payload["full_universe_metrics"]["threshold_metrics"].get("signal_accuracy")
-        if payload["full_universe_metrics"]["threshold_metrics"]
+        payload["full_universe_metrics"]["selected_signal_metrics"].get("signal_accuracy")
+        if payload["full_universe_metrics"]["selected_signal_metrics"]
         else None,
-        payload["full_universe_metrics"]["threshold_metrics"].get("coverage")
-        if payload["full_universe_metrics"]["threshold_metrics"]
+        payload["full_universe_metrics"]["selected_signal_metrics"].get("coverage")
+        if payload["full_universe_metrics"]["selected_signal_metrics"]
         else None,
+        payload["full_universe_metrics"]["best_signal_config"],
     )
 
 

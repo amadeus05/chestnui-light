@@ -200,6 +200,21 @@ def create_exchange_service() -> ExchangeContract:
     raise ValueError(f"Unsupported ACTIVE_EXCHANGE: {exchange_name}")
 
 
+def build_labeling_snapshot() -> dict:
+    return {
+        "experiment": str(getattr(cfg, "ACTIVE_EXPERIMENT", "default")),
+        "labeling_profile": str(getattr(cfg, "LABELING_PROFILE", "default")),
+        "training_profile": str(getattr(cfg, "TRAINING_PROFILE", "default")),
+        "horizon": int(getattr(cfg, "HORIZON", 0)),
+        "use_dynamic_barriers": bool(getattr(cfg, "USE_DYNAMIC_BARRIERS", False)),
+        "barrier_atr_multiplier": float(getattr(cfg, "BARRIER_ATR_MULTIPLIER", 0.0)),
+        "barrier_rvol_multiplier": float(getattr(cfg, "BARRIER_RVOL_MULTIPLIER", 0.0)),
+        "barrier_tp_to_sl_ratio": float(getattr(cfg, "BARRIER_TP_TO_SL_RATIO", 0.0)),
+        "barrier_min_pct": float(getattr(cfg, "BARRIER_MIN_PCT", 0.0)),
+        "barrier_max_pct": float(getattr(cfg, "BARRIER_MAX_PCT", 0.0)),
+    }
+
+
 def format_yellow_warning(message: str) -> str:
     return f"{ANSI_YELLOW}{message}{ANSI_RESET}"
 
@@ -288,6 +303,22 @@ def main() -> None:
     exchange_service = create_exchange_service()
     repository = HistoricalKlineRepository(exchange_code=exchange_service.get_exchange_code())
     repository.init_schema()
+    labeling_snapshot = build_labeling_snapshot()
+
+    logger.info(
+        "Experiment=%s | labeling_profile=%s | training_profile=%s",
+        labeling_snapshot["experiment"],
+        labeling_snapshot["labeling_profile"],
+        labeling_snapshot["training_profile"],
+    )
+    logger.info(
+        "ETL labeling config: horizon=%s | dynamic_barriers=%s | stop[min=%.4f max=%.4f] | tp/sl=%.2f",
+        labeling_snapshot["horizon"],
+        labeling_snapshot["use_dynamic_barriers"],
+        labeling_snapshot["barrier_min_pct"],
+        labeling_snapshot["barrier_max_pct"],
+        labeling_snapshot["barrier_tp_to_sl_ratio"],
+    )
 
     symbols_to_load = [exchange_service.normalize_symbol(symbol) for symbol in dict.fromkeys(getattr(cfg, "SYMBOLS", []))]
 

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 # --- BASE ---
 DB_PATH = "market_data.db"
@@ -61,9 +62,34 @@ ENABLE_FEATURE_CLIP = True
 FEATURE_CLIP_LOWER_Q = 0.01
 FEATURE_CLIP_UPPER_Q = 0.99
 USE_SYMBOL_FEATURE = False
+ACTIVE_EXPERIMENT = "hybrid_v1_labels_v2_train"
+LABELING_PROFILE = "v1"
+TRAINING_PROFILE = "v2"
 MANUAL_DISABLED_FEATURE_COLUMNS = [
     "return_1h_24",
     "return_4h_3",
+    # Низкий importance (< 1000 gain), создают шум:
+    "distance_to_session_low_1h",
+    "slope_acceleration_1h_12_24",
+    "price_position_4h",
+    "price_position_1h",
+    "distance_to_support_1h",
+    "range_compression_1h",
+    "hour_cos_1h",
+    "distance_to_resistance_1h",
+    "relative_strength_vs_btc_24h",
+    "return_4h_1",
+    "distance_to_session_high_1h",
+    "volatility_acceleration_1h",
+    "trend_persistence_score_24",
+    "trend_efficiency_24h",
+    "cross_sectional_rank_ema_fast_slow_1h",
+    "return_1h_12",
+    "return_1h_6",
+    "trend_efficiency_24h_x_volatility_regime_change_1h",
+    "cross_sectional_rank_4h",
+    "trend_persistence_score_12",
+    "delta_market_breadth_ema_fast_slow_1h",
 ]
 
 # --- FEATURE BUILD ---
@@ -100,6 +126,9 @@ FEATURE_BUILD_REQUEST = {
     "exclude_blocks": [],
 }
 
+# Hybrid setup:
+# - ETL labeling stays on v1.
+# - Training-side filtering and feature pruning stay on v2.
 # --- ML LABELING (Triple Barrier) ---
 HORIZON = 12
 TP_PCT = 0.03   # legacy fixed TP, kept for backward compatibility
@@ -115,10 +144,11 @@ BARRIER_MAX_PCT = 0.06
 
 # --- EVENT FILTER (binary side model candidate universe) ---
 ENABLE_EVENT_FILTER = True
-EVENT_FILTER_MIN_ABS_EMA_FAST_SLOW = 0.003
-EVENT_FILTER_MIN_ADX_HTF = 18.0
-EVENT_FILTER_MIN_REALIZED_VOL_MAIN = 0.003
-EVENT_FILTER_MAX_REALIZED_VOL_MAIN = 0.05
+# Более строгие пороги для отбора только высококачественных сигналов:
+EVENT_FILTER_MIN_ABS_EMA_FAST_SLOW = 0.005  # Увеличен (было 0.003) - только заметные тренды
+EVENT_FILTER_MIN_ADX_HTF = 22.0  # Увеличен (было 18.0) - только сильные тренды
+EVENT_FILTER_MIN_REALIZED_VOL_MAIN = 0.005  # Увеличен (было 0.003)
+EVENT_FILTER_MAX_REALIZED_VOL_MAIN = 0.035  # Уменьшен максимум (было 0.05)
 
 # --- RAW REBUILD SAFETY ---
 ALLOW_REBUILD_RAW_FROM_FEATURE_ONLY = False
@@ -161,8 +191,8 @@ EXECUTION_DB_TYPE = "supabase"
 # URL проекта Supabase (например: "https://xxxxxx.supabase.co")
 SUPABASE_URL = "https://jjuatlyxubeglxkrpaji.supabase.co"
 # SUPABASE_KEY должен быть задан в переменных окружения:
-# export SUPABASE_KEY="your-anon-key-or-service-key"
-SUPABASE_KEY = None
+# PowerShell: $env:SUPABASE_KEY="your-anon-key-or-service-key"
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 PAPER_CLOCK_SYMBOL = "BTC/USDT"
 PAPER_MODEL_NAME = "lightgbm_target"
