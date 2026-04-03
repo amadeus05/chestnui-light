@@ -15,8 +15,11 @@ logger = logging.getLogger(__name__)
 class BybitAdapter:
     def __init__(self) -> None:
         self.kline_url = getattr(cfg, "BYBIT_KLINE_URL", "https://api.bybit.com/v5/market/kline")
+        self.funding_rate_url = getattr(cfg, "BYBIT_FUNDING_RATE_URL", "https://api.bybit.com/v5/market/funding/history")
         self.category = getattr(cfg, "BYBIT_CATEGORY", "linear")
         self.limit = min(1000, max(1, int(getattr(cfg, "BYBIT_LIMIT", 1000))))
+        self.funding_limit = min(200, max(1, int(getattr(cfg, "BYBIT_FUNDING_LIMIT", 200))))
+        self.funding_interval_ms = int(getattr(cfg, "BYBIT_FUNDING_INTERVAL_MS", 8 * 60 * 60 * 1000))
         self.timeout = float(getattr(cfg, "BYBIT_TIMEOUT", 20))
         self.retry_count = max(1, int(getattr(cfg, "BYBIT_RETRY_COUNT", 5)))
         self.retry_sleep = float(getattr(cfg, "BYBIT_RETRY_SLEEP", 0.3))
@@ -83,4 +86,23 @@ class BybitAdapter:
             self.kline_url,
             params,
             f"{api_symbol}-{interval}-{window_start}-{window_end}",
+        )
+
+    def fetch_funding_rate_window(
+        self,
+        api_symbol: str,
+        window_start: int,
+        window_end: int,
+    ) -> dict:
+        params = {
+            "category": self.category,
+            "symbol": api_symbol,
+            "startTime": window_start,
+            "endTime": window_end,
+            "limit": self.funding_limit,
+        }
+        return self.request_json(
+            self.funding_rate_url,
+            params,
+            f"{api_symbol}-funding-{window_start}-{window_end}",
         )

@@ -12,7 +12,7 @@ import config as cfg
 from config import DB_PATH
 from src.contracts.exchange_contract import ExchangeContract
 from src.persistence.sqlite_connection import create_sqlite_connection
-from src.types.common import HistoricalKline, Symbol
+from src.types.common import FundingRatePoint, HistoricalKline, Symbol
 
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ class HistoricalKlineRepository:
 
     def init_schema(self) -> None:
         candles_table = self._candles_table_name()
+        funding_table = self._funding_table_name()
         sync_state_table = self._sync_state_table_name()
         with self.connection_factory() as conn:
             conn.execute(
@@ -48,6 +49,16 @@ class HistoricalKlineRepository:
                     volume REAL,
                     quote_volume REAL,
                     PRIMARY KEY (symbol, timeframe, open_time)
+                )
+                """
+            )
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {funding_table} (
+                    symbol TEXT,
+                    funding_time INTEGER,
+                    funding_rate REAL,
+                    PRIMARY KEY (symbol, funding_time)
                 )
                 """
             )
@@ -91,6 +102,60 @@ class HistoricalKlineRepository:
                 (self._symbol_name(symbol), timeframe),
             )
             return int(cur.fetchone()[0] or 0)
+
+    def get_last_funding_time(self, symbol: str | Symbol) -> int | None:
+        with self.connection_factory() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT MAX(funding_time) FROM {self._funding_table_name()} WHERE symbol=?",
+                (self._symbol_name(symbol),),
+            )
+            return cur.fetchone()[0]
+
+    def save_funding_rates(
+        self,
+        symbol: str | Symbol,
+        funding_points: list[FundingRatePoint],
+    ) -> int:
+        if not funding_points:
+            return 0
+
+        rows = [
+            (
+                self._symbol_name(symbol),
+                point.funding_time,
+                point.funding_rate,
+            )
+            for point in funding_points
+        ]
+        rows.sort(key=lambda row: row[1])
+
+        with self.connection_factory() as conn:
+            before_changes = conn.total_changes
+            conn.executemany(
+                f"INSERT OR IGNORE INTO {self._funding_table_name()} VALUES (?,?,?)",
+                rows,
+            )
+            conn.commit()
+            return conn.total_changes - before_changes
+
+    def load_funding_rates(self, symbol: str | Symbol) -> pd.DataFrame:
+        with self.connection_factory() as conn:
+            df = pd.read_sql_query(
+                f"""
+                SELECT funding_time AS timestamp, funding_rate
+                FROM {self._funding_table_name()}
+                WHERE symbol=?
+                ORDER BY funding_time
+                """,
+                conn,
+                params=(self._symbol_name(symbol),),
+            )
+        if df.empty:
+            return df
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df["funding_rate"] = pd.to_numeric(df["funding_rate"], errors="coerce")
+        return df
 
     def get_sync_state(self, dataset: str, symbol: str | Symbol, timeframe: str) -> dict | None:
         with self.connection_factory() as conn:
@@ -194,6 +259,83 @@ class HistoricalKlineRepository:
             )
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         return df
+
+    def sync_funding_rates(
+        self,
+        exchange: ExchangeContract,
+        symbol: str | Symbol,
+        start_date: str,
+        end_date: str | None = None,
+        dataset: str = "funding_rates",
+    ) -> int:
+        exchange_code = self._normalize_exchange_code(exchange.get_exchange_code())
+        if exchange_code != self.exchange_code:
+            raise ValueError(
+                f"Repository exchange_code={self.exchange_code} does not match exchange={exchange_code}"
+            )
+
+        normalized_symbol = exchange.normalize_symbol(symbol)
+        interval_ms = exchange.get_funding_interval_ms(normalized_symbol)
+        last_ts = self.get_last_funding_time(normalized_symbol)
+        if last_ts:
+            start_ts = last_ts + interval_ms
+        else:
+            start_ts = self._parse_iso_datetime_to_utc_ms(start_date)
+
+        end_ts = (
+            self._parse_iso_datetime_to_utc_ms(end_date)
+            if end_date
+            else int(datetime.now(timezone.utc).timestamp() * 1000)
+        )
+        logger.info(
+            f"[{normalized_symbol}-funding] sync plan: "
+            f"last_ts={self._format_ts(last_ts)}, "
+            f"start_ts={self._format_ts(start_ts)}, "
+            f"end_ts={self._format_ts(end_ts)}"
+        )
+
+        sync_state = self.get_sync_state(dataset=dataset, symbol=normalized_symbol, timeframe="funding")
+        if sync_state and sync_state.get("empty_since_ts") is not None:
+            empty_since_ts = int(sync_state["empty_since_ts"])
+            last_checked_ts = int(sync_state.get("last_checked_ts") or end_ts)
+            start_ts = max(start_ts, last_checked_ts + interval_ms)
+            next_retry_ts = last_checked_ts + interval_ms
+            if start_ts >= empty_since_ts and end_ts < next_retry_ts:
+                logger.info(
+                    f"[{normalized_symbol}-funding] no newer points after "
+                    f"{self._format_ts(empty_since_ts)}; "
+                    f"skipping repeated empty backfill until {self._format_ts(next_retry_ts)}"
+                )
+                return 0
+
+        if start_ts > end_ts:
+            logger.info(f"[{normalized_symbol}-funding] data is already loaded up to {end_date}")
+            return 0
+
+        try:
+            funding_points = exchange.fetch_funding_rates(normalized_symbol, start_ts, end_ts)
+        except Exception as exc:
+            logger.error(f"load error for {normalized_symbol}-funding: {exc}")
+            return 0
+
+        total_loaded = self.save_funding_rates(normalized_symbol, funding_points)
+        if total_loaded > 0:
+            self.clear_sync_state(dataset=dataset, symbol=normalized_symbol, timeframe="funding")
+            return total_loaded
+
+        empty_since_ts = start_ts
+        if funding_points:
+            latest_fetched_ts = max(point.funding_time for point in funding_points)
+            empty_since_ts = max(empty_since_ts, int(latest_fetched_ts) + interval_ms)
+
+        self.upsert_sync_state(
+            dataset=dataset,
+            symbol=normalized_symbol,
+            timeframe="funding",
+            empty_since_ts=empty_since_ts,
+            last_checked_ts=end_ts,
+        )
+        return total_loaded
 
     def save_features(self, symbol: str | Symbol, df: pd.DataFrame) -> None:
         table_name = self.feature_table_name(symbol)
@@ -368,6 +510,11 @@ class HistoricalKlineRepository:
         if self.exchange_code == self.LEGACY_EXCHANGE_CODE:
             return "candles"
         return f"candles_{self.exchange_code}"
+
+    def _funding_table_name(self) -> str:
+        if self.exchange_code == self.LEGACY_EXCHANGE_CODE:
+            return "funding_rates"
+        return f"funding_rates_{self.exchange_code}"
 
     def _sync_state_table_name(self) -> str:
         if self.exchange_code == self.LEGACY_EXCHANGE_CODE:

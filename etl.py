@@ -288,15 +288,42 @@ def build_candle_maps(
         symbol_name = str(symbol)
         df = repository.load_candles(symbol, str(getattr(cfg, "TIMEFRAME", "1h")))
         htf_df = repository.load_candles(symbol, str(getattr(cfg, "HTF_TIMEFRAME", "4h")))
+        funding_df = repository.load_funding_rates(symbol)
         if df.empty or htf_df.empty:
             logger.warning("%s: no data in DB (main=%s, htf=%s)", symbol_name, len(df), len(htf_df))
             continue
 
-        logger.info("%s: main=%s, htf=%s rows", symbol_name, len(df), len(htf_df))
+        df = attach_funding_context(df, funding_df)
+        logger.info(
+            "%s: main=%s, htf=%s rows, funding=%s points",
+            symbol_name,
+            len(df),
+            len(htf_df),
+            len(funding_df),
+        )
         base_candle_map[symbol_name] = df
         htf_candle_map[symbol_name] = htf_df
 
     return base_candle_map, htf_candle_map
+
+
+def attach_funding_context(
+    base_df: pd.DataFrame,
+    funding_df: pd.DataFrame,
+) -> pd.DataFrame:
+    output = base_df.copy().sort_values("timestamp").reset_index(drop=True)
+    if funding_df is None or funding_df.empty:
+        output["funding_rate"] = np.nan
+        return output
+
+    funding_frame = funding_df[["timestamp", "funding_rate"]].copy().sort_values("timestamp").reset_index(drop=True)
+    merged = pd.merge_asof(
+        output,
+        funding_frame,
+        on="timestamp",
+        direction="backward",
+    )
+    return merged
 
 
 def main() -> None:
@@ -338,6 +365,10 @@ def main() -> None:
         htf_loaded = repository.sync_candles(exchange_service, symbol, htf_timeframe, start_date, end_date)
         logger.info("%s %s: %s new candles", symbol_name, htf_timeframe, htf_loaded)
         warn_if_history_starts_late(repository, symbol_name, htf_timeframe, start_date)
+
+        logger.info("Loading %s funding from %s...", symbol_name, start_date)
+        funding_loaded = repository.sync_funding_rates(exchange_service, symbol, start_date, end_date)
+        logger.info("%s funding: %s new points", symbol_name, funding_loaded)
 
     base_candle_map, htf_candle_map = build_candle_maps(repository, symbols_to_load)
     feature_builder = MasterFeatureBuilder()

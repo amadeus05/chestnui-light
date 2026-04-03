@@ -6,6 +6,7 @@ import pandas as pd
 from src.features.builders.base_cross_sectional_feature_builder import BaseCrossSectionalFeatureBuilder
 from src.features.builders.base_market_context_feature_builder import BaseMarketContextFeatureBuilder
 from src.features.builders.btc_relative_feature_builder import BtcRelativeFeatureBuilder
+from src.features.builders.funding_feature_builder import FundingFeatureBuilder
 from src.features.builders.htf_cross_sectional_feature_builder import HtfCrossSectionalFeatureBuilder
 from src.features.builders.htf_feature_builder import HtfFeatureBuilder
 from src.features.builders.htf_market_context_feature_builder import HtfMarketContextFeatureBuilder
@@ -28,6 +29,7 @@ class MasterFeatureBuilder:
             RegimeFeatureBuilder(),
             StructureFeatureBuilder(),
             TimeContextFeatureBuilder(),
+            FundingFeatureBuilder(),
         ]
         self.htf_builders: list[FeatureBuilderContract] = [
             HtfFeatureBuilder(),

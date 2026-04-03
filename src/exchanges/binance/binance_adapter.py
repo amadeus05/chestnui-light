@@ -21,8 +21,11 @@ class BinanceAdapter:
     def __init__(self) -> None:
         self.base_url = getattr(cfg, "BINANCE_BASE_URL", "https://fapi.binance.com")
         self.kline_url = f"{self.base_url}/fapi/v1/klines"
+        self.funding_rate_url = f"{self.base_url}/fapi/v1/fundingRate"
         self.exchange_info_url = f"{self.base_url}/fapi/v1/exchangeInfo"
         self.limit = min(1500, max(1, int(getattr(cfg, "BINANCE_LIMIT", 1000))))
+        self.funding_limit = min(1000, max(1, int(getattr(cfg, "BINANCE_FUNDING_LIMIT", 1000))))
+        self.funding_interval_ms = int(getattr(cfg, "BINANCE_FUNDING_INTERVAL_MS", 8 * 60 * 60 * 1000))
         self.timeout = float(getattr(cfg, "BINANCE_TIMEOUT", 20))
         self.retry_count = max(1, int(getattr(cfg, "BINANCE_RETRY_COUNT", 5)))
         self.retry_sleep = float(getattr(cfg, "BINANCE_RETRY_SLEEP", 0.3))
@@ -168,4 +171,26 @@ class BinanceAdapter:
         )
         if not isinstance(payload, list):
             raise RuntimeError(f"Unexpected Binance kline payload type for {api_symbol}: {type(payload).__name__}")
+        return payload
+
+    def fetch_funding_rate_window(
+        self,
+        api_symbol: str,
+        window_start: int,
+        window_end: int,
+    ) -> list:
+        payload = self.request_json(
+            self.funding_rate_url,
+            params={
+                "symbol": api_symbol,
+                "startTime": window_start,
+                "endTime": window_end,
+                "limit": self.funding_limit,
+            },
+            request_name=f"{api_symbol}-funding-{window_start}-{window_end}",
+        )
+        if not isinstance(payload, list):
+            raise RuntimeError(
+                f"Unexpected Binance funding payload type for {api_symbol}: {type(payload).__name__}"
+            )
         return payload

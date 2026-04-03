@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.types.common import HistoricalKline, Symbol
+from src.types.common import FundingRatePoint, HistoricalKline, Symbol
 
 
 BYBIT_INTERVALS = {
@@ -67,3 +67,16 @@ class BybitMapper:
         ]
         klines.sort(key=lambda candle: candle.open_time)
         return klines
+
+    def to_funding_rates(self, payload: dict) -> list[FundingRatePoint]:
+        rows = payload.get("result", {}).get("list", [])
+        points = [
+            FundingRatePoint(
+                funding_time=int(row["fundingRateTimestamp"]),
+                funding_rate=float(row["fundingRate"]),
+            )
+            for row in rows
+            if row.get("fundingRateTimestamp") is not None and row.get("fundingRate") is not None
+        ]
+        points.sort(key=lambda point: point.funding_time)
+        return points

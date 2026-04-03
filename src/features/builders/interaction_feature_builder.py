@@ -19,6 +19,7 @@ class InteractionFeatureBuilder(FeatureBuilderContract):
             "market_breadth_ema_fast_slow_1h_zscore",
             "ema_fast_slow_x_market_breadth_ema_fast_slow_1h",
             "trend_efficiency_24h_x_volatility_regime_change_1h",
+            "trend_alignment_1h_4h",
         }
 
     def build(self, context: FeatureContext, requested_features: set[str]) -> pd.DataFrame:
@@ -67,5 +68,12 @@ class InteractionFeatureBuilder(FeatureBuilderContract):
             output["trend_efficiency_24h_x_volatility_regime_change_1h"] = (
                 frame["trend_efficiency_24h"] * frame["volatility_regime_change_1h"]
             )
+
+        if "trend_alignment_1h_4h" in active:
+            required = {"ema_fast_slow", "ema_slope_4h"}
+            if not required.issubset(frame.columns):
+                missing = ", ".join(sorted(required - set(frame.columns)))
+                raise ValueError("Feature 'trend_alignment_1h_4h' requires: " + missing)
+            output["trend_alignment_1h_4h"] = frame["ema_fast_slow"] * frame["ema_slope_4h"]
 
         return output

@@ -23,6 +23,7 @@ class HtfFeatureBuilder(FeatureBuilderContract):
             "price_position_4h",
             "distance_to_rolling_high_4h",
             "distance_to_rolling_low_4h",
+            "breakout_quality_4h",
             "ema_slope_4h",
             "zscore_vs_vwap_4h",
         }
@@ -60,6 +61,7 @@ class HtfFeatureBuilder(FeatureBuilderContract):
             "price_position_4h",
             "distance_to_rolling_high_4h",
             "distance_to_rolling_low_4h",
+            "breakout_quality_4h",
             "ema_slope_4h",
         }
         if structure_request.intersection(active):
@@ -75,6 +77,21 @@ class HtfFeatureBuilder(FeatureBuilderContract):
                 output["distance_to_rolling_high_4h"] = safe_ratio(close - rolling_high, atr_14)
             if "distance_to_rolling_low_4h" in active:
                 output["distance_to_rolling_low_4h"] = safe_ratio(close - rolling_low, atr_14)
+            if "breakout_quality_4h" in active:
+                prev_rolling_low = rolling_low.shift(1)
+                prev_rolling_high = rolling_high.shift(1)
+                breakout_quality = pd.Series(0.0, index=close.index)
+                upside_mask = close > prev_rolling_high
+                downside_mask = close < prev_rolling_low
+                breakout_quality.loc[upside_mask] = safe_ratio(
+                    close.loc[upside_mask] - prev_rolling_high.loc[upside_mask],
+                    atr_14.loc[upside_mask],
+                )
+                breakout_quality.loc[downside_mask] = -safe_ratio(
+                    prev_rolling_low.loc[downside_mask] - close.loc[downside_mask],
+                    atr_14.loc[downside_mask],
+                )
+                output["breakout_quality_4h"] = breakout_quality
             if "ema_slope_4h" in active:
                 ema_base = context.indicator_cache.get_or_create(
                     "ema_base_4h",

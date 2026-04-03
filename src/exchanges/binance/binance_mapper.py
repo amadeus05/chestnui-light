@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.types.common import HistoricalKline, Symbol
+from src.types.common import FundingRatePoint, HistoricalKline, Symbol
 
 
 BINANCE_INTERVALS = {
@@ -73,3 +73,15 @@ class BinanceMapper:
         ]
         klines.sort(key=lambda candle: candle.open_time)
         return klines
+
+    def to_funding_rates(self, payload: list) -> list[FundingRatePoint]:
+        points = [
+            FundingRatePoint(
+                funding_time=int(row["fundingTime"]),
+                funding_rate=float(row["fundingRate"]),
+            )
+            for row in payload
+            if row.get("fundingTime") is not None and row.get("fundingRate") is not None
+        ]
+        points.sort(key=lambda point: point.funding_time)
+        return points
