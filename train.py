@@ -267,6 +267,27 @@ def build_model(seed, n_estimators=800):
     )
 
 
+def build_meta_model(seed, n_estimators=300):
+    """Smaller regression model that estimates expected return of a base signal."""
+    return lgb.LGBMRegressor(
+        objective="regression",
+        n_estimators=n_estimators,
+        learning_rate=0.02,
+        num_leaves=15,
+        min_child_samples=80,
+        max_depth=4,
+        subsample=0.8,
+        colsample_bytree=0.7,
+        reg_alpha=0.5,
+        reg_lambda=2.0,
+        random_state=seed,
+        n_jobs=-1,
+        verbosity=-1,
+        min_split_gain=0.0,
+        subsample_freq=1,
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  Evaluation — accepts raw vectors, not a dataframe
 # ═══════════════════════════════════════════════════════════════════════════
@@ -300,23 +321,18 @@ def evaluate_model(y_true, y_pred, y_proba, split_name, n_rows=None):
     )
 
     # ---- Confidence-threshold breakdown ----
-    confidence_thresholds = sorted(
-        {
-            round(max(0.5, float(getattr(cfg, "CONFIDENCE_THRESHOLD", 0.5))), 2),
-            0.55,
-            0.60,
-            0.65,
-            0.70,
-        }
-    )
+    confidence_thresholds = get_confidence_thresholds()
     probability_threshold_metrics = {}
     p_short = y_proba[:, 0]
     y_true_series = pd.Series(y_true).reset_index(drop=True)
     for threshold in confidence_thresholds:
         threshold = float(threshold)
-        signal = np.full(n_rows, -1, dtype=int)
-        signal[p_long >= threshold] = 1
-        signal[p_short >= threshold] = 0
+        signal = build_directional_signal_from_probabilities(
+            proba_long=p_long,
+            proba_short=p_short,
+            threshold=threshold,
+            n_rows=n_rows,
+        )
         mask = signal != -1
         selected = int(mask.sum())
         coverage = float(selected / n_rows) if n_rows else 0.0
@@ -390,6 +406,275 @@ def evaluate_model(y_true, y_pred, y_proba, split_name, n_rows=None):
     return metrics
 
 
+def get_confidence_thresholds():
+    return sorted(
+        {
+            round(max(0.5, float(getattr(cfg, "CONFIDENCE_THRESHOLD", 0.5))), 2),
+            0.55,
+            0.60,
+            0.65,
+            0.70,
+        }
+    )
+
+
+def build_directional_signal_from_probabilities(proba_long, proba_short, threshold, n_rows):
+    signal = np.full(n_rows, -1, dtype=int)
+    signal[np.asarray(proba_long) >= threshold] = 1
+    signal[np.asarray(proba_short) >= threshold] = 0
+    return signal
+
+
+def evaluate_signal_subset(y_true, y_pred, selected_mask, realized_return_pct=None):
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    selected_mask = np.asarray(selected_mask, dtype=bool)
+    realized_return_pct = None if realized_return_pct is None else np.asarray(realized_return_pct, dtype=float)
+
+    rows = int(selected_mask.sum())
+    if rows == 0:
+        return {
+            "rows": 0,
+            "coverage": 0.0,
+            "win_rate": None,
+            "wins": 0,
+            "losses": 0,
+            "accuracy": None,
+            "balanced_accuracy": None,
+            "f1_macro": None,
+            "mcc": None,
+            "net_pnl_pct": None,
+            "avg_pnl_pct": None,
+        }
+
+    subset_y_true = y_true[selected_mask]
+    subset_y_pred = y_pred[selected_mask]
+    wins = int((subset_y_true == subset_y_pred).sum())
+    losses = int(rows - wins)
+    subset_realized_return_pct = (
+        realized_return_pct[selected_mask] if realized_return_pct is not None else np.where(subset_y_true == subset_y_pred, 1.0, -1.0)
+    )
+    return {
+        "rows": rows,
+        "coverage": float(rows / len(y_true)) if len(y_true) else 0.0,
+        "win_rate": float(wins / rows) if rows else None,
+        "wins": wins,
+        "losses": losses,
+        "accuracy": float(accuracy_score(subset_y_true, subset_y_pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(subset_y_true, subset_y_pred)),
+        "f1_macro": float(f1_score(subset_y_true, subset_y_pred, average="macro")),
+        "mcc": float(matthews_corrcoef(subset_y_true, subset_y_pred)),
+        "net_pnl_pct": float(np.sum(subset_realized_return_pct)),
+        "avg_pnl_pct": float(np.mean(subset_realized_return_pct)),
+    }
+
+
+def build_meta_feature_frame(frame, feature_columns):
+    meta_frame = frame[feature_columns].copy()
+    meta_frame["meta_proba_long"] = frame["proba_long"].astype(float)
+    meta_frame["meta_proba_short"] = frame["proba_short"].astype(float)
+    meta_frame["meta_confidence"] = frame["base_confidence"].astype(float)
+    meta_frame["meta_margin"] = frame["base_margin"].astype(float)
+    meta_frame["meta_pred_side"] = frame["base_pred"].astype(int)
+    meta_frame["meta_signed_confidence"] = np.where(
+        frame["base_pred"].astype(int) == 1,
+        frame["base_confidence"].astype(float),
+        -frame["base_confidence"].astype(float),
+    )
+    return meta_frame
+
+
+def fit_meta_model(meta_train_df, meta_feature_columns, seed):
+    meta_model = build_meta_model(seed=seed)
+    x_meta = build_meta_feature_frame(meta_train_df, meta_feature_columns)
+    y_meta = meta_train_df["realized_return_pct"].astype(float)
+    w_meta = compute_sample_weights(meta_train_df[TIMESTAMP_COLUMN])
+
+    if len(x_meta) >= 100 and y_meta.nunique() > 10:
+        eval_size = max(20, int(len(x_meta) * 0.2))
+        if len(x_meta) - eval_size >= 50:
+            x_fit = x_meta.iloc[:-eval_size]
+            y_fit = y_meta.iloc[:-eval_size]
+            w_fit = w_meta[:-eval_size]
+            x_eval = x_meta.iloc[-eval_size:]
+            y_eval = y_meta.iloc[-eval_size:]
+            meta_model.fit(
+                x_fit,
+                y_fit,
+                sample_weight=w_fit,
+                eval_set=[(x_eval, y_eval)],
+                eval_metric="l2",
+                categorical_feature=[SYMBOL_COLUMN] if SYMBOL_COLUMN in meta_feature_columns else "auto",
+                callbacks=[
+                    lgb.early_stopping(stopping_rounds=100, verbose=False),
+                    lgb.log_evaluation(period=0),
+                ],
+            )
+            return meta_model
+
+    meta_model.fit(
+        x_meta,
+        y_meta,
+        sample_weight=w_meta,
+        categorical_feature=[SYMBOL_COLUMN] if SYMBOL_COLUMN in meta_feature_columns else "auto",
+    )
+    return meta_model
+
+
+def get_roundtrip_cost_pct():
+    taker = float(getattr(cfg, "TAKER_COM", 0.0))
+    slippage = float(getattr(cfg, "SLIPPAGE", 0.0))
+    return 2.0 * (taker + slippage)
+
+
+def evaluate_meta_filter_comparison(oos_prediction_frame, feature_columns, seed):
+    if oos_prediction_frame.empty:
+        return None
+
+    fold_ids = sorted(int(value) for value in oos_prediction_frame["fold"].dropna().unique())
+    if len(fold_ids) < 2:
+        return None
+
+    meta_feature_columns = list(feature_columns)
+
+    base_thresholds = get_confidence_thresholds()
+    meta_thresholds = sorted(
+        {
+            0.000,
+            0.001,
+            0.002,
+            0.004,
+            0.006,
+        }
+    )
+
+    per_base_threshold = {}
+    combo_rows = []
+    meta_rows_by_base_threshold = {}
+    roundtrip_cost_pct = get_roundtrip_cost_pct()
+    for base_threshold in base_thresholds:
+        meta_prediction_frames = []
+        prior_meta_frames = []
+
+        for fold_id in fold_ids:
+            fold_frame = oos_prediction_frame.loc[oos_prediction_frame["fold"] == fold_id].copy()
+            base_signal = build_directional_signal_from_probabilities(
+                proba_long=fold_frame["proba_long"].astype(float).to_numpy(),
+                proba_short=fold_frame["proba_short"].astype(float).to_numpy(),
+                threshold=float(base_threshold),
+                n_rows=len(fold_frame),
+            )
+            selected_mask = base_signal != -1
+            selected_fold_frame = fold_frame.loc[selected_mask].copy()
+            if selected_fold_frame.empty:
+                continue
+
+            selected_fold_frame["base_signal"] = base_signal[selected_mask]
+            selected_fold_frame["realized_return_pct"] = np.where(
+                selected_fold_frame["base_signal"].astype(int) == selected_fold_frame["y_true"].astype(int),
+                selected_fold_frame["barrier_take_pct"].astype(float) - roundtrip_cost_pct,
+                -selected_fold_frame["barrier_stop_pct"].astype(float) - roundtrip_cost_pct,
+            )
+
+            prior_train = pd.concat(prior_meta_frames, ignore_index=True) if prior_meta_frames else pd.DataFrame()
+            if not prior_train.empty and prior_train["realized_return_pct"].nunique() > 10 and len(prior_train) >= 200:
+                meta_model = fit_meta_model(prior_train, meta_feature_columns, seed)
+                x_fold_meta = build_meta_feature_frame(selected_fold_frame, meta_feature_columns)
+                selected_fold_frame["meta_expected_return_pct"] = meta_model.predict(x_fold_meta)
+                meta_prediction_frames.append(selected_fold_frame)
+
+            prior_meta_frames.append(selected_fold_frame)
+
+        if not meta_prediction_frames:
+            continue
+
+        meta_eval_df = pd.concat(meta_prediction_frames, ignore_index=True).sort_values(
+            [TIMESTAMP_COLUMN, SYMBOL_COLUMN]
+        ).reset_index(drop=True)
+        meta_rows_by_base_threshold[f"{float(base_threshold):.2f}"] = int(len(meta_eval_df))
+
+        y_true = meta_eval_df["y_true"].astype(int).to_numpy()
+        base_signal = meta_eval_df["base_signal"].astype(int).to_numpy()
+        meta_expected_return_pct = meta_eval_df["meta_expected_return_pct"].astype(float).to_numpy()
+        realized_return_pct = meta_eval_df["realized_return_pct"].astype(float).to_numpy()
+
+        base_reference = evaluate_signal_subset(
+            y_true=y_true,
+            y_pred=base_signal,
+            selected_mask=np.ones(len(meta_eval_df), dtype=bool),
+            realized_return_pct=realized_return_pct,
+        )
+        base_reference["threshold"] = float(base_threshold)
+        per_base_threshold[f"{float(base_threshold):.2f}"] = {
+            "base_only": base_reference,
+            "meta_variants": {},
+        }
+
+        for meta_threshold in meta_thresholds:
+            combo_selected_mask = meta_expected_return_pct >= float(meta_threshold)
+            combo_metrics = evaluate_signal_subset(
+                y_true=y_true,
+                y_pred=base_signal,
+                selected_mask=combo_selected_mask,
+                realized_return_pct=realized_return_pct,
+            )
+            combo_metrics["base_threshold"] = float(base_threshold)
+            combo_metrics["meta_threshold"] = float(meta_threshold)
+            combo_metrics["delta_wins_vs_base"] = int(combo_metrics["wins"] - base_reference["wins"])
+            combo_metrics["delta_losses_vs_base"] = int(combo_metrics["losses"] - base_reference["losses"])
+            combo_metrics["delta_net_pnl_pct_vs_base"] = (
+                float(combo_metrics["net_pnl_pct"] - base_reference["net_pnl_pct"])
+                if combo_metrics["net_pnl_pct"] is not None and base_reference["net_pnl_pct"] is not None
+                else None
+            )
+            combo_metrics["delta_win_rate_vs_base"] = (
+                float(combo_metrics["win_rate"] - base_reference["win_rate"])
+                if combo_metrics["win_rate"] is not None and base_reference["win_rate"] is not None
+                else None
+            )
+            per_base_threshold[f"{float(base_threshold):.2f}"]["meta_variants"][f"{float(meta_threshold):.2f}"] = combo_metrics
+            combo_rows.append(combo_metrics)
+
+    default_base_threshold = round(max(0.5, float(getattr(cfg, "CONFIDENCE_THRESHOLD", 0.55))), 2)
+    default_base_key = f"{default_base_threshold:.2f}"
+    if default_base_key not in per_base_threshold:
+        return None
+    base_reference = per_base_threshold[default_base_key]["base_only"]
+    default_variants = per_base_threshold[default_base_key]["meta_variants"]
+
+    non_empty_combos = [row for row in combo_rows if row["rows"] > 0]
+    default_non_empty = [row for row in default_variants.values() if row["rows"] > 0]
+    best_default_by_wins = max(default_non_empty, key=lambda item: (item["wins"], item["win_rate"] or 0.0), default=None)
+    min_rows_for_quality = max(100, int(meta_rows_by_base_threshold[default_base_key] * 0.05))
+    best_default_by_net_pnl = max(
+        default_non_empty,
+        key=lambda item: (item["net_pnl_pct"] if item["net_pnl_pct"] is not None else float("-inf"), item["wins"]),
+        default=None,
+    )
+    best_default_by_win_rate = max(
+        [row for row in default_non_empty if row["rows"] >= min_rows_for_quality],
+        key=lambda item: (item["win_rate"] or 0.0, item["wins"]),
+        default=None,
+    )
+    best_overall_by_wins = max(non_empty_combos, key=lambda item: (item["wins"], item["win_rate"] or 0.0), default=None)
+
+    return {
+        "rows_with_meta_oos": int(meta_rows_by_base_threshold.get(default_base_key, 0)),
+        "rows_with_meta_oos_by_base_threshold": meta_rows_by_base_threshold,
+        "folds_with_meta_oos": fold_ids[1:],
+        "base_thresholds": [float(value) for value in base_thresholds],
+        "meta_thresholds": [float(value) for value in meta_thresholds],
+        "default_base_threshold": float(default_base_threshold),
+        "roundtrip_cost_pct": float(roundtrip_cost_pct),
+        "base_reference": base_reference,
+        "per_base_threshold": per_base_threshold,
+        "best_default_by_wins": best_default_by_wins,
+        "best_default_by_net_pnl": best_default_by_net_pnl,
+        "best_default_by_win_rate": best_default_by_win_rate,
+        "best_overall_by_wins": best_overall_by_wins,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  Walk-Forward Validation  (Expanding Window + Purge Gap)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -432,6 +717,7 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
     all_y_proba = []
     fold_details = []
     best_iterations = []
+    oos_prediction_frames = []
 
     for fold_idx, (train_ts_idx, test_ts_idx) in enumerate(tscv.split(unique_ts), start=1):
         # --- Resolve timestamp boundaries --------------------------------
@@ -513,6 +799,19 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
         all_y_pred.append(y_pred_fold)
         all_y_proba.append(y_proba_fold)
 
+        prediction_frame = test_df[
+            [TIMESTAMP_COLUMN, SYMBOL_COLUMN, "barrier_take_pct", "barrier_stop_pct", *feature_columns]
+        ].copy()
+        prediction_frame["fold"] = fold_idx
+        prediction_frame["y_true"] = y_test.values
+        prediction_frame["base_pred"] = y_pred_fold
+        prediction_frame["proba_short"] = y_proba_fold[:, 0]
+        prediction_frame["proba_long"] = y_proba_fold[:, 1]
+        prediction_frame["base_confidence"] = np.max(y_proba_fold, axis=1)
+        prediction_frame["base_margin"] = np.abs(y_proba_fold[:, 1] - y_proba_fold[:, 0])
+        prediction_frame["base_correct"] = (prediction_frame["base_pred"] == prediction_frame["y_true"]).astype(int)
+        oos_prediction_frames.append(prediction_frame)
+
         # Per-fold quick summary
         fold_acc = float(accuracy_score(y_test, y_pred_fold))
         fold_auc = float(roc_auc_score(y_test, y_proba_fold[:, 1]))
@@ -585,7 +884,8 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
     logger.info("Median best_iteration across folds: %s", median_best_iter)
     logger.info("=" * 72)
 
-    return oos_metrics, fold_details, median_best_iter
+    oos_prediction_frame = pd.concat(oos_prediction_frames, ignore_index=True)
+    return oos_metrics, fold_details, median_best_iter, oos_prediction_frame
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -785,6 +1085,119 @@ def log_train_history_summary(history_entry, history, limit=10):
         logger.info(line)
 
 
+def build_meta_filter_summary_lines(meta_payload):
+    if not meta_payload:
+        return ["Meta-filter comparison unavailable."]
+
+    base_reference = meta_payload.get("base_reference") or {}
+    best_default_by_wins = meta_payload.get("best_default_by_wins")
+    best_default_by_net_pnl = meta_payload.get("best_default_by_net_pnl")
+    best_default_by_win_rate = meta_payload.get("best_default_by_win_rate")
+
+    rows = [
+        (
+            "Base only",
+            f"base>={base_reference.get('threshold', 0.0):.2f}",
+            str(base_reference.get("rows", 0)),
+            format_compact_metric_value((base_reference.get("win_rate") or 0.0) * 100, percent=True, decimals=2),
+            str(base_reference.get("wins", 0)),
+            str(base_reference.get("losses", 0)),
+            format_compact_metric_value(base_reference.get("net_pnl_pct"), decimals=3),
+            format_compact_metric_value(base_reference.get("avg_pnl_pct"), decimals=4),
+        )
+    ]
+
+    if best_default_by_wins:
+        rows.append(
+            (
+                "Best wins",
+                f"base>={best_default_by_wins['base_threshold']:.2f}, meta>={best_default_by_wins['meta_threshold']:.3f}",
+                str(best_default_by_wins["rows"]),
+                format_compact_metric_value((best_default_by_wins.get("win_rate") or 0.0) * 100, percent=True, decimals=2),
+                str(best_default_by_wins["wins"]),
+                str(best_default_by_wins["losses"]),
+                format_compact_metric_value(best_default_by_wins.get("net_pnl_pct"), decimals=3),
+                format_compact_metric_value(best_default_by_wins.get("avg_pnl_pct"), decimals=4),
+            )
+        )
+
+    if best_default_by_net_pnl:
+        label = "Best net pnl"
+        if best_default_by_wins and (
+            best_default_by_net_pnl["base_threshold"] == best_default_by_wins["base_threshold"]
+            and best_default_by_net_pnl["meta_threshold"] == best_default_by_wins["meta_threshold"]
+        ):
+            label = "Best net pnl*"
+        rows.append(
+            (
+                label,
+                f"base>={best_default_by_net_pnl['base_threshold']:.2f}, meta>={best_default_by_net_pnl['meta_threshold']:.3f}",
+                str(best_default_by_net_pnl["rows"]),
+                format_compact_metric_value((best_default_by_net_pnl.get("win_rate") or 0.0) * 100, percent=True, decimals=2),
+                str(best_default_by_net_pnl["wins"]),
+                str(best_default_by_net_pnl["losses"]),
+                format_compact_metric_value(best_default_by_net_pnl.get("net_pnl_pct"), decimals=3),
+                format_compact_metric_value(best_default_by_net_pnl.get("avg_pnl_pct"), decimals=4),
+            )
+        )
+
+    if best_default_by_win_rate:
+        label = "Best win rate"
+        if best_default_by_wins and (
+            best_default_by_win_rate["base_threshold"] == best_default_by_wins["base_threshold"]
+            and best_default_by_win_rate["meta_threshold"] == best_default_by_wins["meta_threshold"]
+        ):
+            label = "Best win rate*"
+        rows.append(
+            (
+                label,
+                f"base>={best_default_by_win_rate['base_threshold']:.2f}, meta>={best_default_by_win_rate['meta_threshold']:.3f}",
+                str(best_default_by_win_rate["rows"]),
+                format_compact_metric_value((best_default_by_win_rate.get("win_rate") or 0.0) * 100, percent=True, decimals=2),
+                str(best_default_by_win_rate["wins"]),
+                str(best_default_by_win_rate["losses"]),
+                format_compact_metric_value(best_default_by_win_rate.get("net_pnl_pct"), decimals=3),
+                format_compact_metric_value(best_default_by_win_rate.get("avg_pnl_pct"), decimals=4),
+            )
+        )
+
+    headers = ["Mode", "Thresholds", "Signals", "Win rate", "Wins", "Losses", "Net pnl", "Avg pnl"]
+    widths = [
+        max(len(header), *(len(row[idx]) for row in rows))
+        for idx, header in enumerate(headers)
+    ]
+
+    def render_border():
+        return "+-" + "-+-".join("-" * width for width in widths) + "-+"
+
+    def render_row(values):
+        return "| " + " | ".join(value.ljust(widths[idx]) for idx, value in enumerate(values)) + " |"
+
+    lines = [
+        render_border(),
+        render_row(headers),
+        render_border(),
+    ]
+    for row in rows:
+        lines.append(render_row(list(row)))
+    lines.append(render_border())
+    lines.append(
+        f"Meta OOS rows: {meta_payload.get('rows_with_meta_oos', 0)} | folds: {', '.join(map(str, meta_payload.get('folds_with_meta_oos', [])))} | cost={meta_payload.get('roundtrip_cost_pct', 0.0):.4f}"
+    )
+    if best_default_by_wins:
+        lines.append(
+            f"Delta vs base: wins {best_default_by_wins['delta_wins_vs_base']:+d}, losses {best_default_by_wins['delta_losses_vs_base']:+d}, net pnl {best_default_by_wins.get('delta_net_pnl_pct_vs_base', 0.0):+.3f}"
+        )
+    return lines
+
+
+def log_meta_filter_summary(meta_payload):
+    logger.info("=" * 72)
+    logger.info("Meta-filter comparison (base vs base+take/skip):")
+    for line in build_meta_filter_summary_lines(meta_payload):
+        logger.info(line)
+
+
 def top_feature_importance(model, feature_columns, limit=25):
     importance = pd.DataFrame(
         {
@@ -898,12 +1311,17 @@ def main():
         )
 
         # ── Step 1: Walk-Forward Validation → honest OOS metrics ──────────
-        oos_metrics, fold_details, median_best_iter = walk_forward_validation(
+        oos_metrics, fold_details, median_best_iter, oos_prediction_frame = walk_forward_validation(
             dataset=dataset,
             feature_columns=feature_columns,
             seed=args.seed,
             n_splits=args.n_splits,
             purge_gap=args.purge_gap,
+        )
+        meta_filter_payload = evaluate_meta_filter_comparison(
+            oos_prediction_frame=oos_prediction_frame,
+            feature_columns=feature_columns,
+            seed=args.seed,
         )
 
         # ── Step 2: Train production model on 100% of data ───────────────
@@ -943,6 +1361,7 @@ def main():
             "event_filter": dataset.attrs.get("event_filter_config"),
             "experiment": experiment_snapshot,
             "dataset_period": build_period_payload(dataset),
+            "meta_filter": meta_filter_payload,
         }
 
         logger.info(
@@ -955,6 +1374,8 @@ def main():
             oos_metrics["pr_auc"],
             oos_metrics["mcc"],
         )
+        if meta_filter_payload:
+            log_meta_filter_summary(meta_filter_payload)
 
         log_feature_importance_ranking(prod_model, feature_columns)
         save_directional_artifacts(prod_model, metrics, dataset, feature_columns, prod_clip_bounds, args)
