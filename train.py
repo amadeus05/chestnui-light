@@ -47,6 +47,17 @@ EXCLUDED_RAW_FEATURE_COLUMNS = {
 }
 LABEL_TO_CLASS = {-1: 0, 1: 1}
 CLASS_TO_LABEL = {0: -1, 1: 1}
+BACKTEST_DATASET_DIR = cfg.BACKTEST_CHARTS_DIR / "datasets"
+ENABLE_META_FILTER_BENCHMARK = False
+# Meta-filter is intentionally disabled in the main training flow.
+# Honest evaluations showed that the base directional model was still better:
+# - OOS directional benchmark:
+#   base @ 0.55 -> 7446 signals, 65.00% win rate, net pnl 178.170
+#   best meta   -> 7336 signals, 64.97% win rate, net pnl 176.286
+# - WFOOS trade benchmark:
+#   base only   -> 2127 trades, 38.18% win rate, net pnl 5.168
+#   best meta   -> 1691 trades, 38.32% win rate, net pnl 4.774
+# So for now we keep the research code, but do not run or ship the meta layer by default.
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -469,17 +480,26 @@ def evaluate_signal_subset(y_true, y_pred, selected_mask, realized_return_pct=No
     }
 
 
-def build_meta_feature_frame(frame, feature_columns):
+def build_meta_feature_frame(
+    frame,
+    feature_columns,
+    *,
+    proba_long_column="proba_long",
+    proba_short_column="proba_short",
+    confidence_column="base_confidence",
+    margin_column="base_margin",
+    pred_column="base_pred",
+):
     meta_frame = frame[feature_columns].copy()
-    meta_frame["meta_proba_long"] = frame["proba_long"].astype(float)
-    meta_frame["meta_proba_short"] = frame["proba_short"].astype(float)
-    meta_frame["meta_confidence"] = frame["base_confidence"].astype(float)
-    meta_frame["meta_margin"] = frame["base_margin"].astype(float)
-    meta_frame["meta_pred_side"] = frame["base_pred"].astype(int)
+    meta_frame["meta_proba_long"] = frame[proba_long_column].astype(float)
+    meta_frame["meta_proba_short"] = frame[proba_short_column].astype(float)
+    meta_frame["meta_confidence"] = frame[confidence_column].astype(float)
+    meta_frame["meta_margin"] = frame[margin_column].astype(float)
+    meta_frame["meta_pred_side"] = frame[pred_column].astype(int)
     meta_frame["meta_signed_confidence"] = np.where(
-        frame["base_pred"].astype(int) == 1,
-        frame["base_confidence"].astype(float),
-        -frame["base_confidence"].astype(float),
+        frame[pred_column].astype(int) == 1,
+        frame[confidence_column].astype(float),
+        -frame[confidence_column].astype(float),
     )
     return meta_frame
 
@@ -525,6 +545,129 @@ def get_roundtrip_cost_pct():
     taker = float(getattr(cfg, "TAKER_COM", 0.0))
     slippage = float(getattr(cfg, "SLIPPAGE", 0.0))
     return 2.0 * (taker + slippage)
+
+
+def evaluate_trade_subset(trade_frame, selected_mask):
+    selected_mask = np.asarray(selected_mask, dtype=bool)
+    rows_total = int(len(trade_frame))
+    rows = int(selected_mask.sum())
+    if rows == 0:
+        return {
+            "rows": 0,
+            "coverage": 0.0,
+            "win_rate": None,
+            "wins": 0,
+            "losses": 0,
+            "accuracy": None,
+            "balanced_accuracy": None,
+            "f1_macro": None,
+            "mcc": None,
+            "net_pnl_pct": None,
+            "avg_pnl_pct": None,
+            "profit_factor": None,
+        }
+
+    selected = trade_frame.loc[selected_mask].copy()
+    pnl_pct = selected["pnl_pct"].astype(float)
+    wins = int(selected["is_win"].astype(int).sum())
+    losses = int(rows - wins)
+    gross_profit = float(pnl_pct[pnl_pct > 0].sum())
+    gross_loss = float(abs(pnl_pct[pnl_pct < 0].sum()))
+    return {
+        "rows": rows,
+        "coverage": float(rows / rows_total) if rows_total else 0.0,
+        "win_rate": float(wins / rows) if rows else None,
+        "wins": wins,
+        "losses": losses,
+        "accuracy": float(wins / rows) if rows else None,
+        "balanced_accuracy": None,
+        "f1_macro": None,
+        "mcc": None,
+        "net_pnl_pct": float(pnl_pct.sum()),
+        "avg_pnl_pct": float(pnl_pct.mean()),
+        "profit_factor": (gross_profit / gross_loss) if gross_loss > 0 else None,
+    }
+
+
+def resolve_trade_outcome_dataset_path(model_name):
+    default_model_name = "lightgbm_target"
+    candidate_paths = [
+        BACKTEST_DATASET_DIR / f"{model_name}_trade_outcomes_wfoos.csv",
+        BACKTEST_DATASET_DIR / f"{model_name}_trade_outcomes.csv",
+    ]
+    if model_name != default_model_name:
+        candidate_paths.extend(
+            [
+                BACKTEST_DATASET_DIR / f"{default_model_name}_trade_outcomes_wfoos.csv",
+                BACKTEST_DATASET_DIR / f"{default_model_name}_trade_outcomes.csv",
+            ]
+        )
+
+    for path in candidate_paths:
+        if path.exists():
+            return path
+    return None
+
+
+def load_trade_outcome_frame(model_name, feature_columns):
+    dataset_path = resolve_trade_outcome_dataset_path(model_name)
+    if dataset_path is None:
+        logger.info("Backtest trade-outcome dataset not found for model '%s'; skipping backtest-driven meta benchmark.", model_name)
+        return None, None, [], None
+
+    trade_frame = pd.read_csv(dataset_path)
+    required_columns = {
+        "signal_ts",
+        "symbol",
+        "direction",
+        "p_long",
+        "p_short",
+        "direction_prob",
+        "signal_gap",
+        "pnl_pct",
+        "is_win",
+    }
+    missing_required = sorted(required_columns.difference(trade_frame.columns))
+    if missing_required:
+        logger.warning(
+            "Trade outcome dataset %s is missing required columns: %s",
+            dataset_path,
+            ", ".join(missing_required),
+        )
+        return None, dataset_path, [], None
+
+    for column in ["signal_ts", "entry_ts", "exit_ts"]:
+        if column in trade_frame.columns:
+            trade_frame[column] = pd.to_datetime(trade_frame[column], errors="coerce")
+    if "fold" in trade_frame.columns:
+        trade_frame["fold"] = pd.to_numeric(trade_frame["fold"], errors="coerce")
+
+    trade_frame = trade_frame.dropna(
+        subset=["signal_ts", "symbol", "direction", "p_long", "p_short", "direction_prob", "signal_gap", "pnl_pct", "is_win"]
+    ).copy()
+    if trade_frame.empty:
+        logger.warning("Trade outcome dataset %s is empty after cleanup.", dataset_path)
+        return None, dataset_path, [], None
+
+    trade_frame = trade_frame.sort_values(["signal_ts", "symbol"]).reset_index(drop=True)
+    trade_frame[SYMBOL_COLUMN] = trade_frame[SYMBOL_COLUMN].astype("category")
+    trade_frame[TIMESTAMP_COLUMN] = trade_frame["signal_ts"]
+    trade_frame["base_pred"] = np.where(trade_frame["direction"].astype(str).str.upper() == "LONG", 1, 0)
+    trade_frame["proba_long"] = trade_frame["p_long"].astype(float)
+    trade_frame["proba_short"] = trade_frame["p_short"].astype(float)
+    trade_frame["base_confidence"] = trade_frame["direction_prob"].astype(float)
+    trade_frame["base_margin"] = trade_frame["signal_gap"].astype(float)
+    trade_frame["realized_return_pct"] = trade_frame["pnl_pct"].astype(float)
+    available_feature_columns = [column for column in feature_columns if column in trade_frame.columns]
+    if not available_feature_columns:
+        logger.warning(
+            "Trade outcome dataset %s does not contain any of the directional feature columns; skipping backtest-driven meta benchmark.",
+            dataset_path,
+        )
+        return None, dataset_path, [], None
+
+    source = "backtest_trade_outcomes_wfoos" if dataset_path.stem.endswith("_trade_outcomes_wfoos") else "backtest_trade_outcomes"
+    return trade_frame, dataset_path, available_feature_columns, source
 
 
 def evaluate_meta_filter_comparison(oos_prediction_frame, feature_columns, seed):
@@ -672,6 +815,150 @@ def evaluate_meta_filter_comparison(oos_prediction_frame, feature_columns, seed)
         "best_default_by_net_pnl": best_default_by_net_pnl,
         "best_default_by_win_rate": best_default_by_win_rate,
         "best_overall_by_wins": best_overall_by_wins,
+    }
+
+
+def evaluate_backtest_trade_meta_filter_comparison(model_name, feature_columns, seed, n_splits=5):
+    trade_frame, dataset_path, meta_feature_columns, source = load_trade_outcome_frame(model_name, feature_columns)
+    if trade_frame is None or dataset_path is None:
+        return None
+
+    if len(trade_frame) < 300:
+        logger.info(
+            "Trade outcome dataset %s has only %s rows; skipping backtest-driven meta benchmark.",
+            dataset_path,
+            len(trade_frame),
+        )
+        return None
+
+    meta_prediction_frames = []
+    fold_ids = []
+    fold_column_available = "fold" in trade_frame.columns and trade_frame["fold"].notna().any()
+
+    if fold_column_available:
+        trade_frame["fold"] = trade_frame["fold"].astype(int)
+        available_folds = sorted(int(value) for value in trade_frame["fold"].dropna().unique())
+        if len(available_folds) < 2:
+            return None
+
+        prior_fold_frames = []
+        for fold_id in available_folds:
+            fold_test = trade_frame.loc[trade_frame["fold"] == fold_id].copy()
+            if fold_test.empty:
+                continue
+
+            fold_train = pd.concat(prior_fold_frames, ignore_index=True) if prior_fold_frames else pd.DataFrame()
+            if not fold_train.empty and len(fold_train) >= 200:
+                meta_model = fit_meta_model(fold_train, meta_feature_columns, seed)
+                x_meta_test = build_meta_feature_frame(fold_test, meta_feature_columns)
+                fold_eval = fold_test.copy()
+                fold_eval["meta_expected_return_pct"] = meta_model.predict(x_meta_test)
+                meta_prediction_frames.append(fold_eval)
+                fold_ids.append(fold_id)
+
+            prior_fold_frames.append(fold_test)
+    else:
+        effective_splits = min(n_splits, max(2, len(trade_frame) // 400))
+        effective_splits = min(effective_splits, len(trade_frame) - 1)
+        if effective_splits < 2:
+            return None
+
+        tscv = TimeSeriesSplit(n_splits=effective_splits)
+        for fold_idx, (train_idx, test_idx) in enumerate(tscv.split(trade_frame), start=1):
+            fold_train = trade_frame.iloc[train_idx].copy()
+            fold_test = trade_frame.iloc[test_idx].copy()
+            if len(fold_train) < 200 or fold_test.empty:
+                continue
+
+            meta_model = fit_meta_model(fold_train, meta_feature_columns, seed)
+            x_meta_test = build_meta_feature_frame(fold_test, meta_feature_columns)
+            fold_eval = fold_test.copy()
+            fold_eval["fold"] = fold_idx
+            fold_eval["meta_expected_return_pct"] = meta_model.predict(x_meta_test)
+            meta_prediction_frames.append(fold_eval)
+            fold_ids.append(fold_idx)
+
+    if not meta_prediction_frames:
+        return None
+
+    meta_eval_df = pd.concat(meta_prediction_frames, ignore_index=True).sort_values(
+        [TIMESTAMP_COLUMN, SYMBOL_COLUMN]
+    ).reset_index(drop=True)
+    meta_prediction_values = meta_eval_df["meta_expected_return_pct"].astype(float).to_numpy()
+    quantile_thresholds = np.quantile(meta_prediction_values, [0.15, 0.25, 0.35, 0.50, 0.65, 0.75])
+    meta_thresholds = sorted({0.0, *[round(float(value), 4) for value in quantile_thresholds]})
+
+    default_base_threshold = round(max(0.5, float(getattr(cfg, "CONFIDENCE_THRESHOLD", 0.55))), 2)
+    default_base_key = f"{default_base_threshold:.2f}"
+    base_reference = evaluate_trade_subset(meta_eval_df, np.ones(len(meta_eval_df), dtype=bool))
+    base_reference["threshold"] = float(default_base_threshold)
+
+    per_base_threshold = {
+        default_base_key: {
+            "base_only": base_reference,
+            "meta_variants": {},
+        }
+    }
+    combo_rows = []
+    for meta_threshold in meta_thresholds:
+        combo_selected_mask = meta_prediction_values >= float(meta_threshold)
+        combo_metrics = evaluate_trade_subset(meta_eval_df, combo_selected_mask)
+        combo_metrics["base_threshold"] = float(default_base_threshold)
+        combo_metrics["meta_threshold"] = float(meta_threshold)
+        combo_metrics["delta_wins_vs_base"] = int(combo_metrics["wins"] - base_reference["wins"])
+        combo_metrics["delta_losses_vs_base"] = int(combo_metrics["losses"] - base_reference["losses"])
+        combo_metrics["delta_net_pnl_pct_vs_base"] = (
+            float(combo_metrics["net_pnl_pct"] - base_reference["net_pnl_pct"])
+            if combo_metrics["net_pnl_pct"] is not None and base_reference["net_pnl_pct"] is not None
+            else None
+        )
+        combo_metrics["delta_win_rate_vs_base"] = (
+            float(combo_metrics["win_rate"] - base_reference["win_rate"])
+            if combo_metrics["win_rate"] is not None and base_reference["win_rate"] is not None
+            else None
+        )
+        per_base_threshold[default_base_key]["meta_variants"][f"{float(meta_threshold):.4f}"] = combo_metrics
+        combo_rows.append(combo_metrics)
+
+    default_non_empty = [row for row in combo_rows if row["rows"] > 0]
+    if not default_non_empty:
+        return None
+
+    min_rows_for_quality = max(50, int(len(meta_eval_df) * 0.05))
+    best_default_by_wins = max(
+        default_non_empty,
+        key=lambda item: (item["wins"], item["net_pnl_pct"] if item["net_pnl_pct"] is not None else float("-inf")),
+        default=None,
+    )
+    best_default_by_net_pnl = max(
+        default_non_empty,
+        key=lambda item: (item["net_pnl_pct"] if item["net_pnl_pct"] is not None else float("-inf"), item["wins"]),
+        default=None,
+    )
+    best_default_by_win_rate = max(
+        [row for row in default_non_empty if row["rows"] >= min_rows_for_quality],
+        key=lambda item: (item["win_rate"] or 0.0, item["net_pnl_pct"] if item["net_pnl_pct"] is not None else float("-inf")),
+        default=None,
+    )
+
+    return {
+        "source": source,
+        "trade_dataset_path": str(dataset_path),
+        "rows_total_in_trade_dataset": int(len(trade_frame)),
+        "rows_with_meta_oos": int(len(meta_eval_df)),
+        "rows_with_meta_oos_by_base_threshold": {default_base_key: int(len(meta_eval_df))},
+        "folds_with_meta_oos": fold_ids,
+        "base_thresholds": [float(default_base_threshold)],
+        "meta_thresholds": [float(value) for value in meta_thresholds],
+        "default_base_threshold": float(default_base_threshold),
+        "roundtrip_cost_pct": float(get_roundtrip_cost_pct()),
+        "base_reference": base_reference,
+        "per_base_threshold": per_base_threshold,
+        "best_default_by_wins": best_default_by_wins,
+        "best_default_by_net_pnl": best_default_by_net_pnl,
+        "best_default_by_win_rate": best_default_by_win_rate,
+        "best_overall_by_wins": best_default_by_wins,
+        "available_feature_count": int(len(meta_feature_columns)),
     }
 
 
@@ -1191,9 +1478,9 @@ def build_meta_filter_summary_lines(meta_payload):
     return lines
 
 
-def log_meta_filter_summary(meta_payload):
+def log_meta_filter_summary(meta_payload, title="Meta-filter comparison (base vs base+take/skip):"):
     logger.info("=" * 72)
-    logger.info("Meta-filter comparison (base vs base+take/skip):")
+    logger.info(title)
     for line in build_meta_filter_summary_lines(meta_payload):
         logger.info(line)
 
@@ -1318,11 +1605,22 @@ def main():
             n_splits=args.n_splits,
             purge_gap=args.purge_gap,
         )
-        meta_filter_payload = evaluate_meta_filter_comparison(
-            oos_prediction_frame=oos_prediction_frame,
-            feature_columns=feature_columns,
-            seed=args.seed,
-        )
+        meta_filter_payload = None
+        backtest_meta_filter_payload = None
+        if ENABLE_META_FILTER_BENCHMARK:
+            meta_filter_payload = evaluate_meta_filter_comparison(
+                oos_prediction_frame=oos_prediction_frame,
+                feature_columns=feature_columns,
+                seed=args.seed,
+            )
+            backtest_meta_filter_payload = evaluate_backtest_trade_meta_filter_comparison(
+                model_name=args.model_name,
+                feature_columns=feature_columns,
+                seed=args.seed,
+                n_splits=args.n_splits,
+            )
+        else:
+            logger.info("Meta-filter benchmarks disabled in main training flow; base model remains the current production path.")
 
         # ── Step 2: Train production model on 100% of data ───────────────
         #    Clip bounds are computed on the FULL dataset because there is
@@ -1362,6 +1660,7 @@ def main():
             "experiment": experiment_snapshot,
             "dataset_period": build_period_payload(dataset),
             "meta_filter": meta_filter_payload,
+            "backtest_trade_meta_filter": backtest_meta_filter_payload,
         }
 
         logger.info(
@@ -1376,6 +1675,11 @@ def main():
         )
         if meta_filter_payload:
             log_meta_filter_summary(meta_filter_payload)
+        if backtest_meta_filter_payload:
+            log_meta_filter_summary(
+                backtest_meta_filter_payload,
+                title="Backtest-driven meta-filter comparison (executed trades):",
+            )
 
         log_feature_importance_ranking(prod_model, feature_columns)
         save_directional_artifacts(prod_model, metrics, dataset, feature_columns, prod_clip_bounds, args)
