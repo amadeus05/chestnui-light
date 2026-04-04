@@ -1,3 +1,6 @@
+import argparse
+import contextlib
+import io
 import json
 import sys
 from pathlib import Path
@@ -6,8 +9,10 @@ import numpy as np
 import joblib
 import matplotlib.pyplot as plt
 import etl
+import train as train_pipeline
 from config import *
 from signal_filter import build_candidate_event_mask, resolve_event_filter_config
+from sklearn.model_selection import TimeSeriesSplit
 from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
 
 # Futures settings come from config.py
@@ -31,6 +36,8 @@ USE_DYNAMIC_BARRIERS = bool(globals().get("USE_DYNAMIC_BARRIERS", True))
 BACKTEST_CHARTS_DIR = Path(globals().get("BACKTEST_CHARTS_DIR", "backtest_charts"))
 BACKTEST_CHARTS_DIR.mkdir(parents=True, exist_ok=True)
 EQUITY_CURVE_PATH = BACKTEST_CHARTS_DIR / "equity_curve.png"
+BACKTEST_DATASET_DIR = BACKTEST_CHARTS_DIR / "datasets"
+BACKTEST_DATASET_DIR.mkdir(parents=True, exist_ok=True)
 
 ANSI_RESET = "\033[0m"
 ANSI_RED = "\033[91m"
@@ -83,6 +90,30 @@ def parse_period_payload(period_payload: dict | None, period_name: str) -> tuple
     if start > end:
         raise RuntimeError(f"Model metadata has {period_name} start after end: {period_payload}")
     return start, end
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run standard or walk-forward OOS backtest.")
+    parser.add_argument(
+        "--mode",
+        choices=("standard", "wfoos"),
+        default="standard",
+        help="Backtest mode: standard uses the saved master model, wfoos trains fold models and tests only on OOS folds.",
+    )
+    parser.add_argument(
+        "--model-name",
+        default="lightgbm_target",
+        help="Model artifact stem for standard mode and output stem for wfoos mode.",
+    )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for WFOOS fold training.")
+    parser.add_argument("--n-splits", type=int, default=5, help="Number of WFOOS folds.")
+    parser.add_argument("--purge-gap", type=int, default=12, help="Purge gap in timestamps for WFOOS fold training.")
+    parser.add_argument(
+        "--keep-temp-artifacts",
+        action="store_true",
+        help="Keep temporary fold models, feature metadata, and per-fold trade datasets.",
+    )
+    return parser.parse_args()
 
 # LightGBM binary directional mapping (from train.py)
 LABEL_TO_CLASS = {-1: 0, 1: 1}
@@ -494,6 +525,68 @@ def apply_feature_clip_bounds(frame: pd.DataFrame, clip_bounds: dict):
     return clipped
 
 
+def serialize_feature_snapshot(feature_frame: pd.DataFrame, feature_names: list[str]) -> dict:
+    if feature_frame is None or feature_frame.empty:
+        return {}
+
+    row = feature_frame.iloc[0]
+    snapshot = {}
+    for feature_name in feature_names:
+        if feature_name not in row.index:
+            continue
+        value = row[feature_name]
+        if pd.isna(value):
+            snapshot[feature_name] = None
+        elif isinstance(value, (np.floating, float, np.integer, int)):
+            snapshot[feature_name] = float(value)
+        else:
+            snapshot[feature_name] = str(value)
+    return snapshot
+
+
+def build_trade_dataset_row(sym: str, position: dict, trade: dict) -> dict:
+    feature_snapshot = dict(position.get("feature_snapshot", {}))
+    row = {
+        "trade_number": int(position["trade_number"]),
+        "symbol": sym,
+        "direction": position["direction_str"],
+        "signal_ts": str(position["signal_ts"]),
+        "entry_ts": str(position["ts_open"]),
+        "exit_ts": str(trade["ts"]),
+        "entry_price": float(position["entry"]),
+        "exit_price": float(trade["exit_price"]),
+        "stop_pct": float(position["stop_pct"]),
+        "take_pct": float(position["take_pct"]),
+        "p_long": float(position["p_long"]),
+        "p_short": float(position["p_short"]),
+        "direction_prob": float(position["direction_prob"]),
+        "signal_gap": float(position["signal_gap"]),
+        "score": float(position["score"]),
+        "entry_notional": float(position["size"]),
+        "entry_margin": float(position["margin"]),
+        "exit_reason": str(trade["reason"]),
+        "is_win": int(trade["pnl_abs"] > 0),
+        "pnl_pct": float(trade["pnl_pct"]),
+        "pnl_abs": float(trade["pnl_abs"]),
+        "commission": float(trade["commission"]),
+        "holding_bars": int(position.get("holding_bars", 0)),
+        "holding_hours": float(position.get("holding_hours", 0.0)),
+    }
+    row.update(feature_snapshot)
+    return row
+
+
+def save_trade_outcome_dataset(trade_dataset_rows: list[dict], model_stem: str) -> Path | None:
+    if not trade_dataset_rows:
+        return None
+
+    dataset_df = pd.DataFrame(trade_dataset_rows)
+    dataset_df = dataset_df.sort_values(["entry_ts", "trade_number"]).reset_index(drop=True)
+    output_path = BACKTEST_DATASET_DIR / f"{model_stem}_trade_outcomes.csv"
+    dataset_df.to_csv(output_path, index=False)
+    return output_path
+
+
 def prepare_precomputed_feature_store(
     feat_df: pd.DataFrame,
     feature_names: list,
@@ -542,7 +635,202 @@ def get_feature_batch_precomputed(
     return batch_symbols, pd.concat(batch_frames, axis=0)
 
 
-def backtest():
+def build_feature_metadata_payload(feature_names, symbols, event_filter_config, clip_bounds, train_period, test_period):
+    return {
+        "feature_columns": list(feature_names),
+        "symbols": list(symbols),
+        "train_period": {
+            "start": str(train_period[0]),
+            "end": str(train_period[1]),
+        } if train_period else None,
+        "test_period": {
+            "start": str(test_period[0]),
+            "end": str(test_period[1]),
+        } if test_period else None,
+        "event_filter": event_filter_config,
+        "feature_clip": {
+            "enabled": bool(globals().get("ENABLE_FEATURE_CLIP", False)),
+            "lower_q": float(globals().get("FEATURE_CLIP_LOWER_Q", 0.01)),
+            "upper_q": float(globals().get("FEATURE_CLIP_UPPER_Q", 0.99)),
+            "bounds": clip_bounds,
+        },
+    }
+
+
+def train_wfoos_fold_model(train_df, feature_columns, seed):
+    clip_bounds = train_pipeline.build_feature_clip_bounds(train_df, feature_columns)
+    clipped_train_df = train_pipeline.apply_feature_clip_bounds(train_df, clip_bounds)
+    x_train = clipped_train_df[feature_columns]
+    y_train = clipped_train_df[train_pipeline.TARGET_COLUMN]
+    w_train = train_pipeline.compute_sample_weights(clipped_train_df[train_pipeline.TIMESTAMP_COLUMN])
+
+    model = train_pipeline.build_model(seed=seed)
+    internal_eval_size = max(1, int(len(x_train) * 0.15))
+    if len(x_train) - internal_eval_size >= 50:
+        x_fit = x_train.iloc[:-internal_eval_size]
+        y_fit = y_train.iloc[:-internal_eval_size]
+        w_fit = w_train[:-internal_eval_size]
+        x_eval = x_train.iloc[-internal_eval_size:]
+        y_eval = y_train.iloc[-internal_eval_size:]
+        model.fit(
+            x_fit,
+            y_fit,
+            sample_weight=w_fit,
+            eval_set=[(x_eval, y_eval)],
+            eval_metric="binary_logloss",
+            categorical_feature=[train_pipeline.SYMBOL_COLUMN] if train_pipeline.SYMBOL_COLUMN in feature_columns else "auto",
+            callbacks=[
+                train_pipeline.lgb.early_stopping(stopping_rounds=200, verbose=False),
+                train_pipeline.lgb.log_evaluation(period=0),
+            ],
+        )
+    else:
+        model.fit(
+            x_train,
+            y_train,
+            sample_weight=w_train,
+            categorical_feature=[train_pipeline.SYMBOL_COLUMN] if train_pipeline.SYMBOL_COLUMN in feature_columns else "auto",
+        )
+
+    return model, clip_bounds
+
+
+def save_wfoos_fold_artifacts(model_name, model, metadata):
+    model_path = MODELS_DIR / f"{model_name}.joblib"
+    features_meta_path = MODELS_DIR / f"{model_name}_features.json"
+    joblib.dump(model, model_path)
+    features_meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    return model_path, features_meta_path
+
+
+def build_wfoos_summary_payload(fold_summaries, aggregate_trades_path):
+    if not fold_summaries:
+        return None
+
+    total_trades = int(sum(fold["trades"] for fold in fold_summaries))
+    total_wins = int(sum(fold["wins"] for fold in fold_summaries))
+    total_losses = int(sum(fold["losses"] for fold in fold_summaries))
+    total_pnl_abs = float(sum(fold["total_pnl_abs"] for fold in fold_summaries))
+    total_fees = float(sum(fold["total_fees"] for fold in fold_summaries))
+    avg_fold_return_pct = float(np.mean([fold["total_return_pct"] for fold in fold_summaries]))
+    median_fold_return_pct = float(np.median([fold["total_return_pct"] for fold in fold_summaries]))
+    avg_fold_drawdown_pct = float(np.mean([fold["max_drawdown_pct"] for fold in fold_summaries]))
+    avg_fold_profit_factor = float(np.mean([fold["profit_factor"] for fold in fold_summaries]))
+
+    return {
+        "fold_count": int(len(fold_summaries)),
+        "total_trades": total_trades,
+        "wins": total_wins,
+        "losses": total_losses,
+        "win_rate": float(total_wins / total_trades) if total_trades else 0.0,
+        "total_pnl_abs": total_pnl_abs,
+        "total_fees": total_fees,
+        "avg_fold_return_pct": avg_fold_return_pct,
+        "median_fold_return_pct": median_fold_return_pct,
+        "avg_fold_drawdown_pct": avg_fold_drawdown_pct,
+        "avg_fold_profit_factor": avg_fold_profit_factor,
+        "aggregate_trades_path": str(aggregate_trades_path) if aggregate_trades_path else None,
+        "folds": fold_summaries,
+    }
+
+
+def run_walk_forward_oos_backtest(args):
+    print("Preparing walk-forward OOS backtest...")
+    dataset = train_pipeline.load_training_frame(DB_PATH, SYMBOLS)
+    feature_columns = train_pipeline.select_feature_columns(dataset)
+    unique_ts = np.sort(dataset[train_pipeline.TIMESTAMP_COLUMN].unique())
+    tscv = TimeSeriesSplit(n_splits=args.n_splits)
+    temp_paths = []
+    fold_summaries = []
+    aggregate_trade_frames = []
+    model_stem = args.model_name
+    event_filter_config = dataset.attrs.get("event_filter_config")
+
+    for fold_idx, (train_ts_idx, test_ts_idx) in enumerate(tscv.split(unique_ts), start=1):
+        train_timestamps = unique_ts[train_ts_idx]
+        test_timestamps = unique_ts[test_ts_idx]
+        if args.purge_gap > 0 and len(train_timestamps) > args.purge_gap:
+            train_timestamps = train_timestamps[:-args.purge_gap]
+
+        train_df = dataset.loc[dataset[train_pipeline.TIMESTAMP_COLUMN].isin(set(train_timestamps))].copy()
+        test_df = dataset.loc[dataset[train_pipeline.TIMESTAMP_COLUMN].isin(set(test_timestamps))].copy()
+        if train_df.empty or test_df.empty or len(train_df[train_pipeline.TARGET_COLUMN].unique()) < 2:
+            continue
+
+        print(
+            f"Fold {fold_idx}/{args.n_splits}: train {train_df[train_pipeline.TIMESTAMP_COLUMN].iloc[0]} -> "
+            f"{train_df[train_pipeline.TIMESTAMP_COLUMN].iloc[-1]} | test {test_df[train_pipeline.TIMESTAMP_COLUMN].iloc[0]} -> "
+            f"{test_df[train_pipeline.TIMESTAMP_COLUMN].iloc[-1]}"
+        )
+        model, clip_bounds = train_wfoos_fold_model(train_df, feature_columns, seed=args.seed)
+        fold_model_name = f"{model_stem}_wfoos_fold{fold_idx}"
+        metadata = build_feature_metadata_payload(
+            feature_names=feature_columns,
+            symbols=SYMBOLS,
+            event_filter_config=event_filter_config,
+            clip_bounds=clip_bounds,
+            train_period=(train_df[train_pipeline.TIMESTAMP_COLUMN].iloc[0], train_df[train_pipeline.TIMESTAMP_COLUMN].iloc[-1]),
+            test_period=(test_df[train_pipeline.TIMESTAMP_COLUMN].iloc[0], test_df[train_pipeline.TIMESTAMP_COLUMN].iloc[-1]),
+        )
+        model_path, features_meta_path = save_wfoos_fold_artifacts(fold_model_name, model, metadata)
+        temp_paths.extend([model_path, features_meta_path])
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            fold_summary = backtest(model_name=fold_model_name, show_chart=False)
+        if not fold_summary:
+            continue
+
+        fold_summary["fold"] = int(fold_idx)
+        fold_summaries.append(fold_summary)
+
+        trade_dataset_path = Path(fold_summary["trade_dataset_path"]) if fold_summary.get("trade_dataset_path") else None
+        if trade_dataset_path and trade_dataset_path.exists():
+            fold_trade_df = pd.read_csv(trade_dataset_path)
+            fold_trade_df["fold"] = int(fold_idx)
+            aggregate_trade_frames.append(fold_trade_df)
+            if not args.keep_temp_artifacts:
+                temp_paths.append(trade_dataset_path)
+
+    aggregate_trades_path = None
+    if aggregate_trade_frames:
+        aggregate_trade_df = pd.concat(aggregate_trade_frames, ignore_index=True)
+        aggregate_trade_df = aggregate_trade_df.sort_values(["entry_ts", "trade_number"]).reset_index(drop=True)
+        aggregate_trades_path = BACKTEST_DATASET_DIR / f"{model_stem}_trade_outcomes_wfoos.csv"
+        aggregate_trade_df.to_csv(aggregate_trades_path, index=False)
+
+    summary_payload = build_wfoos_summary_payload(fold_summaries, aggregate_trades_path)
+    if summary_payload is None:
+        print("WFOOS backtest produced no valid folds.")
+        return None
+
+    summary_path = BACKTEST_CHARTS_DIR / f"{model_stem}_wfoos_summary.json"
+    summary_path.write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
+    print("\nWalk-forward OOS backtest finished.\n")
+    print(f"Folds: {summary_payload['fold_count']}")
+    print(f"Trades: {summary_payload['total_trades']} | Wins: {summary_payload['wins']} | Losses: {summary_payload['losses']}")
+    print(f"Win rate: {summary_payload['win_rate'] * 100:.2f}%")
+    print(f"Total PnL: {format_signed_dollars(summary_payload['total_pnl_abs'])}")
+    print(f"Fees: ${summary_payload['total_fees']:.2f}")
+    print(f"Avg fold return: {summary_payload['avg_fold_return_pct']:+.2f}%")
+    print(f"Median fold return: {summary_payload['median_fold_return_pct']:+.2f}%")
+    print(f"Avg fold max DD: {summary_payload['avg_fold_drawdown_pct']:.2f}%")
+    print(f"Avg fold PF: {summary_payload['avg_fold_profit_factor']:.2f}")
+    if aggregate_trades_path is not None:
+        print(f"Saved OOS trade dataset: {aggregate_trades_path}")
+    print(f"Saved WFOOS summary: {summary_path}")
+
+    if not args.keep_temp_artifacts:
+        for path in temp_paths:
+            try:
+                if path.exists():
+                    path.unlink()
+            except OSError:
+                pass
+
+    return summary_payload
+
+
+def backtest(model_name="lightgbm_target", show_chart=True):
     print("Loading model and features...")
 
     if not ALLOW_LONGS and not ALLOW_SHORTS:
@@ -550,8 +838,9 @@ def backtest():
         return
 
     # --- Load LightGBM model ---
-    model_path = MODELS_DIR / "lightgbm_target.joblib"
-    features_meta_path = MODELS_DIR / "lightgbm_target_features.json"
+    model_path = MODELS_DIR / f"{model_name}.joblib"
+    features_meta_path = MODELS_DIR / f"{model_name}_features.json"
+    model_stem = model_path.stem
 
     if not model_path.exists():
         print(f"Error: model not found at {model_path}. Run train.py first.")
@@ -569,8 +858,8 @@ def backtest():
     feature_names = features_meta["feature_columns"]
     try:
         test_start_ts, test_end_ts = parse_period_payload(
-            features_meta.get("train_period") or features_meta.get("test_period"),
-            "train_period",
+            features_meta.get("test_period") or features_meta.get("train_period"),
+            "test_period",
         )
     except RuntimeError as exc:
         print(f"Error: {exc}")
@@ -686,8 +975,10 @@ def backtest():
 
     balance = BACKTEST_INITIAL_BALANCE
     initial_balance = balance
+    timeframe_hours = timeframe_to_ms(TIMEFRAME) / 3_600_000
     positions = {sym: None for sym in all_raw}
     trades = []
+    trade_dataset_rows = []
     equity_curve = []
     equity_timestamps = []
     monthly_stats = {}
@@ -840,12 +1131,17 @@ def backtest():
                     "sym": sym,
                     "direction": "LONG" if direction == 1 else "SHORT",
                     "reason": reason,
+                    "exit_price": exit_price,
                     "pnl_pct": pnl_clean,
                     "pnl_abs": trade_profit,
                     "commission": commission,
                     "ts": next_ts,
                 }
             )
+            holding_hours = float((next_ts - pos["ts_open"]) / pd.to_timedelta(1, unit="h"))
+            pos["holding_hours"] = holding_hours
+            pos["holding_bars"] = int(round(holding_hours / timeframe_hours)) if timeframe_hours > 0 else 0
+            trade_dataset_rows.append(build_trade_dataset_row(sym, pos, trades[-1]))
             monthly_stats[month_key]["pnl_abs"] += trade_profit
             monthly_stats[month_key]["trades"] += 1
             if pnl_clean > 0:
@@ -941,6 +1237,7 @@ def backtest():
                     symbol_categories=symbol_categories,
                 )
                 current_features = apply_feature_clip_bounds(current_features, clip_bounds)
+                feature_snapshot = serialize_feature_snapshot(current_features, feature_names)
                 if not is_candidate_event(latest_row, event_filter_config):
                     continue
                 stop_pct, take_pct = get_barrier_pcts(latest_row)
@@ -988,7 +1285,9 @@ def backtest():
                         "p_long": p_long,
                         "p_short": p_short,
                         "direction_prob": direction_prob,
+                        "signal_gap": signal_gap,
                         "score": build_entry_score(direction_prob, signal_gap),
+                        "feature_snapshot": feature_snapshot,
                     }
                 )
         else:
@@ -1007,13 +1306,15 @@ def backtest():
             )
             if not batch_features.empty:
                 batch_proba = model.predict_proba(batch_features[feature_names])
-                for sym, proba in zip(batch_symbols, batch_proba):
+                for row_idx, (sym, proba) in enumerate(zip(batch_symbols, batch_proba)):
                     ctx = market_batch[sym]
                     feature_row = get_feature_row_precomputed(
                         all_features[sym],
                         current_ts,
                         feature_names + ["barrier_stop_pct", "barrier_take_pct"],
                     )
+                    model_feature_row = batch_features.iloc[[row_idx]].copy()
+                    feature_snapshot = serialize_feature_snapshot(model_feature_row, feature_names)
                     stop_pct, take_pct = get_barrier_pcts(feature_row)
                     if stop_pct is None or take_pct is None:
                         continue
@@ -1059,7 +1360,9 @@ def backtest():
                             "p_long": p_long,
                             "p_short": p_short,
                             "direction_prob": direction_prob,
+                            "signal_gap": signal_gap,
                             "score": build_entry_score(direction_prob, signal_gap),
+                            "feature_snapshot": feature_snapshot,
                         }
                     )
 
@@ -1098,11 +1401,19 @@ def backtest():
             positions[candidate["sym"]] = {
                 "trade_number": trade_number,
                 "dir": candidate["signal"],
+                "direction_str": candidate["direction_str"],
                 "entry": candidate["entry_price"],
                 "size": position_notional,
                 "margin": required_margin,
                 "stop_pct": candidate["stop_pct"],
                 "take_pct": candidate["take_pct"],
+                "p_long": candidate["p_long"],
+                "p_short": candidate["p_short"],
+                "direction_prob": candidate["direction_prob"],
+                "signal_gap": candidate["signal_gap"],
+                "score": candidate["score"],
+                "feature_snapshot": candidate["feature_snapshot"],
+                "signal_ts": current_ts,
                 "ts_open": next_ts,
             }
             opened_this_bar += 1
@@ -1157,12 +1468,17 @@ def backtest():
                 "sym": sym,
                 "direction": "LONG" if pos["dir"] == 1 else "SHORT",
                 "reason": "FINAL",
+                "exit_price": exit_price,
                 "pnl_pct": pnl_clean,
                 "pnl_abs": trade_profit,
                 "commission": commission,
                 "ts": last_timestamp,
             }
         )
+        holding_hours = float((last_timestamp - pos["ts_open"]) / pd.to_timedelta(1, unit="h"))
+        pos["holding_hours"] = holding_hours
+        pos["holding_bars"] = int(round(holding_hours / timeframe_hours)) if timeframe_hours > 0 else 0
+        trade_dataset_rows.append(build_trade_dataset_row(sym, pos, trades[-1]))
         monthly_stats[final_month_key]["pnl_abs"] += trade_profit
         monthly_stats[final_month_key]["trades"] += 1
         if pnl_clean > 0:
@@ -1341,7 +1657,11 @@ def backtest():
         right_align={1, 2, 3, 4},
     )
 
-    if len(equity_curve) > 1:
+    trade_dataset_path = save_trade_outcome_dataset(trade_dataset_rows, model_stem)
+    if trade_dataset_path is not None:
+        print(f"\nSaved trade outcome dataset: {trade_dataset_path}")
+
+    if show_chart and len(equity_curve) > 1:
         plt.figure(figsize=(12, 6))
         plt.plot(equity_timestamps, equity_curve, label="Portfolio Equity")
         plt.axhline(y=initial_balance, linestyle="--")
@@ -1352,6 +1672,26 @@ def backtest():
         plt.show()
         print(f"\nSaved chart: {EQUITY_CURVE_PATH}")
 
+    return {
+        "model_name": model_name,
+        "period_start": str(test_timestamps[0]),
+        "period_end": str(test_timestamps[-1]),
+        "trades": int(total_trades),
+        "wins": int(total_wins),
+        "losses": int(total_losses),
+        "win_rate": float(final_wr / 100.0),
+        "total_pnl_abs": float(total_pnl_abs),
+        "total_return_pct": float(total_return_pct),
+        "total_fees": float(total_fees),
+        "max_drawdown_pct": float(max_drawdown),
+        "profit_factor": float(pf),
+        "trade_dataset_path": str(trade_dataset_path) if trade_dataset_path is not None else None,
+    }
+
 
 if __name__ == "__main__":
-    backtest()
+    args = parse_args()
+    if args.mode == "wfoos":
+        run_walk_forward_oos_backtest(args)
+    else:
+        backtest(model_name=args.model_name, show_chart=True)
