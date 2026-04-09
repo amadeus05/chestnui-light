@@ -3,46 +3,41 @@ from __future__ import annotations
 import config as cfg
 import pandas as pd
 
-from src.features.builders.base_cross_sectional_feature_builder import BaseCrossSectionalFeatureBuilder
-from src.features.builders.base_market_context_feature_builder import BaseMarketContextFeatureBuilder
-from src.features.builders.btc_relative_feature_builder import BtcRelativeFeatureBuilder
-from src.features.builders.htf_cross_sectional_feature_builder import HtfCrossSectionalFeatureBuilder
-from src.features.builders.htf_feature_builder import HtfFeatureBuilder
-from src.features.builders.htf_market_context_feature_builder import HtfMarketContextFeatureBuilder
+from src.features.builders.compression_expansion_feature_builder import CompressionExpansionFeatureBuilder
+from src.features.builders.entry_location_feature_builder import EntryLocationFeatureBuilder
+from src.features.builders.htf_context_feature_builder import HtfContextFeatureBuilder
 from src.features.builders.interaction_feature_builder import InteractionFeatureBuilder
-from src.features.builders.momentum_feature_builder import MomentumFeatureBuilder
+from src.features.builders.lwti_feature_builder import LwtiFeatureBuilder
+from src.features.builders.market_context_feature_builder import MarketContextFeatureBuilder
 from src.features.builders.regime_feature_builder import RegimeFeatureBuilder
-from src.features.builders.structure_feature_builder import StructureFeatureBuilder
-from src.features.builders.time_context_feature_builder import TimeContextFeatureBuilder
+from src.features.builders.session_context_feature_builder import SessionContextFeatureBuilder
+from src.features.builders.trend_feature_builder import TrendFeatureBuilder
+from src.features.builders.volume_flow_feature_builder import VolumeFlowFeatureBuilder
 from src.features.contracts.feature_builder_contract import FeatureBuilderContract
 from src.features.models.feature_context import FeatureContext
 from src.features.models.feature_pipeline_result import FeaturePipelineResult
 from src.features.models.feature_request import ResolvedFeatureRequest, resolve_feature_request
-from src.features.models.indicator_cache import IndicatorCache
 
 
 class MasterFeatureBuilder:
     def __init__(self) -> None:
+        self.base_timeframe = str(getattr(cfg, "TIMEFRAME", "1h"))
+        self.htf_timeframe = str(getattr(cfg, "HTF_TIMEFRAME", "4h"))
         self.main_builders: list[FeatureBuilderContract] = [
-            MomentumFeatureBuilder(),
-            RegimeFeatureBuilder(),
-            StructureFeatureBuilder(),
-            TimeContextFeatureBuilder(),
+            TrendFeatureBuilder(timeframe_label="1h"),
+            RegimeFeatureBuilder(timeframe_label="1h"),
+            CompressionExpansionFeatureBuilder(),
+            EntryLocationFeatureBuilder(),
+            InteractionFeatureBuilder(),
+            LwtiFeatureBuilder(),
+            MarketContextFeatureBuilder(),
+            SessionContextFeatureBuilder(),
+            VolumeFlowFeatureBuilder(),
         ]
         self.htf_builders: list[FeatureBuilderContract] = [
-            HtfFeatureBuilder(),
-        ]
-        self.base_enrichment_builders: list[FeatureBuilderContract] = [
-            BtcRelativeFeatureBuilder(),
-            BaseCrossSectionalFeatureBuilder(),
-            BaseMarketContextFeatureBuilder(),
-        ]
-        self.htf_enrichment_builders: list[FeatureBuilderContract] = [
-            HtfCrossSectionalFeatureBuilder(),
-            HtfMarketContextFeatureBuilder(),
-        ]
-        self.post_merge_builders: list[FeatureBuilderContract] = [
-            InteractionFeatureBuilder(),
+            HtfContextFeatureBuilder(),
+            TrendFeatureBuilder(timeframe_label="4h"),
+            RegimeFeatureBuilder(timeframe_label="4h"),
         ]
 
     def build(
@@ -57,37 +52,14 @@ class MasterFeatureBuilder:
             candle_map=base_candle_map,
             builders=self.main_builders,
             requested_features=requested_features,
+            htf_candle_map=htf_candle_map,
         )
         htf_feature_map = self._build_symbol_map(
             candle_map=htf_candle_map,
             builders=self.htf_builders,
             requested_features=requested_features,
         )
-
-        self._enrich_symbol_map(
-            target_map=base_feature_map,
-            builders=self.base_enrichment_builders,
-            requested_features=requested_features,
-            base_feature_map=base_feature_map,
-            htf_feature_map=htf_feature_map,
-        )
-        self._enrich_symbol_map(
-            target_map=htf_feature_map,
-            builders=self.htf_enrichment_builders,
-            requested_features=requested_features,
-            base_feature_map=base_feature_map,
-            htf_feature_map=htf_feature_map,
-        )
-
-        merged_feature_map = self._merge_main_and_htf(
-            base_feature_map=base_feature_map,
-            htf_feature_map=htf_feature_map,
-            requested_features=requested_features,
-        )
-        final_feature_map = self._apply_post_merge_builders(
-            feature_map=merged_feature_map,
-            requested_features=requested_features,
-        )
+        final_feature_map = self._merge_main_and_htf(base_feature_map, htf_feature_map, requested_features)
 
         return FeaturePipelineResult(
             feature_map=final_feature_map,
@@ -104,24 +76,16 @@ class MasterFeatureBuilder:
 
     def _collect_block_features(self) -> dict[str, set[str]]:
         block_features: dict[str, set[str]] = {}
-        for builder in self._all_builders():
+        for builder in [*self.main_builders, *self.htf_builders]:
             block_features.setdefault(builder.block_name, set()).update(builder.provides())
         return block_features
-
-    def _all_builders(self) -> list[FeatureBuilderContract]:
-        return [
-            *self.main_builders,
-            *self.htf_builders,
-            *self.base_enrichment_builders,
-            *self.htf_enrichment_builders,
-            *self.post_merge_builders,
-        ]
 
     def _build_symbol_map(
         self,
         candle_map: dict[str, pd.DataFrame],
         builders: list[FeatureBuilderContract],
         requested_features: set[str],
+        htf_candle_map: dict[str, pd.DataFrame] | None = None,
     ) -> dict[str, pd.DataFrame]:
         built_map: dict[str, pd.DataFrame] = {}
         for symbol, source_df in candle_map.items():
@@ -130,7 +94,8 @@ class MasterFeatureBuilder:
             context = FeatureContext(
                 frame=frame,
                 symbol=symbol,
-                indicator_cache=IndicatorCache(),
+                base_feature_map=candle_map,
+                htf_feature_map=htf_candle_map,
             )
             for builder in builders:
                 block_request = builder.provides().intersection(requested_features)
@@ -141,32 +106,6 @@ class MasterFeatureBuilder:
             built_map[symbol] = output
         return built_map
 
-    def _enrich_symbol_map(
-        self,
-        target_map: dict[str, pd.DataFrame],
-        builders: list[FeatureBuilderContract],
-        requested_features: set[str],
-        base_feature_map: dict[str, pd.DataFrame],
-        htf_feature_map: dict[str, pd.DataFrame],
-    ) -> None:
-        shared_cache: dict[str, object] = {}
-        for symbol, source_df in list(target_map.items()):
-            output = source_df.copy()
-            context = FeatureContext(
-                frame=source_df,
-                symbol=symbol,
-                base_feature_map=base_feature_map,
-                htf_feature_map=htf_feature_map,
-                shared_cache=shared_cache,
-            )
-            for builder in builders:
-                block_request = builder.provides().intersection(requested_features)
-                if not block_request:
-                    continue
-                feature_block = builder.build(context, block_request)
-                output = self._merge_feature_block(output, feature_block)
-            target_map[symbol] = output
-
     def _merge_main_and_htf(
         self,
         base_feature_map: dict[str, pd.DataFrame],
@@ -174,8 +113,8 @@ class MasterFeatureBuilder:
         requested_features: set[str],
     ) -> dict[str, pd.DataFrame]:
         merged_map: dict[str, pd.DataFrame] = {}
-        htf_features = set().union(*(builder.provides() for builder in self.htf_builders + self.htf_enrichment_builders))
-        htf_requested_columns = [column for column in sorted(htf_features) if column in requested_features]
+        htf_feature_names = set().union(*(builder.provides() for builder in self.htf_builders))
+        htf_requested_columns = [column for column in sorted(htf_feature_names) if column in requested_features]
 
         for symbol, base_df in base_feature_map.items():
             output = base_df.copy().sort_values("timestamp").reset_index(drop=True)
@@ -186,47 +125,43 @@ class MasterFeatureBuilder:
                 merged_map[symbol] = output
                 continue
 
-            merge_columns = ["timestamp"] + [column for column in htf_requested_columns if column in htf_df.columns]
+            merge_columns = [column for column in htf_requested_columns if column in htf_df.columns]
+            base_merge = output.copy()
+            base_merge["_merge_ts"] = base_merge["timestamp"] + self._timeframe_to_timedelta(self.base_timeframe)
+
+            htf_merge = htf_df[["timestamp"] + merge_columns].copy()
+            # Align HTF features only after the higher-timeframe candle is fully closed.
+            htf_merge["_merge_ts"] = htf_merge["timestamp"] + self._timeframe_to_timedelta(self.htf_timeframe)
             merged = pd.merge_asof(
-                output,
-                htf_df[merge_columns].sort_values("timestamp").reset_index(drop=True),
-                on="timestamp",
+                base_merge.sort_values("_merge_ts").reset_index(drop=True),
+                htf_merge[["_merge_ts"] + merge_columns].sort_values("_merge_ts").reset_index(drop=True),
+                on="_merge_ts",
                 direction="backward",
             )
+            merged = merged.drop(columns=["_merge_ts"], errors="ignore")
             for column in htf_requested_columns:
                 if column not in merged.columns:
                     merged[column] = pd.NA
             merged_map[symbol] = merged
         return merged_map
 
-    def _apply_post_merge_builders(
-        self,
-        feature_map: dict[str, pd.DataFrame],
-        requested_features: set[str],
-    ) -> dict[str, pd.DataFrame]:
-        shared_cache: dict[str, object] = {}
-        output_map: dict[str, pd.DataFrame] = {}
-        for symbol, source_df in feature_map.items():
-            output = source_df.copy()
-            context = FeatureContext(
-                frame=output,
-                symbol=symbol,
-                base_feature_map=feature_map,
-                shared_cache=shared_cache,
-            )
-            for builder in self.post_merge_builders:
-                block_request = builder.provides().intersection(requested_features)
-                if not block_request:
-                    continue
-                feature_block = builder.build(context, block_request)
-                output = self._merge_feature_block(output, feature_block)
-            output_map[symbol] = output
-        return output_map
-
     @staticmethod
     def _merge_feature_block(base_df: pd.DataFrame, feature_block: pd.DataFrame) -> pd.DataFrame:
         if feature_block.empty or list(feature_block.columns) == ["timestamp"]:
             return base_df
         extra_columns = [column for column in feature_block.columns if column != "timestamp"]
-        deduped_block = feature_block.loc[:, ["timestamp"] + extra_columns]
-        return base_df.merge(deduped_block, on="timestamp", how="left")
+        return base_df.merge(feature_block[["timestamp"] + extra_columns], on="timestamp", how="left")
+
+    @staticmethod
+    def _timeframe_to_timedelta(timeframe: str) -> pd.Timedelta:
+        amount = int(timeframe[:-1])
+        unit = timeframe[-1].lower()
+        if unit == "m":
+            return pd.to_timedelta(amount, unit="m")
+        if unit == "h":
+            return pd.to_timedelta(amount, unit="h")
+        if unit == "d":
+            return pd.to_timedelta(amount, unit="d")
+        if unit == "w":
+            return pd.to_timedelta(amount * 7, unit="d")
+        raise ValueError(f"Unsupported timeframe format: {timeframe}")

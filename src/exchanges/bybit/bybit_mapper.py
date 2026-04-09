@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.types.common import HistoricalKline, Symbol
+from src.types.common import FundingRatePoint, HistoricalKline, OpenInterestPoint, PriceKline, Symbol
 
 
 BYBIT_INTERVALS = {
@@ -17,6 +17,15 @@ BYBIT_INTERVALS = {
     "1d": "D",
     "1w": "W",
     "1M": "M",
+}
+
+BYBIT_OPEN_INTEREST_INTERVALS = {
+    "5m": "5min",
+    "15m": "15min",
+    "30m": "30min",
+    "1h": "1h",
+    "4h": "4h",
+    "1d": "1d",
 }
 
 TF_MS = {
@@ -51,6 +60,12 @@ class BybitMapper:
             raise ValueError(f"timeframe {timeframe} is missing in TF_MS")
         return timeframe_ms
 
+    def to_open_interest_interval(self, timeframe: str) -> str:
+        interval = BYBIT_OPEN_INTEREST_INTERVALS.get(timeframe)
+        if interval is None:
+            raise ValueError(f"Unsupported open interest timeframe for Bybit: {timeframe}")
+        return interval
+
     def to_klines(self, payload: dict) -> list[HistoricalKline]:
         candles = payload.get("result", {}).get("list", [])
         klines = [
@@ -67,3 +82,42 @@ class BybitMapper:
         ]
         klines.sort(key=lambda candle: candle.open_time)
         return klines
+
+    def to_price_klines(self, payload: dict) -> list[PriceKline]:
+        candles = payload.get("result", {}).get("list", [])
+        klines = [
+            PriceKline(
+                open_time=int(candle[0]),
+                open=float(candle[1]),
+                high=float(candle[2]),
+                low=float(candle[3]),
+                close=float(candle[4]),
+            )
+            for candle in candles
+        ]
+        klines.sort(key=lambda candle: candle.open_time)
+        return klines
+
+    def to_funding_rates(self, payload: dict) -> list[FundingRatePoint]:
+        rows = payload.get("result", {}).get("list", [])
+        points = [
+            FundingRatePoint(
+                funding_time=int(row["fundingRateTimestamp"]),
+                funding_rate=float(row["fundingRate"]),
+            )
+            for row in rows
+        ]
+        points.sort(key=lambda point: point.funding_time)
+        return points
+
+    def to_open_interest_points(self, payload: dict) -> list[OpenInterestPoint]:
+        rows = payload.get("result", {}).get("list", [])
+        points = [
+            OpenInterestPoint(
+                timestamp=int(row["timestamp"]),
+                open_interest=float(row["openInterest"]),
+            )
+            for row in rows
+        ]
+        points.sort(key=lambda point: point.timestamp)
+        return points

@@ -10,7 +10,7 @@ from src.contracts.exchange_contract import ExchangeContract
 from src.exchanges.binance.binance_service import BinanceService
 from src.exchanges.bybit.bybit_service import BybitService
 from src.features import MasterFeatureBuilder
-from src.features.indicators import compute_atr, safe_ratio
+from src.features.indicators import compute_atr, compute_donchian_channels, safe_ratio
 from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
 
 logging.basicConfig(level=logging.INFO)
@@ -23,17 +23,18 @@ BASE_OUTPUT_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
 BARRIER_OUTPUT_COLUMNS = ["barrier_stop_pct", "barrier_take_pct"]
 
 
-def compute_dynamic_barrier_stop_pct(close: pd.Series, atr_14: pd.Series, realized_vol_1h: pd.Series) -> pd.Series:
+def compute_dynamic_barrier_stop_pct(
+    close: pd.Series,
+    atr_14: pd.Series,
+    realized_vol_1h: pd.Series | None = None,
+) -> pd.Series:
     atr_pct = safe_ratio(atr_14, close).abs()
-    horizon_vol_pct = realized_vol_1h.abs() * np.sqrt(int(getattr(cfg, "HORIZON", 1)))
+    barrier_candidates = [atr_pct * float(getattr(cfg, "BARRIER_ATR_MULTIPLIER", 1.25))]
+    if realized_vol_1h is not None:
+        horizon_vol_pct = realized_vol_1h.abs() * np.sqrt(int(getattr(cfg, "HORIZON", 1)))
+        barrier_candidates.append(horizon_vol_pct * float(getattr(cfg, "BARRIER_RVOL_MULTIPLIER", 0.75)))
 
-    stop_pct = pd.concat(
-        [
-            atr_pct * float(getattr(cfg, "BARRIER_ATR_MULTIPLIER", 1.25)),
-            horizon_vol_pct * float(getattr(cfg, "BARRIER_RVOL_MULTIPLIER", 0.75)),
-        ],
-        axis=1,
-    ).max(axis=1)
+    stop_pct = pd.concat(barrier_candidates, axis=1).max(axis=1)
 
     min_pct = float(getattr(cfg, "BARRIER_MIN_PCT", getattr(cfg, "SL_PCT", 0.015)))
     max_pct = float(getattr(cfg, "BARRIER_MAX_PCT", getattr(cfg, "TP_PCT", 0.03)))
@@ -44,16 +45,68 @@ def compute_dynamic_barrier_take_pct(stop_pct: pd.Series) -> pd.Series:
     return stop_pct * float(getattr(cfg, "BARRIER_TP_TO_SL_RATIO", 2.0))
 
 
+def resolve_barrier_mode() -> str:
+    mode = str(getattr(cfg, "BARRIER_MODE", "")).strip().lower()
+    if mode:
+        return mode
+    if bool(getattr(cfg, "USE_DYNAMIC_BARRIERS", True)):
+        return "dynamic"
+    return "fixed"
+
+
+def compute_barrier_realized_vol(close: pd.Series) -> pd.Series:
+    timeframe = str(getattr(cfg, "TIMEFRAME", "1h"))
+    bars_per_hour = max(1, int(round(3_600_000 / timeframe_to_ms(timeframe))))
+    log_returns = np.log(close / close.shift(1))
+    return log_returns.rolling(bars_per_hour, min_periods=bars_per_hour).std()
+
+
+def compute_strategy_barrier_pcts(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    close = df["close"].replace(0, np.nan)
+    high = df["high"]
+    low = df["low"]
+
+    donchian_length = int(getattr(cfg, "DONCHIAN_LENGTH", 96))
+    local_extreme_lookback = int(getattr(cfg, "STRATEGY_BARRIER_LOCAL_EXTREME_LOOKBACK", 12))
+    max_midline_pct = float(getattr(cfg, "STRATEGY_BARRIER_MAX_MIDLINE_PCT", 0.03))
+    min_stop_pct = float(getattr(cfg, "STRATEGY_BARRIER_MIN_PCT", 0.0))
+    tp_to_sl_ratio = float(getattr(cfg, "STRATEGY_BARRIER_TP_TO_SL_RATIO", 2.0))
+
+    _, donchian_mid, _ = compute_donchian_channels(high, low, length=donchian_length, shift=1)
+    local_swing_low = low.rolling(local_extreme_lookback, min_periods=local_extreme_lookback).min().shift(1)
+
+    midline_stop_pct = safe_ratio((close - donchian_mid).clip(lower=0.0), close)
+    local_low_stop_pct = safe_ratio((close - local_swing_low).clip(lower=0.0), close)
+
+    use_local_extreme = (
+        donchian_mid.isna()
+        | (donchian_mid >= close)
+        | (midline_stop_pct > max_midline_pct)
+    )
+    stop_pct = midline_stop_pct.where(~use_local_extreme, local_low_stop_pct)
+    stop_pct = stop_pct.where(stop_pct.notna(), midline_stop_pct)
+    stop_pct = stop_pct.where(stop_pct > 0.0)
+    stop_pct = stop_pct.clip(lower=min_stop_pct)
+    take_pct = stop_pct * tp_to_sl_ratio
+    return stop_pct, take_pct
+
+
 def attach_barrier_columns(df: pd.DataFrame) -> pd.DataFrame:
     output = df.copy()
     close = output["close"]
     atr_14 = compute_atr(output["high"], output["low"], close, length=14)
+    barrier_mode = resolve_barrier_mode()
 
-    if bool(getattr(cfg, "USE_DYNAMIC_BARRIERS", True)):
-        if "realized_vol_1h" not in output.columns:
-            raise ValueError("Dynamic barriers require feature 'realized_vol_1h' to be enabled.")
-        output["barrier_stop_pct"] = compute_dynamic_barrier_stop_pct(close, atr_14, output["realized_vol_1h"])
+    if barrier_mode == "dynamic":
+        realized_vol = (
+            output["realized_vol_1h"]
+            if "realized_vol_1h" in output.columns
+            else compute_barrier_realized_vol(close)
+        )
+        output["barrier_stop_pct"] = compute_dynamic_barrier_stop_pct(close, atr_14, realized_vol)
         output["barrier_take_pct"] = compute_dynamic_barrier_take_pct(output["barrier_stop_pct"])
+    elif barrier_mode == "donchian_midline_rr":
+        output["barrier_stop_pct"], output["barrier_take_pct"] = compute_strategy_barrier_pcts(output)
     else:
         output["barrier_stop_pct"] = float(getattr(cfg, "SL_PCT", 0.015))
         output["barrier_take_pct"] = float(getattr(cfg, "TP_PCT", 0.03))
@@ -67,6 +120,53 @@ def compute_clean_pnl(direction: int, entry_price: float, exit_price: float) -> 
         raw_pnl = (entry_price - exit_price) / entry_price
     taker_com = float(getattr(cfg, "TAKER_COM", 0.0004))
     return raw_pnl - (taker_com + taker_com)
+
+
+def resolve_vertical_barrier_exit(direction: int, final_close: float) -> float:
+    slippage = float(getattr(cfg, "SLIPPAGE", 0.0003))
+    if direction == 1:
+        return final_close * (1 - slippage)
+    return final_close * (1 + slippage)
+
+
+def compute_label_min_net_return_thresholds(df: pd.DataFrame) -> np.ndarray:
+    """Порог net-доходности по бару: gross > avg_spread + 2*TAKER_COM ⇔ long_pnl > avg_spread."""
+    n = len(df)
+    floor = float(getattr(cfg, "LABEL_AVERAGE_SPREAD_PCT", 0.0))
+    if not bool(getattr(cfg, "LABEL_USE_ROLLING_SPREAD_PROXY", True)):
+        return np.full(n, floor, dtype=np.float64)
+    window = int(getattr(cfg, "LABEL_SPREAD_ROLLING_BARS", 24))
+    close = df["close"].replace(0, np.nan)
+    hl_range = (df["high"] - df["low"]) / close
+    min_periods = max(1, min(window, window // 2 or 1))
+    roll = hl_range.rolling(window, min_periods=min_periods).mean()
+    return np.maximum(np.nan_to_num(roll.values.astype(np.float64), nan=floor), floor)
+
+
+def resolve_long_label(
+    long_pnl: float,
+    exit_reason: str | None,
+    min_net_threshold: float = 0.0,
+) -> float:
+    use_sig = bool(getattr(cfg, "LABEL_USE_SIGNIFICANT_RETURN", False))
+
+    if exit_reason == "TIME":
+        neutral_band = float(getattr(cfg, "TIME_EXIT_NEUTRAL_BAND", 0.0))
+        if use_sig:
+            if abs(long_pnl) <= neutral_band:
+                return np.nan
+            if long_pnl < -neutral_band:
+                return 0.0
+            return float(long_pnl > min_net_threshold)
+        if long_pnl > neutral_band:
+            return 1.0
+        if long_pnl < -neutral_band:
+            return 0.0
+        return np.nan
+
+    if use_sig:
+        return float(long_pnl > min_net_threshold)
+    return float(long_pnl > 0)
 
 
 def resolve_trade_exit(
@@ -107,6 +207,7 @@ def simulate_trade_outcome(
     opens: np.ndarray,
     highs: np.ndarray,
     lows: np.ndarray,
+    closes: np.ndarray,
     stop_pcts: np.ndarray,
     take_pcts: np.ndarray,
     start_idx: int,
@@ -139,7 +240,9 @@ def simulate_trade_outcome(
         if exit_price is not None:
             return compute_clean_pnl(direction, entry_price, exit_price), reason
 
-    return 0.0, None
+    final_candle_idx = min(start_idx + horizon, len(closes) - 1)
+    final_exit_price = resolve_vertical_barrier_exit(direction, closes[final_candle_idx])
+    return compute_clean_pnl(direction, entry_price, final_exit_price), "TIME"
 
 
 def triple_barrier_labeling(df: pd.DataFrame) -> pd.DataFrame:
@@ -149,20 +252,14 @@ def triple_barrier_labeling(df: pd.DataFrame) -> pd.DataFrame:
     opens = df["open"].values
     highs = df["high"].values
     lows = df["low"].values
+    closes = df["close"].values
     stop_pcts = df["barrier_stop_pct"].values
     take_pcts = df["barrier_take_pct"].values
+    min_net_thresholds = compute_label_min_net_return_thresholds(df)
 
     for i in range(len(df) - horizon):
-        label = 0
-        long_pnl, _ = simulate_trade_outcome(opens, highs, lows, stop_pcts, take_pcts, i, direction=1)
-        short_pnl, _ = simulate_trade_outcome(opens, highs, lows, stop_pcts, take_pcts, i, direction=-1)
-
-        if long_pnl > 0 and short_pnl <= 0:
-            label = 1
-        elif short_pnl > 0 and long_pnl <= 0:
-            label = -1
-
-        labels.append(label)
+        long_pnl, exit_reason = simulate_trade_outcome(opens, highs, lows, closes, stop_pcts, take_pcts, i, direction=1)
+        labels.append(resolve_long_label(long_pnl, exit_reason, float(min_net_thresholds[i])))
 
     labels.extend([0] * horizon)
     output = df.copy()
@@ -265,7 +362,10 @@ def warn_if_history_starts_late(
 def build_candle_maps(
     repository: HistoricalKlineRepository,
     symbols_to_load: list,
-) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
+) -> tuple[
+    dict[str, pd.DataFrame],
+    dict[str, pd.DataFrame],
+]:
     base_candle_map: dict[str, pd.DataFrame] = {}
     htf_candle_map: dict[str, pd.DataFrame] = {}
 
@@ -281,7 +381,27 @@ def build_candle_maps(
         base_candle_map[symbol_name] = df
         htf_candle_map[symbol_name] = htf_df
 
-    return base_candle_map, htf_candle_map
+    return (base_candle_map, htf_candle_map)
+
+
+def sync_bybit_market_context(
+    repository: HistoricalKlineRepository,
+    exchange_service: BybitService,
+    symbol: str,
+    start_date: str,
+    end_date: str | None,
+) -> None:
+    for timeframe in (
+        str(getattr(cfg, "TIMEFRAME", "1h")),
+        str(getattr(cfg, "HTF_TIMEFRAME", "4h")),
+    ):
+        logger.info("Loading %s %s open-interest from %s...", symbol, timeframe, start_date)
+        open_interest_loaded = repository.sync_open_interest(exchange_service, symbol, timeframe, start_date, end_date)
+        logger.info("%s %s open-interest: %s new rows", symbol, timeframe, open_interest_loaded)
+
+    logger.info("Loading %s funding history from %s...", symbol, start_date)
+    funding_loaded = repository.sync_funding_rates(exchange_service, symbol, start_date, end_date)
+    logger.info("%s funding history: %s new rows", symbol, funding_loaded)
 
 
 def main() -> None:
@@ -308,7 +428,16 @@ def main() -> None:
         logger.info("%s %s: %s new candles", symbol_name, htf_timeframe, htf_loaded)
         warn_if_history_starts_late(repository, symbol_name, htf_timeframe, start_date)
 
-    base_candle_map, htf_candle_map = build_candle_maps(repository, symbols_to_load)
+        if isinstance(exchange_service, BybitService):
+            sync_bybit_market_context(
+                repository=repository,
+                exchange_service=exchange_service,
+                symbol=symbol_name,
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+    (base_candle_map, htf_candle_map) = build_candle_maps(repository, symbols_to_load)
     feature_builder = MasterFeatureBuilder()
     pipeline_result = feature_builder.build(base_candle_map, htf_candle_map)
     logger.info(

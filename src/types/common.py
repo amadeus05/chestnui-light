@@ -27,3 +27,24 @@ class HistoricalKline:
     close: float
     volume: float
     quote_volume: float
+
+
+@dataclass(frozen=True, slots=True)
+class PriceKline:
+    open_time: int
+    open: float
+    high: float
+    low: float
+    close: float
+
+
+@dataclass(frozen=True, slots=True)
+class FundingRatePoint:
+    funding_time: int
+    funding_rate: float
+
+
+@dataclass(frozen=True, slots=True)
+class OpenInterestPoint:
+    timestamp: int
+    open_interest: float

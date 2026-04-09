@@ -9,7 +9,7 @@
 - загрузка исторических данных с Bybit
 - хранение свечей и фичей в `SQLite`
 - мульти-таймфрейм feature engineering
-- бинарная directional-модель: `short` или `long`
+- бинарная long-only модель: `no_long` или `long`
 - сохранение метрик, модели и feature importance
 - мульти-символьный бэктест с кривой капитала
 
@@ -33,7 +33,8 @@ light/
 ├─ bt.py              # Бэктест портфеля
 ├─ requirements.txt   # Зависимости Python
 ├─ models/            # Сохранённые модели и метрики
-└─ market_data.db     # Локальная база SQLite
+└─ data/
+   └─ market_data.db  # Локальная база SQLite
 ```
 
 ## Быстрый старт
@@ -92,17 +93,17 @@ python bt.py
 
 Сохраняемые артефакты:
 
-- `models/lightgbm_target.joblib`
-- `models/lightgbm_target_metrics.json`
-- `models/lightgbm_target_features.json`
-- `models/lightgbm_target_feature_importance.csv`
+- `models/lightgbm_long_only.joblib`
+- `models/lightgbm_long_only_metrics.json`
+- `models/lightgbm_long_only_features.json`
+- `models/lightgbm_long_only_feature_importance.csv`
 
 ### `bt.py`
 
 Скрипт использует сохранённую модель и метаданные фичей, чтобы:
 
 - подготовить признаки для инференса
-- получить long/short сигналы
+- получить long-only сигналы
 - симулировать открытие и закрытие позиций
 - посчитать PnL, drawdown, Sharpe, Profit Factor и другие метрики
 - сохранить график `backtest_charts/equity_curve.png`
@@ -117,10 +118,9 @@ python bt.py
 - `TIMEFRAME` - основной рабочий таймфрейм
 - `HTF_TIMEFRAME` - старший таймфрейм для multi-timeframe фичей
 - `START_DATE` - дата начала загрузки истории
-- `DB_PATH` - путь к базе `SQLite`
+- `DB_PATH` - путь к базе `SQLite` (по умолчанию `data/market_data.db`)
 - `TP_PCT` и `SL_PCT` - параметры разметки target
-- `DIRECTIONAL_PROBA_THRESHOLD` - минимальная уверенность модели для входа
-- `MIN_SIGNAL_GAP` - минимальный разрыв между вероятностями long и short
+- `LONG_PROBA_THRESHOLD` - минимальная вероятность long для входа
 - `RISK_PER_TRADE` - риск на одну сделку в бэктесте
 - `BACKTEST_MAX_OPEN_POSITIONS` - максимум одновременно открытых позиций
 
@@ -138,3 +138,29 @@ python bt.py
 pip install -r requirements.txt
 ```
 !!! WARNING - train data was used to 28-03-26
+
+# Обычный режим (как раньше)
+python train.py
+# Walk-Forward с expanding window (по умолчанию)
+python train.py --walk-forward --wf-splits 7
+# Rolling window с фиксированным размером обучения
+python train.py --walk-forward --wf-strategy rolling --wf-train-window 5000 --wf-splits 5
+# С защитой от лика
+python train.py --walk-forward --wf-purge-gap 12 --wf-embargo-pct 0.05
+
+
+
+
+
+
+entry_features
+interaction_features
+
+python train.py --quick --quick-folds 6 --quick-n-estimators 600
+
+--quick
+--quick-folds
+--quick-n-estimators
+--quick-log-eval-period
+--wf-start-fold
+--wf-max-folds

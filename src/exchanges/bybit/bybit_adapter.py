@@ -15,11 +15,38 @@ logger = logging.getLogger(__name__)
 class BybitAdapter:
     def __init__(self) -> None:
         self.kline_url = getattr(cfg, "BYBIT_KLINE_URL", "https://api.bybit.com/v5/market/kline")
+        self.mark_price_kline_url = getattr(
+            cfg,
+            "BYBIT_MARK_PRICE_KLINE_URL",
+            "https://api.bybit.com/v5/market/mark-price-kline",
+        )
+        self.index_price_kline_url = getattr(
+            cfg,
+            "BYBIT_INDEX_PRICE_KLINE_URL",
+            "https://api.bybit.com/v5/market/index-price-kline",
+        )
+        self.funding_history_url = getattr(
+            cfg,
+            "BYBIT_FUNDING_HISTORY_URL",
+            "https://api.bybit.com/v5/market/funding/history",
+        )
+        self.open_interest_url = getattr(
+            cfg,
+            "BYBIT_OPEN_INTEREST_URL",
+            "https://api.bybit.com/v5/market/open-interest",
+        )
+        self.instruments_info_url = getattr(
+            cfg,
+            "BYBIT_INSTRUMENTS_INFO_URL",
+            "https://api.bybit.com/v5/market/instruments-info",
+        )
         self.category = getattr(cfg, "BYBIT_CATEGORY", "linear")
         self.limit = min(1000, max(1, int(getattr(cfg, "BYBIT_LIMIT", 1000))))
+        self.funding_limit = min(200, max(1, int(getattr(cfg, "BYBIT_FUNDING_LIMIT", 200))))
+        self.open_interest_limit = min(200, max(1, int(getattr(cfg, "BYBIT_OPEN_INTEREST_LIMIT", 200))))
         self.timeout = float(getattr(cfg, "BYBIT_TIMEOUT", 20))
         self.retry_count = max(1, int(getattr(cfg, "BYBIT_RETRY_COUNT", 5)))
-        self.retry_sleep = float(getattr(cfg, "BYBIT_RETRY_SLEEP", 0.3))
+        self.retry_sleep = float(getattr(cfg, "BYBIT_RETRY_SLEEP", 0.33))
         self.max_workers = max(1, int(getattr(cfg, "BYBIT_MAX_WORKERS", 6)))
         self._thread_local = threading.local()
 
@@ -83,4 +110,100 @@ class BybitAdapter:
             self.kline_url,
             params,
             f"{api_symbol}-{interval}-{window_start}-{window_end}",
+        )
+
+    def fetch_mark_price_kline_window(
+        self,
+        api_symbol: str,
+        interval: str,
+        window_start: int,
+        window_end: int,
+    ) -> dict:
+        params = {
+            "category": self.category,
+            "symbol": api_symbol,
+            "interval": interval,
+            "start": window_start,
+            "end": window_end,
+            "limit": self.limit,
+        }
+        return self.request_json(
+            self.mark_price_kline_url,
+            params,
+            f"mark-{api_symbol}-{interval}-{window_start}-{window_end}",
+        )
+
+    def fetch_index_price_kline_window(
+        self,
+        api_symbol: str,
+        interval: str,
+        window_start: int,
+        window_end: int,
+    ) -> dict:
+        params = {
+            "category": self.category,
+            "symbol": api_symbol,
+            "interval": interval,
+            "start": window_start,
+            "end": window_end,
+            "limit": self.limit,
+        }
+        return self.request_json(
+            self.index_price_kline_url,
+            params,
+            f"index-{api_symbol}-{interval}-{window_start}-{window_end}",
+        )
+
+    def fetch_funding_rate_window(
+        self,
+        api_symbol: str,
+        window_start: int,
+        window_end: int,
+    ) -> dict:
+        params = {
+            "category": self.category,
+            "symbol": api_symbol,
+            "startTime": window_start,
+            "endTime": window_end,
+            "limit": self.funding_limit,
+        }
+        return self.request_json(
+            self.funding_history_url,
+            params,
+            f"funding-{api_symbol}-{window_start}-{window_end}",
+        )
+
+    def fetch_open_interest_window(
+        self,
+        api_symbol: str,
+        interval_time: str,
+        window_start: int,
+        window_end: int,
+    ) -> dict:
+        params = {
+            "category": self.category,
+            "symbol": api_symbol,
+            "intervalTime": interval_time,
+            "startTime": window_start,
+            "endTime": window_end,
+            "limit": self.open_interest_limit,
+        }
+        return self.request_json(
+            self.open_interest_url,
+            params,
+            f"open-interest-{api_symbol}-{interval_time}-{window_start}-{window_end}",
+        )
+
+    def fetch_instruments_info(
+        self,
+        api_symbol: str,
+    ) -> dict:
+        params = {
+            "category": self.category,
+            "symbol": api_symbol,
+        }
+        return self.request_json(
+            self.instruments_info_url,
+            params,
+            f"instrument-info-{api_symbol}",
         )

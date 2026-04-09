@@ -1,13 +1,14 @@
 import json
 import sys
 from pathlib import Path
+import config as cfg
 import pandas as pd
 import numpy as np
 import joblib
 import matplotlib.pyplot as plt
 import etl
 from config import *
-from signal_filter import build_candidate_event_mask, resolve_event_filter_config
+from signal_filter import build_candidate_event_mask, resolve_backtest_event_filter_config
 from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
 
 # Futures settings come from config.py
@@ -22,12 +23,16 @@ BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES = int(
     globals().get("BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES", 0)
 )
 BACKTEST_REDUCED_RISK_PER_TRADE = float(globals().get("BACKTEST_REDUCED_RISK_PER_TRADE", RISK_PER_TRADE))
-DIRECTIONAL_PROBA_THRESHOLD = globals().get(
-    "DIRECTIONAL_PROBA_THRESHOLD",
-    globals().get("CONFIDENCE_THRESHOLD", 0.5),
+LONG_PROBA_THRESHOLD = float(
+    globals().get(
+        "LONG_PROBA_THRESHOLD",
+        globals().get("DIRECTIONAL_PROBA_THRESHOLD", globals().get("CONFIDENCE_THRESHOLD", 0.5)),
+    )
 )
 BACKTEST_INITIAL_BALANCE = float(globals().get("BACKTEST_INITIAL_BALANCE", 100.0))
+BARRIER_MODE = str(globals().get("BARRIER_MODE", "")).strip().lower()
 USE_DYNAMIC_BARRIERS = bool(globals().get("USE_DYNAMIC_BARRIERS", True))
+MODEL_NAME = globals().get("MODEL_NAME", "lightgbm_long_only")
 BACKTEST_CHARTS_DIR = Path(globals().get("BACKTEST_CHARTS_DIR", "backtest_charts"))
 BACKTEST_CHARTS_DIR.mkdir(parents=True, exist_ok=True)
 EQUITY_CURVE_PATH = BACKTEST_CHARTS_DIR / "equity_curve.png"
@@ -59,6 +64,14 @@ def get_end_date_cutoff():
     return pd.to_datetime(globals().get("END_DATE"), errors="coerce")
 
 
+def resolve_barrier_mode() -> str:
+    if BARRIER_MODE:
+        return BARRIER_MODE
+    if USE_DYNAMIC_BARRIERS:
+        return "dynamic"
+    return "fixed"
+
+
 def apply_end_date_cutoff(df: pd.DataFrame, timestamp_column: str = "timestamp") -> pd.DataFrame:
     if df is None or df.empty or timestamp_column not in df.columns:
         return df
@@ -84,11 +97,6 @@ def parse_period_payload(period_payload: dict | None, period_name: str) -> tuple
         raise RuntimeError(f"Model metadata has {period_name} start after end: {period_payload}")
     return start, end
 
-# LightGBM binary directional mapping (from train.py)
-LABEL_TO_CLASS = {-1: 0, 1: 1}
-CLASS_TO_LABEL = {v: k for k, v in LABEL_TO_CLASS.items()}
-
-
 def timeframe_to_ms(timeframe: str) -> int:
     if timeframe not in TF_MS:
         raise ValueError(f"Unsupported timeframe: {timeframe}")
@@ -104,41 +112,21 @@ def format_pnl_pct(pnl_pct: float) -> str:
     return colorize(f"{pnl_pct:+.2f}%", color)
 
 
-def format_reason(reason: str) -> str:
-    if reason == "TP":
-        return colorize("✅ TP", ANSI_GREEN)
-    if reason == "SL":
-        return colorize("❌ SL", ANSI_RED)
-    return reason
-
-
-def build_entry_score(direction_prob: float, signal_gap: float) -> float:
-    edge = max(0.0, direction_prob - DIRECTIONAL_PROBA_THRESHOLD)
-    return edge * 10 + signal_gap
+def build_entry_score(long_prob: float) -> float:
+    edge = max(0.0, long_prob - LONG_PROBA_THRESHOLD)
+    return edge * 10 + long_prob
 
 
 def format_reason(reason: str) -> str:
     if reason == "TP":
-        return colorize("TP", ANSI_GREEN)
+        return colorize("\u2705 TP", ANSI_GREEN)
     if reason == "SL":
-        return colorize("SL", ANSI_RED)
+        return colorize("\u274c SL", ANSI_RED)
     return reason
 
 
-def resolve_directional_signal(p_long: float, p_short: float) -> tuple[int, float, float]:
-    signal_gap = abs(p_long - p_short)
-
-    if (
-        p_long >= DIRECTIONAL_PROBA_THRESHOLD
-        and (p_long - p_short) >= MIN_SIGNAL_GAP
-    ):
-        return 1, p_long, signal_gap
-    if (
-        p_short >= DIRECTIONAL_PROBA_THRESHOLD
-        and (p_short - p_long) >= MIN_SIGNAL_GAP
-    ):
-        return -1, p_short, signal_gap
-    return 0, max(p_long, p_short), signal_gap
+def should_open_long(p_long: float) -> bool:
+    return p_long >= LONG_PROBA_THRESHOLD
 
 
 def get_barrier_pcts(feature_row: pd.DataFrame | None) -> tuple[float | None, float | None]:
@@ -227,11 +215,12 @@ def print_table(headers: list[str], rows: list[list[str]], right_align: set[int]
                 formatted.append(text.rjust(widths[idx]))
             else:
                 formatted.append(text.ljust(widths[idx]))
-        return "│ " + " │ ".join(formatted) + " │"
+        return "\u2502 " + " \u2502 ".join(formatted) + " \u2502"
 
-    top = "┌" + "┬".join("─" * (width + 2) for width in widths) + "┐"
-    mid = "├" + "┼".join("─" * (width + 2) for width in widths) + "┤"
-    bottom = "└" + "┴".join("─" * (width + 2) for width in widths) + "┘"
+    h = "\u2500"
+    top = "\u250c" + "\u252c".join(h * (width + 2) for width in widths) + "\u2510"
+    mid = "\u251c" + "\u253c".join(h * (width + 2) for width in widths) + "\u2524"
+    bottom = "\u2514" + "\u2534".join(h * (width + 2) for width in widths) + "\u2518"
 
     print(top)
     print(format_row(headers))
@@ -289,7 +278,8 @@ def load_precomputed_features(symbol: str, symbol_categories=None, required_colu
     repository = HistoricalKlineRepository()
     try:
         df = repository.load_features(symbol)
-    except Exception:
+    except Exception as exc:
+        print(f"Warning: failed loading precomputed features for {symbol}: {exc}")
         return pd.DataFrame()
 
     if df.empty:
@@ -299,6 +289,12 @@ def load_precomputed_features(symbol: str, symbol_categories=None, required_colu
         required_order = list(dict.fromkeys(["timestamp"] + required_columns + ["symbol"]))
         missing_columns = [column for column in required_order if column not in df.columns]
         if missing_columns:
+            preview = ", ".join(missing_columns[:10])
+            suffix = "..." if len(missing_columns) > 10 else ""
+            print(
+                f"Warning: {symbol} precomputed features missing required columns: "
+                f"{preview}{suffix}"
+            )
             return pd.DataFrame()
         df = df[required_order].copy()
 
@@ -373,50 +369,91 @@ def prepare_dataset_for_time(df: pd.DataFrame, analysis_ts: pd.Timestamp) -> pd.
     return out.drop(columns=["close_time"], errors="ignore").reset_index(drop=True)
 
 
-def build_feature_row_at_time(
-    symbol: str,
-    main_df: pd.DataFrame,
-    htf_df: pd.DataFrame,
+def build_feature_batch_at_time(
+    market_batch: dict,
     analysis_ts: pd.Timestamp,
+    runtime_required_columns: list,
     feature_names: list,
     symbol_categories=None,
+    clip_bounds: dict | None = None,
 ):
-    main_cut = prepare_dataset_for_time(main_df, analysis_ts)
-    htf_cut = prepare_dataset_for_time(htf_df, analysis_ts)
+    base_candle_map = {}
+    htf_candle_map = {}
+    for symbol, ctx in market_batch.items():
+        main_cut = prepare_dataset_for_time(ctx["main"], analysis_ts)
+        htf_cut = prepare_dataset_for_time(ctx["htf"], analysis_ts)
+        if main_cut is None or main_cut.empty or len(main_cut) < 250:
+            continue
+        if htf_cut is None or htf_cut.empty or len(htf_cut) < 60:
+            continue
+        base_candle_map[symbol] = main_cut
+        htf_candle_map[symbol] = htf_cut
 
-    if main_cut is None or main_cut.empty or len(main_cut) < 250:
-        return None
+    if not base_candle_map or not htf_candle_map:
+        return {}
 
-    if htf_cut is None or htf_cut.empty or len(htf_cut) < 60:
-        return None
+    requested_runtime_features = [
+        column
+        for column in runtime_required_columns
+        if column not in {"symbol", "barrier_stop_pct", "barrier_take_pct"}
+    ]
+    if resolve_barrier_mode() == "dynamic" and "realized_vol_1h" not in requested_runtime_features:
+        requested_runtime_features.append("realized_vol_1h")
 
     try:
-        feat_main = etl.add_features(main_cut)
-        if feat_main is None or feat_main.empty:
-            return None
-
-        feat_main = etl.add_htf_features(feat_main, htf_cut)
-        if feat_main is None or feat_main.empty:
-            return None
-
-        feat_main["symbol"] = symbol
-        if symbol_categories is None:
-            feat_main["symbol"] = feat_main["symbol"].astype("category")
-        else:
-            feat_main["symbol"] = pd.Categorical(feat_main["symbol"], categories=symbol_categories)
-        latest_row = feat_main.iloc[[-1]].copy()
-        missing = [f for f in feature_names if f not in latest_row.columns]
-        if missing:
-            print(f"Warning: {symbol} missing features: {missing[:10]}")
-            return None
-
-        if latest_row[feature_names].isna().any(axis=None):
-            return None
-
-        return latest_row
+        original_request = getattr(cfg, "FEATURE_BUILD_REQUEST", None)
+        cfg.FEATURE_BUILD_REQUEST = {
+            "profile": "empty",
+            "include_features": requested_runtime_features,
+            "exclude_features": [],
+            "exclude_blocks": [],
+        }
+        pipeline_result = etl.MasterFeatureBuilder().build(base_candle_map, htf_candle_map)
     except Exception as e:
-        print(f"Warning: feature build failed for {symbol} @ {analysis_ts}: {e}")
-        return None
+        print(f"Warning: realtime feature batch build failed @ {analysis_ts}: {e}")
+        return {}
+    finally:
+        cfg.FEATURE_BUILD_REQUEST = original_request
+
+    feature_batch = {}
+    for symbol, feature_df in pipeline_result.feature_map.items():
+        if feature_df is None or feature_df.empty:
+            continue
+        try:
+            feature_df = etl.attach_barrier_columns(feature_df)
+        except Exception as e:
+            print(f"Warning: barrier build failed for {symbol} @ {analysis_ts}: {e}")
+            continue
+
+        latest_row = feature_df.iloc[[-1]].copy()
+        latest_row["symbol"] = symbol
+        if symbol_categories is None:
+            latest_row["symbol"] = latest_row["symbol"].astype("category")
+        else:
+            latest_row["symbol"] = pd.Categorical(latest_row["symbol"], categories=symbol_categories)
+
+        missing = [column for column in runtime_required_columns if column not in latest_row.columns]
+        if missing:
+            print(f"Warning: {symbol} missing runtime features: {missing[:10]}")
+            continue
+        if latest_row[runtime_required_columns].isna().any(axis=None):
+            continue
+
+        current_features = normalize_features_for_model(
+            latest_row,
+            feature_names,
+            symbol_categories=symbol_categories,
+        )
+        current_features = apply_feature_clip_bounds(current_features, clip_bounds or {})
+        if current_features[feature_names].isna().any(axis=None):
+            continue
+
+        feature_batch[symbol] = {
+            "feature_row": latest_row,
+            "model_features": current_features,
+        }
+
+    return feature_batch
 
 
 def get_exec_row_by_ts(df: pd.DataFrame, ts: pd.Timestamp):
@@ -545,13 +582,12 @@ def get_feature_batch_precomputed(
 def backtest():
     print("Loading model and features...")
 
-    if not ALLOW_LONGS and not ALLOW_SHORTS:
-        print("Error: both ALLOW_LONGS and ALLOW_SHORTS are disabled.")
+    if not ALLOW_LONGS:
+        print("Error: ALLOW_LONGS is disabled, but this backtest only supports the long-only model.")
         return
 
-    # --- Load LightGBM model ---
-    model_path = MODELS_DIR / "lightgbm_target.joblib"
-    features_meta_path = MODELS_DIR / "lightgbm_target_features.json"
+    model_path = MODELS_DIR / f"{MODEL_NAME}.joblib"
+    features_meta_path = MODELS_DIR / f"{MODEL_NAME}_features.json"
 
     if not model_path.exists():
         print(f"Error: model not found at {model_path}. Run train.py first.")
@@ -567,6 +603,12 @@ def backtest():
         features_meta = json.load(f)
 
     feature_names = features_meta["feature_columns"]
+    if features_meta.get("task_type") != "binary_long_only":
+        print(
+            "Error: loaded model metadata is not long-only (`task_type != binary_long_only`). "
+            "Re-run train.py and rebuild the long-only artifact first."
+        )
+        return
     if bool(features_meta.get("prod_train")):
         print(
             "Error: this model artifact was retrained on the full dataset (`prod_train=true`), "
@@ -583,7 +625,14 @@ def backtest():
     if event_filter_meta is None:
         print("Error: model metadata does not include event_filter. Re-run train.py first.")
         return
-    event_filter_config = resolve_event_filter_config(event_filter_meta)
+    event_filter_config = resolve_backtest_event_filter_config(base_config=event_filter_meta)
+    runtime_required_columns = list(dict.fromkeys(feature_names + ["barrier_stop_pct", "barrier_take_pct"]))
+    if event_filter_config.get("enabled", False):
+        runtime_required_columns.extend(
+            column
+            for column in event_filter_config.get("required_columns", [])
+            if column not in runtime_required_columns
+        )
 
     trained_symbols = list(features_meta.get("symbols", SYMBOLS))
     use_symbol_feature = "symbol" in feature_names
@@ -609,48 +658,56 @@ def backtest():
         )
     print(f"Holdout test window: {test_start_ts.isoformat()} to {test_end_ts.isoformat()}")
     if event_filter_config.get("enabled", False):
+        filter_side = str(event_filter_config.get("side", "both")).upper()
         print(
             "Event filter: "
-            f"|ema_fast_slow|>={event_filter_config.get('min_abs_ema_fast_slow', 0.0):.4f}, "
+            f"side={filter_side}, "
+            f"ema_fast_slow>={event_filter_config.get('min_ema_fast_slow', event_filter_config.get('min_abs_ema_fast_slow', 0.0)):.4f}, "
             f"adx_4h>={event_filter_config.get('min_adx_4h', 0.0):.1f}, "
             f"realized_vol_1h in [{event_filter_config.get('min_realized_vol_1h', 0.0):.4f}, "
             f"{event_filter_config.get('max_realized_vol_1h', 1.0):.4f}]"
         )
-
     all_raw = load_all_raw_data(SYMBOLS)
     if not all_raw:
         print("Error: no raw data for backtest.")
         return
 
+    use_precomputed_features = not BACKTEST_REALTIME_FEATURES
     print(
         "Feature mode: "
-        + ("realtime rebuild" if BACKTEST_REALTIME_FEATURES else "precomputed DB features")
+        + ("realtime rebuild" if not use_precomputed_features else "precomputed DB features")
     )
 
     all_features = {}
     all_main_index = {}
-    if not BACKTEST_REALTIME_FEATURES:
+    if use_precomputed_features:
         for sym in list(all_raw.keys()):
             feat_df = load_precomputed_features(
                 sym,
                 symbol_categories=symbol_categories,
-                required_columns=feature_names + ["barrier_stop_pct", "barrier_take_pct"],
+                required_columns=runtime_required_columns,
             )
             if feat_df.empty:
                 print(f"Warning: {sym} has no precomputed features table.")
                 continue
             all_features[sym] = feat_df
 
-        all_raw = {sym: payload for sym, payload in all_raw.items() if sym in all_features}
-        if not all_raw:
-            print("Error: no symbols with precomputed features available.")
-            return
+        raw_with_features = {sym: payload for sym, payload in all_raw.items() if sym in all_features}
+        if not raw_with_features:
+            use_precomputed_features = False
+            print(
+                "Warning: no symbols with precomputed features available. "
+                "Falling back to realtime feature rebuild."
+            )
+        else:
+            all_raw = raw_with_features
 
     for sym, payload in all_raw.items():
         all_main_index[sym] = build_timestamp_index(payload["main"])
 
+    raw_for_realtime_fallback = dict(all_raw)
     all_features_prepared = {}
-    if not BACKTEST_REALTIME_FEATURES:
+    if use_precomputed_features:
         for sym, feat_df in all_features.items():
             prepared = prepare_precomputed_feature_store(
                 feat_df,
@@ -665,8 +722,13 @@ def backtest():
 
         all_raw = {sym: payload for sym, payload in all_raw.items() if sym in all_features_prepared}
         if not all_raw:
-            print("Error: no symbols with prepared precomputed features available.")
-            return
+            use_precomputed_features = False
+            all_raw = raw_for_realtime_fallback
+            all_features_prepared = {}
+            print(
+                "Warning: no symbols with prepared precomputed features available. "
+                "Falling back to realtime feature rebuild."
+            )
 
     all_raw, dropped_symbols = filter_symbols_with_period_overlap(all_raw, test_start_ts, test_end_ts, min_candles=2)
     if dropped_symbols:
@@ -705,22 +767,15 @@ def backtest():
     daily_stop_announced = False
     consecutive_loss_count = 0
 
-    print("\n📋 Backtest Configuration:")
+    print("\n\U0001f4cb Backtest Configuration:")
     print(f"   Period: {test_timestamps[0].isoformat()} to {test_timestamps[-1].isoformat()}")
     print(f"   Symbols: {', '.join(compact_symbol(sym) for sym in all_raw.keys())}")
     print(f"   Initial Balance: ${initial_balance:.2f}")
     print(f"   Risk per Trade: {RISK_PER_TRADE * 100:.0f}%")
     print(f"   Leverage: {LEVERAGE:.0f}x")
     print(f"   Main TF: {TIMEFRAME} | HTF: {HTF_TIMEFRAME}")
-    if ALLOW_LONGS and ALLOW_SHORTS:
-        direction_mode = "LONG+SHORT"
-    elif ALLOW_LONGS:
-        direction_mode = "LONG ONLY"
-    else:
-        direction_mode = "SHORT ONLY"
-    print(f"   Direction mode: {direction_mode}")
-    print(f"   Directional probability threshold: {DIRECTIONAL_PROBA_THRESHOLD:.2f}")
-    print(f"   Min signal gap: {MIN_SIGNAL_GAP:.2f}")
+    print("   Direction mode: LONG ONLY")
+    print(f"   Long probability threshold: {LONG_PROBA_THRESHOLD:.2f}")
     print(f"   Batch entries per bar: {BACKTEST_MAX_NEW_POSITIONS_PER_BAR}")
     print(f"   Max open positions: {BACKTEST_MAX_OPEN_POSITIONS}")
     print(f"   SL cooldown bars: {BACKTEST_SL_COOLDOWN_BARS}")
@@ -729,12 +784,21 @@ def backtest():
         "   Reduced risk after consecutive losses: "
         f"{BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES} -> {BACKTEST_REDUCED_RISK_PER_TRADE * 100:.2f}%"
     )
-    if USE_DYNAMIC_BARRIERS:
+    barrier_mode = resolve_barrier_mode()
+    if barrier_mode == "dynamic":
         print(
             "   Dynamic barriers: "
             f"ATRx{globals().get('BARRIER_ATR_MULTIPLIER', 1.25):.2f}, "
             f"RVOLx{globals().get('BARRIER_RVOL_MULTIPLIER', 0.75):.2f}, "
             f"TP/SL={globals().get('BARRIER_TP_TO_SL_RATIO', 2.0):.2f}"
+        )
+    elif barrier_mode == "donchian_midline_rr":
+        print(
+            "   Strategy barriers: "
+            f"Donchian midline {globals().get('DONCHIAN_LENGTH', 96)} | "
+            f"local extreme {globals().get('STRATEGY_BARRIER_LOCAL_EXTREME_LOOKBACK', 12)} | "
+            f"max midline stop {globals().get('STRATEGY_BARRIER_MAX_MIDLINE_PCT', 0.03):.2%} | "
+            f"TP/SL={globals().get('STRATEGY_BARRIER_TP_TO_SL_RATIO', 2.0):.2f}"
         )
     else:
         print(f"   TP: {TP_PCT:.4f} | SL: {SL_PCT:.4f}")
@@ -842,7 +906,7 @@ def backtest():
                 {
                     "trade_number": pos["trade_number"],
                     "sym": sym,
-                    "direction": "LONG" if direction == 1 else "SHORT",
+                    "direction": "LONG",
                     "reason": reason,
                     "pnl_pct": pnl_clean,
                     "pnl_abs": trade_profit,
@@ -920,31 +984,27 @@ def backtest():
 
         snapshot_balance = balance
         entry_candidates = []
-        if BACKTEST_REALTIME_FEATURES:
+        if not use_precomputed_features:
+            realtime_feature_batch = build_feature_batch_at_time(
+                market_batch=market_batch,
+                analysis_ts=next_ts,
+                runtime_required_columns=runtime_required_columns,
+                feature_names=feature_names,
+                symbol_categories=symbol_categories,
+                clip_bounds=clip_bounds,
+            )
             for sym, ctx in market_batch.items():
                 if positions[sym] is not None:
                     continue
                 if i < stop_cooldown_until_index.get(sym, -1):
                     continue
 
-                latest_row = build_feature_row_at_time(
-                    symbol=sym,
-                    main_df=ctx["main"],
-                    htf_df=ctx["htf"],
-                    analysis_ts=next_ts,
-                    feature_names=feature_names,
-                    symbol_categories=symbol_categories,
-                )
-
-                if latest_row is None or latest_row.empty:
+                runtime_payload = realtime_feature_batch.get(sym)
+                if not runtime_payload:
                     continue
 
-                current_features = normalize_features_for_model(
-                    latest_row,
-                    feature_names,
-                    symbol_categories=symbol_categories,
-                )
-                current_features = apply_feature_clip_bounds(current_features, clip_bounds)
+                latest_row = runtime_payload["feature_row"]
+                current_features = runtime_payload["model_features"]
                 if not is_candidate_event(latest_row, event_filter_config):
                     continue
                 stop_pct, take_pct = get_barrier_pcts(latest_row)
@@ -952,25 +1012,11 @@ def backtest():
                     continue
 
                 proba = model.predict_proba(current_features)[0]
-                p_short = float(proba[0])
                 p_long = float(proba[1])
-
-                signal, direction_prob, signal_gap = resolve_directional_signal(p_long, p_short)
-
-                if signal == 0:
+                if not should_open_long(p_long):
                     continue
 
-                if signal == 1 and not ALLOW_LONGS:
-                    continue
-                if signal == -1 and not ALLOW_SHORTS:
-                    continue
-
-                if signal == 1:
-                    direction_str = "LONG"
-                    entry_price = ctx["next_open"] * (1 + SLIPPAGE)
-                else:
-                    direction_str = "SHORT"
-                    entry_price = ctx["next_open"] * (1 - SLIPPAGE)
+                entry_price = ctx["next_open"] * (1 + SLIPPAGE)
 
                 risk_capital = snapshot_balance * effective_risk_per_trade
                 position_notional = min(risk_capital / stop_pct, snapshot_balance * LEVERAGE)
@@ -982,17 +1028,15 @@ def backtest():
                 entry_candidates.append(
                     {
                         "sym": sym,
-                        "signal": signal,
-                        "direction_str": direction_str,
+                        "signal": 1,
+                        "direction_str": "LONG",
                         "entry_price": entry_price,
                         "position_notional": position_notional,
                         "required_margin": required_margin,
                         "stop_pct": stop_pct,
                         "take_pct": take_pct,
                         "p_long": p_long,
-                        "p_short": p_short,
-                        "direction_prob": direction_prob,
-                        "score": build_entry_score(direction_prob, signal_gap),
+                        "score": build_entry_score(p_long),
                     }
                 )
         else:
@@ -1016,32 +1060,18 @@ def backtest():
                     feature_row = get_feature_row_precomputed(
                         all_features[sym],
                         current_ts,
-                        feature_names + ["barrier_stop_pct", "barrier_take_pct"],
+                        runtime_required_columns,
                     )
                     stop_pct, take_pct = get_barrier_pcts(feature_row)
                     if stop_pct is None or take_pct is None:
                         continue
                     if not is_candidate_event(feature_row, event_filter_config):
                         continue
-                    p_short = float(proba[0])
                     p_long = float(proba[1])
-
-                    signal, direction_prob, signal_gap = resolve_directional_signal(p_long, p_short)
-
-                    if signal == 0:
+                    if not should_open_long(p_long):
                         continue
 
-                    if signal == 1 and not ALLOW_LONGS:
-                        continue
-                    if signal == -1 and not ALLOW_SHORTS:
-                        continue
-
-                    if signal == 1:
-                        direction_str = "LONG"
-                        entry_price = ctx["next_open"] * (1 + SLIPPAGE)
-                    else:
-                        direction_str = "SHORT"
-                        entry_price = ctx["next_open"] * (1 - SLIPPAGE)
+                    entry_price = ctx["next_open"] * (1 + SLIPPAGE)
 
                     risk_capital = snapshot_balance * effective_risk_per_trade
                     position_notional = min(risk_capital / stop_pct, snapshot_balance * LEVERAGE)
@@ -1053,17 +1083,15 @@ def backtest():
                     entry_candidates.append(
                         {
                             "sym": sym,
-                            "signal": signal,
-                            "direction_str": direction_str,
+                            "signal": 1,
+                            "direction_str": "LONG",
                             "entry_price": entry_price,
                             "position_notional": position_notional,
                             "required_margin": required_margin,
                             "stop_pct": stop_pct,
                             "take_pct": take_pct,
                             "p_long": p_long,
-                            "p_short": p_short,
-                            "direction_prob": direction_prob,
-                            "score": build_entry_score(direction_prob, signal_gap),
+                            "score": build_entry_score(p_long),
                         }
                     )
 
@@ -1073,7 +1101,7 @@ def backtest():
         entry_candidates.sort(
             key=lambda candidate: (
                 candidate["score"],
-                candidate["direction_prob"],
+                candidate["p_long"],
             ),
             reverse=True,
         )
@@ -1114,8 +1142,7 @@ def backtest():
 
             print(
                 f"[{next_ts}] \u2116 {trade_number} \U0001F525 OPEN {candidate['direction_str']}: {candidate['sym']} "
-                f"(Long={candidate['p_long']:.2f}, Short={candidate['p_short']:.2f}, "
-                f"Score={candidate['score']:.3f}) "
+                f"(Long={candidate['p_long']:.2f}, Score={candidate['score']:.3f}) "
                 f"at {candidate['entry_price']:.4f} | "
                 f"Size: {position_notional:.2f}$ "
                 f"Margin: {required_margin:.2f}$"
@@ -1147,7 +1174,7 @@ def backtest():
         if mark_price is None or not np.isfinite(mark_price):
             continue
 
-        exit_price = mark_price * (1 - SLIPPAGE) if pos["dir"] == 1 else mark_price * (1 + SLIPPAGE)
+        exit_price = mark_price * (1 - SLIPPAGE)
         pnl_clean, trade_profit, commission = compute_trade_outcome(pos, exit_price)
 
         used_margin -= pos["margin"]
@@ -1159,7 +1186,7 @@ def backtest():
             {
                 "trade_number": pos["trade_number"],
                 "sym": sym,
-                "direction": "LONG" if pos["dir"] == 1 else "SHORT",
+                "direction": "LONG",
                 "reason": "FINAL",
                 "pnl_pct": pnl_clean,
                 "pnl_abs": trade_profit,
@@ -1236,16 +1263,18 @@ def backtest():
     expectancy = (total_pnl_abs / total_trades) if total_trades > 0 else 0.0
 
     print("\nSimulation finished.\n")
-    print("╔═══════════════════════════════════════════════════════════╗")
-    print("║           PORTFOLIO BACKTEST RESULTS                     ║")
-    print("╚═══════════════════════════════════════════════════════════╝")
-    print(f"\n📊 Trades: {total_trades} (W: {total_wins} / L: {total_losses})")
-    print("💰 Equity:")
+    _banner_title = "           PORTFOLIO BACKTEST RESULTS                     "
+    _dw = len(_banner_title)
+    print("\u2554" + "\u2550" * _dw + "\u2557")
+    print("\u2551" + _banner_title + "\u2551")
+    print("\u255a" + "\u2550" * _dw + "\u255d")
+    print(f"\n\U0001f4ca Trades: {total_trades} (W: {total_wins} / L: {total_losses})")
+    print("\U0001f4b0 Equity:")
     print(f"   Start: ${initial_balance:.2f}")
     print(f"   End:   ${balance:.2f}")
     print(f"   PnL:   {format_signed_dollars(total_pnl_abs)} ({format_percent_value(total_return_pct)})")
     print(f"   Fees:  ${total_fees:.2f}")
-    print("📉 Risk:")
+    print("\U0001f4c9 Risk:")
     print(f"   Max DD: {max_drawdown:.2f}%")
     print(f"   Profit Factor: {pf:.2f}")
     print(f"   Expectancy: {format_signed_dollars(expectancy)}")
@@ -1265,7 +1294,7 @@ def backtest():
         )
 
     if monthly_rows:
-        print("\n📅 Monthly Performance Extended:")
+        print("\n\U0001f4c5 Monthly Performance Extended:")
         print_table(
             ["Month", "PnL", "Total", "Wins", "Losses"],
             monthly_rows,
@@ -1305,17 +1334,14 @@ def backtest():
                 ]
             )
 
-        print("\n📊 Summary by Coin:")
+        print("\n\U0001f4ca Summary by Coin:")
         print_table(
             ["Symbol", "Trades", "TP", "SL", "Winrate", "PnL"],
             coin_rows,
             right_align={1, 2, 3, 4, 5},
         )
 
-    direction_stats = {
-        "LONG": {"total": 0, "wins": 0, "losses": 0, "pnl_abs": 0.0},
-        "SHORT": {"total": 0, "wins": 0, "losses": 0, "pnl_abs": 0.0},
-    }
+    direction_stats = {"LONG": {"total": 0, "wins": 0, "losses": 0, "pnl_abs": 0.0}}
     for trade in trades:
         stats = direction_stats[trade["direction"]]
         stats["total"] += 1
@@ -1326,7 +1352,7 @@ def backtest():
             stats["losses"] += 1
 
     direction_rows = []
-    for direction in ("LONG", "SHORT"):
+    for direction in ("LONG",):
         stats = direction_stats[direction]
         direction_rows.append(
             [
@@ -1338,7 +1364,7 @@ def backtest():
             ]
         )
 
-    print("\n📈 Long / Short Summary:")
+    print("\nLong Summary:")
     print_table(
         ["Direction", "Total", "Wins", "Losses", "PnL"],
         direction_rows,

@@ -6,14 +6,11 @@ from src.features.contracts.feature_builder_contract import FeatureBuilderContra
 from src.features.models.feature_context import FeatureContext
 
 
-class RegimeFeatureBuilder(FeatureBuilderContract):
-    block_name = "regime"
-
-    def __init__(self, timeframe_label: str) -> None:
-        self.timeframe_label = timeframe_label
+class BaseStubFeatureBuilder(FeatureBuilderContract):
+    block_name = "stub"
 
     def provides(self) -> set[str]:
         return set()
 
     def build(self, context: FeatureContext, requested_features: set[str]) -> pd.DataFrame:
-        raise NotImplementedError("RegimeFeatureBuilder does not implement any features.")
+        raise NotImplementedError("BaseStubFeatureBuilder does not implement any features.")

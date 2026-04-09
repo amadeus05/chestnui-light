@@ -19,6 +19,17 @@ from sklearn.metrics import (
 
 import config as cfg
 from signal_filter import build_candidate_event_mask, resolve_event_filter_config
+from src.features.builders.compression_expansion_feature_builder import CompressionExpansionFeatureBuilder
+from src.features.builders.entry_location_feature_builder import EntryLocationFeatureBuilder
+from src.features.builders.htf_context_feature_builder import HtfContextFeatureBuilder
+from src.features.builders.interaction_feature_builder import InteractionFeatureBuilder
+from src.features.builders.lwti_feature_builder import LwtiFeatureBuilder
+from src.features.builders.market_context_feature_builder import MarketContextFeatureBuilder
+from src.features.builders.regime_feature_builder import RegimeFeatureBuilder
+from src.features.builders.session_context_feature_builder import SessionContextFeatureBuilder
+from src.features.builders.trend_feature_builder import TrendFeatureBuilder
+from src.features.builders.volume_flow_feature_builder import VolumeFlowFeatureBuilder
+from src.features.models.feature_request import resolve_feature_request
 from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -40,8 +51,33 @@ EXCLUDED_RAW_FEATURE_COLUMNS = {
     "close",
     "volume",
 }
-LABEL_TO_CLASS = {-1: 0, 1: 1}
-CLASS_TO_LABEL = {0: -1, 1: 1}
+
+
+def resolve_requested_feature_columns():
+    block_features: dict[str, set[str]] = {}
+    builders = [
+        TrendFeatureBuilder(timeframe_label="1h"),
+        RegimeFeatureBuilder(timeframe_label="1h"),
+        CompressionExpansionFeatureBuilder(),
+        EntryLocationFeatureBuilder(),
+        InteractionFeatureBuilder(),
+        LwtiFeatureBuilder(),
+        MarketContextFeatureBuilder(),
+        SessionContextFeatureBuilder(),
+        VolumeFlowFeatureBuilder(),
+        HtfContextFeatureBuilder(),
+        TrendFeatureBuilder(timeframe_label="4h"),
+        RegimeFeatureBuilder(timeframe_label="4h"),
+    ]
+    for builder in builders:
+        block_features.setdefault(builder.block_name, set()).update(builder.provides())
+
+    resolved = resolve_feature_request(
+        getattr(cfg, "FEATURE_BUILD_REQUEST", {}),
+        getattr(cfg, "FEATURE_PROFILES", {}),
+        block_features,
+    )
+    return set(resolved.active_features), resolved.profile
 
 
 def get_end_date_cutoff():
@@ -62,7 +98,47 @@ def parse_args():
     )
     parser.add_argument("--val-size", type=float, default=0.15, help="Validation share for chronological split.")
     parser.add_argument("--test-size", type=float, default=0.15, help="Holdout test share for chronological split.")
-    parser.add_argument("--model-name", default="lightgbm_target", help="Base filename for saved artifacts.")
+    parser.add_argument(
+        "--validation-mode",
+        choices=["single", "walk_forward"],
+        default=str(getattr(cfg, "TRAIN_VALIDATION_MODE", "single")),
+        help="Validation mode: single chronological split or walk-forward validation.",
+    )
+    parser.add_argument(
+        "--wf-train-months",
+        type=int,
+        default=int(getattr(cfg, "WF_TRAIN_MONTHS", 6)),
+        help="Walk-forward train window size in months.",
+    )
+    parser.add_argument(
+        "--wf-val-months",
+        type=int,
+        default=int(getattr(cfg, "WF_VAL_MONTHS", 1)),
+        help="Walk-forward validation window size in months.",
+    )
+    parser.add_argument(
+        "--wf-test-months",
+        type=int,
+        default=int(getattr(cfg, "WF_TEST_MONTHS", 1)),
+        help="Walk-forward test window size in months.",
+    )
+    parser.add_argument(
+        "--wf-step-months",
+        type=int,
+        default=int(getattr(cfg, "WF_STEP_MONTHS", 1)),
+        help="Walk-forward step size in months.",
+    )
+    parser.add_argument(
+        "--wf-embargo-bars",
+        type=int,
+        default=int(getattr(cfg, "WF_EMBARGO_BARS", getattr(cfg, "HORIZON", 0))),
+        help="Number of unique timestamps to skip between train/validation and validation/test windows.",
+    )
+    parser.add_argument(
+        "--model-name",
+        default=getattr(cfg, "MODEL_NAME", "lightgbm_long_only"),
+        help="Base filename for saved artifacts.",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument(
         "--prod-train",
@@ -70,7 +146,61 @@ def parse_args():
         default=bool(getattr(cfg, "ENABLE_PROD_TRAINING", False)),
         help="After validation, retrain the final model on the full dataset.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--wf-start-fold",
+        type=int,
+        default=1,
+        help="1-based walk-forward fold number to start from. Default keeps the full run from fold 1.",
+    )
+    parser.add_argument(
+        "--wf-max-folds",
+        type=int,
+        default=0,
+        help="Maximum number of walk-forward folds to run. 0 means all available folds.",
+    )
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Fast research mode: run only the most recent folds with a smaller LightGBM budget.",
+    )
+    parser.add_argument(
+        "--quick-folds",
+        type=int,
+        default=5,
+        help="When --quick is enabled, run only the last N walk-forward folds.",
+    )
+    parser.add_argument(
+        "--quick-n-estimators",
+        type=int,
+        default=800,
+        help="When --quick is enabled, use this LightGBM tree budget.",
+    )
+    parser.add_argument(
+        "--quick-log-eval-period",
+        type=int,
+        default=100,
+        help="When --quick is enabled, log LightGBM evaluation every N rounds.",
+    )
+
+    args = parser.parse_args()
+    if args.wf_start_fold <= 0:
+        raise ValueError("--wf-start-fold must be >= 1.")
+    if args.wf_max_folds < 0:
+        raise ValueError("--wf-max-folds must be >= 0.")
+    if args.quick_folds <= 0:
+        raise ValueError("--quick-folds must be > 0.")
+    if args.quick_n_estimators <= 0:
+        raise ValueError("--quick-n-estimators must be > 0.")
+    if args.quick_log_eval_period <= 0:
+        raise ValueError("--quick-log-eval-period must be > 0.")
+
+    if args.quick and args.validation_mode != "walk_forward":
+        raise ValueError("--quick is only supported with --validation-mode walk_forward.")
+
+    default_model_name = getattr(cfg, "MODEL_NAME", "lightgbm_long_only")
+    if args.quick and args.model_name == default_model_name:
+        args.model_name = f"{args.model_name}_quick"
+    return args
 
 
 def load_training_frame(db_path, symbols):
@@ -91,7 +221,12 @@ def load_training_frame(db_path, symbols):
         )
 
     raw_labels = dataset[TARGET_COLUMN].astype(int)
-    unknown_labels = sorted(set(raw_labels.unique()) - {-1, 0, 1})
+    legacy_directional_labels = sorted(set(raw_labels.unique()).intersection({-1}))
+    if legacy_directional_labels:
+        raise ValueError(
+            "Legacy directional labels detected in Target (-1/0/1). Re-run etl.py to rebuild long-only labels (0/1)."
+        )
+    unknown_labels = sorted(set(raw_labels.unique()) - {0, 1})
     if unknown_labels:
         raise ValueError(f"Unexpected labels in {TARGET_COLUMN}: {unknown_labels}")
 
@@ -101,14 +236,9 @@ def load_training_frame(db_path, symbols):
     dataset.attrs["candidate_rows"] = int(candidate_mask.sum())
     dataset.attrs["excluded_by_event_filter_rows"] = int((~candidate_mask).sum())
     dataset = dataset.loc[candidate_mask].copy()
-
-    directional_mask = dataset[TARGET_COLUMN].astype(int) != 0
-    excluded_non_directional_rows = int((~directional_mask).sum())
-    dataset = dataset.loc[directional_mask].copy()
-    raw_directional_labels = dataset[TARGET_COLUMN].astype(int)
-    dataset[TARGET_COLUMN] = raw_directional_labels.map({-1: 0, 1: 1})
     dataset[SYMBOL_COLUMN] = dataset[SYMBOL_COLUMN].astype("category")
-    dataset.attrs["excluded_non_directional_rows"] = excluded_non_directional_rows
+    dataset.attrs["positive_long_rows"] = int(dataset[TARGET_COLUMN].sum())
+    dataset.attrs["negative_no_long_rows"] = int((dataset[TARGET_COLUMN] == 0).sum())
     return dataset
 
 
@@ -116,11 +246,21 @@ def select_feature_columns(dataset):
     feature_columns = []
     use_symbol_feature = bool(getattr(cfg, "USE_SYMBOL_FEATURE", True))
     disabled_feature_columns = set(getattr(cfg, "MANUAL_DISABLED_FEATURE_COLUMNS", []))
+    requested_feature_columns, profile_name = resolve_requested_feature_columns()
+    missing_requested_columns = sorted(requested_feature_columns - set(dataset.columns))
+    if missing_requested_columns:
+        raise RuntimeError(
+            "Configured feature profile requests columns missing in dataset. "
+            "Re-run etl.py for the active profile or adjust config. Missing: "
+            + ", ".join(missing_requested_columns)
+        )
 
     for column in dataset.columns:
         if column in RESERVED_COLUMNS:
             continue
         if column in EXCLUDED_RAW_FEATURE_COLUMNS:
+            continue
+        if column != SYMBOL_COLUMN and column not in requested_feature_columns:
             continue
         if column in disabled_feature_columns:
             continue
@@ -141,6 +281,18 @@ def select_feature_columns(dataset):
                 len(disabled_present),
                 ", ".join(disabled_present),
             )
+    feature_columns, dropped_constant_columns = drop_constant_feature_columns(dataset, feature_columns)
+    if dropped_constant_columns:
+        logger.info(
+            "Detected %s globally constant feature columns in the candidate universe, excluding them from training: %s",
+            len(dropped_constant_columns),
+            ", ".join(sorted(dropped_constant_columns)),
+        )
+    logger.info(
+        "Training feature profile resolved: %s | selected %s configured feature columns",
+        profile_name,
+        len([column for column in feature_columns if column != SYMBOL_COLUMN]),
+    )
     return feature_columns
 
 
@@ -154,26 +306,38 @@ def get_clippable_feature_columns(dataset, feature_columns):
     return clippable_columns
 
 
+def _finite_feature_series(frame, column):
+    return frame[column].replace([np.inf, -np.inf], np.nan).dropna()
+
+
 def build_feature_clip_bounds(train_df, feature_columns):
     if not bool(getattr(cfg, "ENABLE_FEATURE_CLIP", False)):
-        return {}
+        return {}, []
 
     lower_q = float(getattr(cfg, "FEATURE_CLIP_LOWER_Q", 0.01))
     upper_q = float(getattr(cfg, "FEATURE_CLIP_UPPER_Q", 0.99))
+    min_unique_values = int(getattr(cfg, "FEATURE_CLIP_MIN_UNIQUE_VALUES", 5))
     if not 0 <= lower_q < upper_q <= 1:
         raise ValueError("FEATURE_CLIP_LOWER_Q and FEATURE_CLIP_UPPER_Q must satisfy 0 <= lower < upper <= 1.")
 
     clip_bounds = {}
+    skipped_low_cardinality = []
     for column in get_clippable_feature_columns(train_df, feature_columns):
-        series = train_df[column].replace([np.inf, -np.inf], np.nan).dropna()
+        series = _finite_feature_series(train_df, column)
         if series.empty:
+            continue
+        if int(series.nunique(dropna=True)) < min_unique_values:
+            skipped_low_cardinality.append(column)
             continue
         lower = series.quantile(lower_q)
         upper = series.quantile(upper_q)
         if pd.isna(lower) or pd.isna(upper):
             continue
+        if float(lower) >= float(upper):
+            skipped_low_cardinality.append(column)
+            continue
         clip_bounds[column] = {"lower": float(lower), "upper": float(upper)}
-    return clip_bounds
+    return clip_bounds, skipped_low_cardinality
 
 
 def apply_feature_clip_bounds(frame, clip_bounds):
@@ -186,6 +350,61 @@ def apply_feature_clip_bounds(frame, clip_bounds):
             continue
         clipped[column] = clipped[column].clip(lower=bounds["lower"], upper=bounds["upper"])
     return clipped
+
+
+def drop_constant_feature_columns(frame, feature_columns):
+    active_feature_columns = []
+    dropped_feature_columns = []
+    for column in feature_columns:
+        if column == SYMBOL_COLUMN:
+            active_feature_columns.append(column)
+            continue
+        series = _finite_feature_series(frame, column)
+        if series.empty or int(series.nunique(dropna=True)) <= 1:
+            dropped_feature_columns.append(column)
+            continue
+        active_feature_columns.append(column)
+
+    numeric_feature_count = len([column for column in active_feature_columns if column != SYMBOL_COLUMN])
+    if numeric_feature_count == 0:
+        if SYMBOL_COLUMN in active_feature_columns:
+            logger.info("No non-constant numeric features remain; continuing with symbol-only feature set.")
+        else:
+            raise RuntimeError("No non-constant numeric feature columns remain after train-window preparation.")
+    return active_feature_columns, dropped_feature_columns
+
+
+def prepare_modeling_frames(train_df, valid_df, test_df, feature_columns, split_label):
+    clip_bounds, skipped_clip_columns = build_feature_clip_bounds(train_df, feature_columns)
+    train_df = apply_feature_clip_bounds(train_df, clip_bounds)
+    valid_df = apply_feature_clip_bounds(valid_df, clip_bounds)
+    test_df = apply_feature_clip_bounds(test_df, clip_bounds)
+    active_feature_columns, dropped_constant_columns = drop_constant_feature_columns(train_df, feature_columns)
+
+    if clip_bounds:
+        logger.info(
+            "%s | feature clipping enabled: %s numeric columns clipped to [%.2f%%, %.2f%%] train percentiles",
+            split_label,
+            len(clip_bounds),
+            float(getattr(cfg, "FEATURE_CLIP_LOWER_Q", 0.01)) * 100,
+            float(getattr(cfg, "FEATURE_CLIP_UPPER_Q", 0.99)) * 100,
+        )
+    if skipped_clip_columns:
+        logger.info(
+            "%s | skipped clipping for %s low-cardinality features: %s",
+            split_label,
+            len(skipped_clip_columns),
+            ", ".join(sorted(skipped_clip_columns)),
+        )
+    if dropped_constant_columns:
+        logger.info(
+            "%s | dropped %s constant features after train-window preparation: %s",
+            split_label,
+            len(dropped_constant_columns),
+            ", ".join(sorted(dropped_constant_columns)),
+        )
+
+    return train_df, valid_df, test_df, active_feature_columns, clip_bounds
 
 
 def build_period_payload(frame):
@@ -246,16 +465,156 @@ def validate_split(train_df, valid_df, test_df):
 
     train_classes = sorted(train_df[TARGET_COLUMN].unique().tolist())
     if len(train_classes) < 2:
-        human_labels = [CLASS_TO_LABEL[class_id] for class_id in train_classes]
-        raise RuntimeError(f"Training split has too few classes for LightGBM: {human_labels}")
+        raise RuntimeError(f"Training split has too few classes for LightGBM: {train_classes}")
 
 
-def build_model(seed, n_estimators=800):
+def validate_walk_forward_args(args):
+    if args.wf_train_months <= 0:
+        raise ValueError("--wf-train-months must be > 0.")
+    if args.wf_val_months <= 0:
+        raise ValueError("--wf-val-months must be > 0.")
+    if args.wf_test_months <= 0:
+        raise ValueError("--wf-test-months must be > 0.")
+    if args.wf_step_months <= 0:
+        raise ValueError("--wf-step-months must be > 0.")
+    if args.wf_embargo_bars < 0:
+        raise ValueError("--wf-embargo-bars must be >= 0.")
+
+
+def resolve_timestamp_index_on_or_after(unique_timestamps: pd.Series, boundary_ts: pd.Timestamp) -> int | None:
+    idx = int(unique_timestamps.searchsorted(boundary_ts, side="left"))
+    if idx >= len(unique_timestamps):
+        return None
+    return idx
+
+
+def generate_walk_forward_splits(dataset, args):
+    validate_walk_forward_args(args)
+    unique_timestamps = dataset[TIMESTAMP_COLUMN].drop_duplicates().sort_values().reset_index(drop=True)
+    if len(unique_timestamps) < 10:
+        raise RuntimeError("Need more unique timestamps for walk-forward validation.")
+
+    first_ts = pd.Timestamp(unique_timestamps.iloc[0])
+    last_ts = pd.Timestamp(unique_timestamps.iloc[-1])
+    cursor_ts = first_ts
+    folds = []
+    fold_id = 1
+
+    while True:
+        train_start_boundary = cursor_ts
+        train_end_boundary = train_start_boundary + pd.DateOffset(months=int(args.wf_train_months))
+        train_end_idx_exclusive = resolve_timestamp_index_on_or_after(unique_timestamps, train_end_boundary)
+        if train_end_idx_exclusive is None or train_end_idx_exclusive <= 0:
+            break
+
+        val_start_idx = train_end_idx_exclusive + int(args.wf_embargo_bars)
+        if val_start_idx >= len(unique_timestamps):
+            break
+        val_start_ts = pd.Timestamp(unique_timestamps.iloc[val_start_idx])
+        val_end_boundary = val_start_ts + pd.DateOffset(months=int(args.wf_val_months))
+        val_end_idx_exclusive = resolve_timestamp_index_on_or_after(unique_timestamps, val_end_boundary)
+        if val_end_idx_exclusive is None or val_end_idx_exclusive <= val_start_idx:
+            break
+
+        test_start_idx = val_end_idx_exclusive + int(args.wf_embargo_bars)
+        if test_start_idx >= len(unique_timestamps):
+            break
+        test_start_ts = pd.Timestamp(unique_timestamps.iloc[test_start_idx])
+        test_end_boundary = test_start_ts + pd.DateOffset(months=int(args.wf_test_months))
+        test_end_idx_exclusive = resolve_timestamp_index_on_or_after(unique_timestamps, test_end_boundary)
+        if test_end_idx_exclusive is None or test_end_idx_exclusive <= test_start_idx:
+            break
+
+        next_cursor_ts = train_start_boundary + pd.DateOffset(months=int(args.wf_step_months))
+        if next_cursor_ts <= cursor_ts:
+            raise RuntimeError("Walk-forward step did not advance the cursor.")
+
+        train_df = dataset.loc[dataset[TIMESTAMP_COLUMN] < val_start_ts].copy()
+        valid_df = dataset.loc[
+            (dataset[TIMESTAMP_COLUMN] >= val_start_ts) & (dataset[TIMESTAMP_COLUMN] < test_start_ts)
+        ].copy()
+
+        test_end_ts_exclusive = (
+            pd.Timestamp(unique_timestamps.iloc[test_end_idx_exclusive])
+            if test_end_idx_exclusive < len(unique_timestamps)
+            else (last_ts + pd.Timedelta(microseconds=1))
+        )
+        test_df = dataset.loc[
+            (dataset[TIMESTAMP_COLUMN] >= test_start_ts) & (dataset[TIMESTAMP_COLUMN] < test_end_ts_exclusive)
+        ].copy()
+
+        if train_df.empty or valid_df.empty or test_df.empty:
+            cursor_ts = next_cursor_ts
+            continue
+
+        validate_split(train_df, valid_df, test_df)
+        folds.append(
+            {
+                "fold_id": fold_id,
+                "train_df": train_df,
+                "valid_df": valid_df,
+                "test_df": test_df,
+                "train_period": build_period_payload(train_df),
+                "validation_period": build_period_payload(valid_df),
+                "test_period": build_period_payload(test_df),
+                "embargo_bars": int(args.wf_embargo_bars),
+            }
+        )
+        fold_id += 1
+        cursor_ts = next_cursor_ts
+        if cursor_ts >= last_ts:
+            break
+
+    if not folds:
+        raise RuntimeError(
+            "Walk-forward split produced no usable folds. Adjust WF_* window sizes, embargo, or prepare more data."
+        )
+    return folds
+
+
+def select_walk_forward_folds(folds, args):
+    if not folds:
+        return folds
+
+    total_folds = len(folds)
+    if args.quick:
+        selected = folds[-int(args.quick_folds):]
+        logger.info(
+            "Quick mode enabled: using last %s/%s walk-forward folds with n_estimators=%s and log_eval_period=%s",
+            len(selected),
+            total_folds,
+            int(args.quick_n_estimators),
+            int(args.quick_log_eval_period),
+        )
+        return selected
+
+    start_index = int(args.wf_start_fold) - 1
+    if start_index >= total_folds:
+        raise RuntimeError(
+            f"--wf-start-fold={args.wf_start_fold} is out of range. Available folds: 1..{total_folds}."
+        )
+
+    selected = folds[start_index:]
+    if int(args.wf_max_folds) > 0:
+        selected = selected[: int(args.wf_max_folds)]
+
+    logger.info(
+        "Walk-forward fold selection: using folds %s..%s of %s total",
+        int(selected[0]["fold_id"]),
+        int(selected[-1]["fold_id"]),
+        total_folds,
+    )
+    return selected
+
+
+def build_model(seed, n_estimators=None):
+    if n_estimators is None:
+        n_estimators = int(getattr(cfg, "LGBM_N_ESTIMATORS", 2000))
     return lgb.LGBMClassifier(
         objective="binary",
         n_estimators=n_estimators,
-        learning_rate=0.03,
-        num_leaves=63,
+        learning_rate=float(getattr(cfg, "LGBM_LEARNING_RATE", 0.01)),
+        num_leaves=int(getattr(cfg, "LGBM_NUM_LEAVES", 31)),
         min_child_samples=40,
         subsample=0.8,
         colsample_bytree=0.8,
@@ -268,13 +627,20 @@ def build_model(seed, n_estimators=800):
     )
 
 
-def train_validation_model(train_df, valid_df, feature_columns, seed):
+def train_validation_model(train_df, valid_df, feature_columns, seed, args=None):
     x_train = train_df[feature_columns]
     y_train = train_df[TARGET_COLUMN]
     x_valid = valid_df[feature_columns]
     y_valid = valid_df[TARGET_COLUMN]
 
-    model = build_model(seed=seed)
+    n_estimators = int(args.quick_n_estimators) if args is not None and bool(getattr(args, "quick", False)) else None
+    log_eval_period = (
+        int(args.quick_log_eval_period)
+        if args is not None and bool(getattr(args, "quick", False))
+        else int(getattr(cfg, "LGBM_LOG_EVAL_PERIOD", 50))
+    )
+
+    model = build_model(seed=seed, n_estimators=n_estimators)
     model.fit(
         x_train,
         y_train,
@@ -282,32 +648,64 @@ def train_validation_model(train_df, valid_df, feature_columns, seed):
         eval_metric="binary_logloss",
         categorical_feature=[SYMBOL_COLUMN] if SYMBOL_COLUMN in feature_columns else "auto",
         callbacks=[
-            lgb.early_stopping(stopping_rounds=100, verbose=False),
-            lgb.log_evaluation(period=100),
+            lgb.early_stopping(
+                stopping_rounds=int(getattr(cfg, "LGBM_EARLY_STOPPING_ROUNDS", 50)),
+                verbose=False,
+            ),
+            lgb.log_evaluation(period=log_eval_period),
         ],
     )
     return model
 
 
-def evaluate_model(model, eval_df, feature_columns, split_name):
+def build_prediction_frame(model, eval_df, feature_columns):
     x_eval = eval_df[feature_columns]
-    y_true = eval_df[TARGET_COLUMN]
+    y_true = eval_df[TARGET_COLUMN].astype(int)
     y_pred = model.predict(x_eval)
     y_proba = model.predict_proba(x_eval)
     p_long = y_proba[:, 1]
 
+    predictions = eval_df[[TIMESTAMP_COLUMN]].copy()
+    if SYMBOL_COLUMN in eval_df.columns:
+        predictions[SYMBOL_COLUMN] = eval_df[SYMBOL_COLUMN].astype(str)
+    predictions["y_true"] = y_true.values
+    predictions["y_pred"] = np.asarray(y_pred).astype(int)
+    predictions["p_long"] = np.asarray(p_long, dtype=float)
+    return predictions.reset_index(drop=True)
+
+
+def compute_metrics_from_prediction_frame(predictions, split_name):
+    if predictions.empty:
+        raise RuntimeError(f"{split_name} evaluation frame is empty.")
+
+    y_true_values = predictions["y_true"].astype(int).values
+    y_pred_values = predictions["y_pred"].astype(int).values
+    p_long_values = predictions["p_long"].astype(float).values
+
     report = classification_report(
-        y_true,
-        y_pred,
+        y_true_values,
+        y_pred_values,
         labels=[0, 1],
-        target_names=["short", "long"],
+        target_names=["no_long", "long"],
         output_dict=True,
         zero_division=0,
     )
 
     confidence_thresholds = sorted(
         {
-            round(max(0.5, float(getattr(cfg, "CONFIDENCE_THRESHOLD", 0.5))), 2),
+            round(
+                max(
+                    0.5,
+                    float(
+                        getattr(
+                            cfg,
+                            "LONG_PROBA_THRESHOLD",
+                            getattr(cfg, "DIRECTIONAL_PROBA_THRESHOLD", getattr(cfg, "CONFIDENCE_THRESHOLD", 0.5)),
+                        )
+                    ),
+                ),
+                2,
+            ),
             0.55,
             0.60,
             0.65,
@@ -315,84 +713,55 @@ def evaluate_model(model, eval_df, feature_columns, split_name):
         }
     )
     probability_threshold_metrics = {}
-    p_short = y_proba[:, 0]
-    y_true_series = pd.Series(y_true).reset_index(drop=True)
     for threshold in confidence_thresholds:
         threshold = float(threshold)
-        signal = np.full(len(eval_df), -1, dtype=int)
-        signal[p_long >= threshold] = 1
-        signal[p_short >= threshold] = 0
-        mask = signal != -1
-        selected = int(mask.sum())
-        coverage = float(selected / len(eval_df)) if len(eval_df) else 0.0
-        long_signals = int((signal == 1).sum())
-        short_signals = int((signal == 0).sum())
-        no_trade = int((signal == -1).sum())
-
-        if selected == 0:
-            probability_threshold_metrics[f"{threshold:.2f}"] = {
-                "rows": 0,
-                "coverage": coverage,
-                "long_signals": long_signals,
-                "short_signals": short_signals,
-                "no_trade": no_trade,
-                "signal_accuracy": None,
-                "signal_balanced_accuracy": None,
-                "signal_f1_macro": None,
-                "signal_confusion_matrix": None,
-                "signal_classification_report": None,
-                "long_precision": None,
-                "short_precision": None,
-                "long_recall_all": 0.0,
-                "short_recall_all": 0.0,
-            }
-            continue
-
-        subset_y_true = y_true_series.loc[mask]
-        subset_y_pred = pd.Series(signal[mask], index=subset_y_true.index)
-        subset_report = classification_report(
-            subset_y_true,
-            subset_y_pred,
+        signal = (p_long_values >= threshold).astype(int)
+        long_signals = int(signal.sum())
+        no_trade = int(len(predictions) - long_signals)
+        coverage = float(long_signals / len(predictions)) if len(predictions) else 0.0
+        threshold_report = classification_report(
+            y_true_values,
+            signal,
             labels=[0, 1],
-            target_names=["short", "long"],
+            target_names=["no_long", "long"],
             output_dict=True,
             zero_division=0,
         )
-        long_tp = int(((signal == 1) & (y_true_series.values == 1)).sum())
-        short_tp = int(((signal == 0) & (y_true_series.values == 0)).sum())
-        total_true_long = int((y_true_series.values == 1).sum())
-        total_true_short = int((y_true_series.values == 0).sum())
+        long_tp = int(((signal == 1) & (y_true_values == 1)).sum())
+        total_true_long = int((y_true_values == 1).sum())
 
         probability_threshold_metrics[f"{threshold:.2f}"] = {
-            "rows": selected,
+            "rows": int(len(predictions)),
             "coverage": coverage,
             "long_signals": long_signals,
-            "short_signals": short_signals,
             "no_trade": no_trade,
-            "signal_accuracy": float(accuracy_score(subset_y_true, subset_y_pred)),
-            "signal_balanced_accuracy": float(balanced_accuracy_score(subset_y_true, subset_y_pred)),
-            "signal_f1_macro": float(f1_score(subset_y_true, subset_y_pred, average="macro")),
-            "signal_confusion_matrix": confusion_matrix(subset_y_true, subset_y_pred, labels=[0, 1]).tolist(),
-            "signal_classification_report": subset_report,
+            "signal_accuracy": float(accuracy_score(y_true_values, signal)),
+            "signal_balanced_accuracy": float(balanced_accuracy_score(y_true_values, signal)),
+            "signal_f1_macro": float(f1_score(y_true_values, signal, average="macro")),
+            "signal_confusion_matrix": confusion_matrix(y_true_values, signal, labels=[0, 1]).tolist(),
+            "signal_classification_report": threshold_report,
             "long_precision": float(long_tp / long_signals) if long_signals > 0 else None,
-            "short_precision": float(short_tp / short_signals) if short_signals > 0 else None,
             "long_recall_all": float(long_tp / total_true_long) if total_true_long > 0 else 0.0,
-            "short_recall_all": float(short_tp / total_true_short) if total_true_short > 0 else 0.0,
         }
 
     metrics = {
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
-        "f1_macro": float(f1_score(y_true, y_pred, average="macro")),
-        "roc_auc": float(roc_auc_score(y_true, p_long)),
-        "pr_auc": float(average_precision_score(y_true, p_long)),
-        "mcc": float(matthews_corrcoef(y_true, y_pred)),
-        "confusion_matrix": confusion_matrix(y_true, y_pred, labels=[0, 1]).tolist(),
+        "accuracy": float(accuracy_score(y_true_values, y_pred_values)),
+        "balanced_accuracy": float(balanced_accuracy_score(y_true_values, y_pred_values)),
+        "f1_macro": float(f1_score(y_true_values, y_pred_values, average="macro")),
+        "roc_auc": float(roc_auc_score(y_true_values, p_long_values)),
+        "pr_auc": float(average_precision_score(y_true_values, p_long_values)),
+        "mcc": float(matthews_corrcoef(y_true_values, y_pred_values)),
+        "confusion_matrix": confusion_matrix(y_true_values, y_pred_values, labels=[0, 1]).tolist(),
         "classification_report": report,
-        f"{split_name}_rows": int(len(eval_df)),
+        f"{split_name}_rows": int(len(predictions)),
         "probability_threshold_metrics": probability_threshold_metrics,
     }
     return metrics
+
+
+def evaluate_model(model, eval_df, feature_columns, split_name):
+    predictions = build_prediction_frame(model, eval_df, feature_columns)
+    return compute_metrics_from_prediction_frame(predictions, split_name=split_name)
 
 
 def retrain_full_model(dataset, feature_columns, seed, best_iteration):
@@ -436,7 +805,272 @@ def log_feature_importance_ranking(model, feature_columns):
         )
 
 
-def save_directional_artifacts(model, metrics, dataset, feature_columns, clip_bounds, args):
+def summarize_single_split(dataset, feature_columns, args):
+    train_df, valid_df, test_df = time_split(dataset, args.val_size, args.test_size)
+    validate_split(train_df, valid_df, test_df)
+    train_df, valid_df, test_df, active_feature_columns, clip_bounds = prepare_modeling_frames(
+        train_df,
+        valid_df,
+        test_df,
+        feature_columns,
+        split_label="Single split",
+    )
+    logger.info(
+        "Chronological split: train=%s rows, valid=%s rows, test=%s rows | valid starts at %s | test starts at %s",
+        len(train_df),
+        len(valid_df),
+        len(test_df),
+        valid_df[TIMESTAMP_COLUMN].iloc[0],
+        test_df[TIMESTAMP_COLUMN].iloc[0],
+    )
+
+    model = train_validation_model(train_df, valid_df, active_feature_columns, args.seed, args=args)
+    validation_metrics = evaluate_model(model, valid_df, active_feature_columns, split_name="validation")
+    test_metrics = evaluate_model(model, test_df, active_feature_columns, split_name="test")
+    metrics = {
+        "validation_mode": "single",
+        "validation_metrics": validation_metrics,
+        "test_metrics": test_metrics,
+        "best_iteration": int(model.best_iteration_ or model.n_estimators_),
+        "train_rows": int(len(train_df)),
+        "validation_rows": int(len(valid_df)),
+        "test_rows": int(len(test_df)),
+        "feature_count": int(len(active_feature_columns)),
+        "positive_long_rows": int(dataset.attrs.get("positive_long_rows", 0)),
+        "negative_no_long_rows": int(dataset.attrs.get("negative_no_long_rows", 0)),
+        "candidate_rows": int(dataset.attrs.get("candidate_rows", len(dataset))),
+        "excluded_by_event_filter_rows": int(dataset.attrs.get("excluded_by_event_filter_rows", 0)),
+        "event_filter": dataset.attrs.get("event_filter_config"),
+        "train_period": build_period_payload(train_df),
+        "validation_period": build_period_payload(valid_df),
+        "test_period": build_period_payload(test_df),
+        "split_sizes": {
+            "validation": float(args.val_size),
+            "test": float(args.test_size),
+        },
+    }
+
+    logger.info(
+        "Validation metrics | accuracy=%.4f | balanced_accuracy=%.4f | f1_macro=%.4f | roc_auc=%.4f | pr_auc=%.4f | mcc=%.4f",
+        validation_metrics["accuracy"],
+        validation_metrics["balanced_accuracy"],
+        validation_metrics["f1_macro"],
+        validation_metrics["roc_auc"],
+        validation_metrics["pr_auc"],
+        validation_metrics["mcc"],
+    )
+    logger.info(
+        "Holdout test metrics | accuracy=%.4f | balanced_accuracy=%.4f | f1_macro=%.4f | roc_auc=%.4f | pr_auc=%.4f | mcc=%.4f",
+        test_metrics["accuracy"],
+        test_metrics["balanced_accuracy"],
+        test_metrics["f1_macro"],
+        test_metrics["roc_auc"],
+        test_metrics["pr_auc"],
+        test_metrics["mcc"],
+    )
+
+    return {
+        "model": model,
+        "metrics": metrics,
+        "clip_bounds": clip_bounds,
+        "dataset_to_save": dataset,
+        "feature_columns": active_feature_columns,
+    }
+
+
+def summarize_walk_forward(dataset, feature_columns, args):
+    all_folds = generate_walk_forward_splits(dataset, args)
+    folds = select_walk_forward_folds(all_folds, args)
+    logger.info(
+        "Walk-forward validation: %s folds | train=%sM | valid=%sM | test=%sM | step=%sM | embargo=%s bars",
+        len(folds),
+        args.wf_train_months,
+        args.wf_val_months,
+        args.wf_test_months,
+        args.wf_step_months,
+        args.wf_embargo_bars,
+    )
+
+    fold_summaries = []
+    test_prediction_frames = []
+    validation_prediction_frames = []
+    last_fold_model = None
+    last_fold_clip_bounds = {}
+    last_fold_feature_columns = feature_columns
+    last_fold_train_df = None
+    last_fold_valid_df = None
+    last_fold_test_df = None
+
+    for fold in folds:
+        fold_id = int(fold["fold_id"])
+        train_df = fold["train_df"].copy()
+        valid_df = fold["valid_df"].copy()
+        test_df = fold["test_df"].copy()
+        train_df, valid_df, test_df, active_feature_columns, clip_bounds = prepare_modeling_frames(
+            train_df,
+            valid_df,
+            test_df,
+            feature_columns,
+            split_label=f"WF fold {fold_id}",
+        )
+
+        logger.info(
+            "WF fold %s/%s | train=%s rows %s -> %s | valid=%s rows %s -> %s | test=%s rows %s -> %s",
+            fold_id,
+            len(folds),
+            len(train_df),
+            fold["train_period"]["start"],
+            fold["train_period"]["end"],
+            len(valid_df),
+            fold["validation_period"]["start"],
+            fold["validation_period"]["end"],
+            len(test_df),
+            fold["test_period"]["start"],
+            fold["test_period"]["end"],
+        )
+
+        model = train_validation_model(train_df, valid_df, active_feature_columns, args.seed + fold_id - 1, args=args)
+        validation_predictions = build_prediction_frame(model, valid_df, active_feature_columns)
+        test_predictions = build_prediction_frame(model, test_df, active_feature_columns)
+        validation_metrics = compute_metrics_from_prediction_frame(validation_predictions, split_name="validation")
+        test_metrics = compute_metrics_from_prediction_frame(test_predictions, split_name="test")
+        best_iteration = int(model.best_iteration_ or model.n_estimators_)
+
+        validation_prediction_frames.append(validation_predictions.assign(fold_id=fold_id))
+        test_prediction_frames.append(test_predictions.assign(fold_id=fold_id))
+        fold_summaries.append(
+            {
+                "fold_id": fold_id,
+                "train_rows": int(len(train_df)),
+                "validation_rows": int(len(valid_df)),
+                "test_rows": int(len(test_df)),
+                "best_iteration": best_iteration,
+                "train_period": fold["train_period"],
+                "validation_period": fold["validation_period"],
+                "test_period": fold["test_period"],
+                "embargo_bars": int(fold["embargo_bars"]),
+                "feature_count": int(len(active_feature_columns)),
+                "validation_metrics": validation_metrics,
+                "test_metrics": test_metrics,
+            }
+        )
+
+        logger.info(
+            "WF fold %s metrics | validation roc_auc=%.4f pr_auc=%.4f mcc=%.4f | test roc_auc=%.4f pr_auc=%.4f mcc=%.4f",
+            fold_id,
+            validation_metrics["roc_auc"],
+            validation_metrics["pr_auc"],
+            validation_metrics["mcc"],
+            test_metrics["roc_auc"],
+            test_metrics["pr_auc"],
+            test_metrics["mcc"],
+        )
+
+        last_fold_model = model
+        last_fold_clip_bounds = clip_bounds
+        last_fold_feature_columns = active_feature_columns
+        last_fold_train_df = train_df
+        last_fold_valid_df = valid_df
+        last_fold_test_df = test_df
+
+    if not test_prediction_frames or last_fold_model is None:
+        raise RuntimeError("Walk-forward validation failed to produce test predictions.")
+
+    all_validation_predictions = pd.concat(validation_prediction_frames, ignore_index=True).sort_values(
+        [TIMESTAMP_COLUMN, SYMBOL_COLUMN] if SYMBOL_COLUMN in validation_prediction_frames[0].columns else [TIMESTAMP_COLUMN]
+    ).reset_index(drop=True)
+    all_test_predictions = pd.concat(test_prediction_frames, ignore_index=True).sort_values(
+        [TIMESTAMP_COLUMN, SYMBOL_COLUMN] if SYMBOL_COLUMN in test_prediction_frames[0].columns else [TIMESTAMP_COLUMN]
+    ).reset_index(drop=True)
+
+    validation_metrics = compute_metrics_from_prediction_frame(all_validation_predictions, split_name="validation")
+    test_metrics = compute_metrics_from_prediction_frame(all_test_predictions, split_name="test")
+    best_iterations = [int(summary["best_iteration"]) for summary in fold_summaries]
+    aggregate_best_iteration = (
+        int(round(float(np.median(best_iterations))))
+        if best_iterations
+        else int(getattr(cfg, "LGBM_N_ESTIMATORS", 2000))
+    )
+
+    metrics = {
+        "validation_mode": "walk_forward",
+        "walk_forward": {
+            "fold_count": int(len(fold_summaries)),
+            "selected_fold_ids": [int(summary["fold_id"]) for summary in fold_summaries],
+            "train_months": int(args.wf_train_months),
+            "validation_months": int(args.wf_val_months),
+            "test_months": int(args.wf_test_months),
+            "step_months": int(args.wf_step_months),
+            "embargo_bars": int(args.wf_embargo_bars),
+            "folds": fold_summaries,
+            "oos_validation_period": {
+                "start": str(all_validation_predictions[TIMESTAMP_COLUMN].iloc[0]),
+                "end": str(all_validation_predictions[TIMESTAMP_COLUMN].iloc[-1]),
+            },
+            "oos_test_period": {
+                "start": str(all_test_predictions[TIMESTAMP_COLUMN].iloc[0]),
+                "end": str(all_test_predictions[TIMESTAMP_COLUMN].iloc[-1]),
+            },
+            "aggregate_best_iteration": aggregate_best_iteration,
+        },
+        "validation_metrics": validation_metrics,
+        "test_metrics": test_metrics,
+        "best_iteration": aggregate_best_iteration,
+        "train_rows": int(sum(summary["train_rows"] for summary in fold_summaries)),
+        "validation_rows": int(sum(summary["validation_rows"] for summary in fold_summaries)),
+        "test_rows": int(sum(summary["test_rows"] for summary in fold_summaries)),
+        "feature_count": int(len(last_fold_feature_columns)),
+        "positive_long_rows": int(dataset.attrs.get("positive_long_rows", 0)),
+        "negative_no_long_rows": int(dataset.attrs.get("negative_no_long_rows", 0)),
+        "candidate_rows": int(dataset.attrs.get("candidate_rows", len(dataset))),
+        "excluded_by_event_filter_rows": int(dataset.attrs.get("excluded_by_event_filter_rows", 0)),
+        "event_filter": dataset.attrs.get("event_filter_config"),
+        "train_period": build_period_payload(last_fold_train_df),
+        "validation_period": build_period_payload(last_fold_valid_df),
+        "test_period": build_period_payload(last_fold_test_df),
+        "split_sizes": {
+            "walk_forward": {
+                "train_months": int(args.wf_train_months),
+                "validation_months": int(args.wf_val_months),
+                "test_months": int(args.wf_test_months),
+                "step_months": int(args.wf_step_months),
+                "embargo_bars": int(args.wf_embargo_bars),
+            }
+        },
+    }
+
+    logger.info(
+        "Walk-forward aggregate validation | accuracy=%.4f | balanced_accuracy=%.4f | f1_macro=%.4f | roc_auc=%.4f | pr_auc=%.4f | mcc=%.4f",
+        validation_metrics["accuracy"],
+        validation_metrics["balanced_accuracy"],
+        validation_metrics["f1_macro"],
+        validation_metrics["roc_auc"],
+        validation_metrics["pr_auc"],
+        validation_metrics["mcc"],
+    )
+    logger.info(
+        "Walk-forward stitched OOS test | accuracy=%.4f | balanced_accuracy=%.4f | f1_macro=%.4f | roc_auc=%.4f | pr_auc=%.4f | mcc=%.4f",
+        test_metrics["accuracy"],
+        test_metrics["balanced_accuracy"],
+        test_metrics["f1_macro"],
+        test_metrics["roc_auc"],
+        test_metrics["pr_auc"],
+        test_metrics["mcc"],
+    )
+    logger.warning(
+        "Walk-forward mode saves the latest fold model artifact for runtime compatibility; stitched OOS metrics are stored in *_metrics.json."
+    )
+
+    return {
+        "model": last_fold_model,
+        "metrics": metrics,
+        "clip_bounds": last_fold_clip_bounds,
+        "dataset_to_save": dataset,
+        "feature_columns": last_fold_feature_columns,
+    }
+
+
+def save_long_only_artifacts(model, metrics, dataset, feature_columns, clip_bounds, args):
     cfg.MODELS_DIR.mkdir(exist_ok=True)
 
     model_path = cfg.MODELS_DIR / f"{args.model_name}.joblib"
@@ -446,16 +1080,19 @@ def save_directional_artifacts(model, metrics, dataset, feature_columns, clip_bo
 
     payload = {
         "feature_columns": feature_columns,
-        "label_mapping": {"short": 0, "long": 1},
-        "inverse_label_mapping": {str(key): value for key, value in CLASS_TO_LABEL.items()},
+        "label_mapping": {"no_long": 0, "long": 1},
+        "inverse_label_mapping": {"0": "no_long", "1": "long"},
         "symbols": list(args.symbols),
         "rows": int(len(dataset)),
         "prod_train": bool(args.prod_train),
-        "task_type": "binary_directional",
+        "task_type": "binary_long_only",
+        "validation_mode": metrics.get("validation_mode", "single"),
+        "quick_mode": bool(getattr(args, "quick", False)),
         "train_period": metrics.get("train_period"),
         "validation_period": metrics.get("validation_period"),
         "test_period": metrics.get("test_period"),
         "split_sizes": metrics.get("split_sizes"),
+        "walk_forward": metrics.get("walk_forward"),
         "event_filter": metrics.get("event_filter"),
         "feature_clip": {
             "enabled": bool(getattr(cfg, "ENABLE_FEATURE_CLIP", False)),
@@ -479,6 +1116,11 @@ def save_directional_artifacts(model, metrics, dataset, feature_columns, clip_bo
 def main():
     try:
         args = parse_args()
+        if args.quick:
+            logger.info(
+                "Quick research mode is active. Artifacts will be saved under model name: %s",
+                args.model_name,
+            )
         dataset = load_training_frame(args.db_path, args.symbols)
         feature_columns = select_feature_columns(dataset)
 
@@ -490,89 +1132,55 @@ def main():
             int(dataset.attrs.get("excluded_by_event_filter_rows", 0)),
         )
         logger.info(
-            "Directional baseline inside candidate universe: excluded %s non-directional rows with Target=0 before split",
-            int(dataset.attrs.get("excluded_non_directional_rows", 0)),
+            "Long-only target distribution inside candidate universe: positives=%s | negatives=%s",
+            int(dataset.attrs.get("positive_long_rows", 0)),
+            int(dataset.attrs.get("negative_no_long_rows", 0)),
         )
 
-        train_df, valid_df, test_df = time_split(dataset, args.val_size, args.test_size)
-        validate_split(train_df, valid_df, test_df)
-        clip_bounds = build_feature_clip_bounds(train_df, feature_columns)
-        train_df = apply_feature_clip_bounds(train_df, clip_bounds)
-        valid_df = apply_feature_clip_bounds(valid_df, clip_bounds)
-        test_df = apply_feature_clip_bounds(test_df, clip_bounds)
-        logger.info(
-            "Chronological split: train=%s rows, valid=%s rows, test=%s rows | valid starts at %s | test starts at %s",
-            len(train_df),
-            len(valid_df),
-            len(test_df),
-            valid_df[TIMESTAMP_COLUMN].iloc[0],
-            test_df[TIMESTAMP_COLUMN].iloc[0],
-        )
-        if clip_bounds:
-            logger.info(
-                "Feature clipping enabled: %s numeric columns clipped to [%.2f%%, %.2f%%] train percentiles",
-                len(clip_bounds),
-                float(getattr(cfg, "FEATURE_CLIP_LOWER_Q", 0.01)) * 100,
-                float(getattr(cfg, "FEATURE_CLIP_UPPER_Q", 0.99)) * 100,
-            )
+        if args.validation_mode == "walk_forward":
+            training_result = summarize_walk_forward(dataset, feature_columns, args)
+        else:
+            training_result = summarize_single_split(dataset, feature_columns, args)
 
-        model = train_validation_model(train_df, valid_df, feature_columns, args.seed)
-        validation_metrics = evaluate_model(model, valid_df, feature_columns, split_name="validation")
-        test_metrics = evaluate_model(model, test_df, feature_columns, split_name="test")
-        metrics = {
-            "validation_metrics": validation_metrics,
-            "test_metrics": test_metrics,
-            "best_iteration": int(model.best_iteration_ or model.n_estimators_),
-            "train_rows": int(len(train_df)),
-            "validation_rows": int(len(valid_df)),
-            "test_rows": int(len(test_df)),
-            "feature_count": int(len(feature_columns)),
-            "excluded_non_directional_rows": int(dataset.attrs.get("excluded_non_directional_rows", 0)),
-            "candidate_rows": int(dataset.attrs.get("candidate_rows", len(dataset))),
-            "excluded_by_event_filter_rows": int(dataset.attrs.get("excluded_by_event_filter_rows", 0)),
-            "event_filter": dataset.attrs.get("event_filter_config"),
-            "train_period": build_period_payload(train_df),
-            "validation_period": build_period_payload(valid_df),
-            "test_period": build_period_payload(test_df),
-            "split_sizes": {
-                "validation": float(args.val_size),
-                "test": float(args.test_size),
-            },
-        }
+        model_to_save = training_result["model"]
+        metrics = training_result["metrics"]
+        clip_bounds_to_save = training_result["clip_bounds"]
+        dataset_to_save = training_result["dataset_to_save"]
+        feature_columns_to_save = training_result["feature_columns"]
 
-        logger.info(
-            "Validation metrics | accuracy=%.4f | balanced_accuracy=%.4f | f1_macro=%.4f | roc_auc=%.4f | pr_auc=%.4f | mcc=%.4f",
-            validation_metrics["accuracy"],
-            validation_metrics["balanced_accuracy"],
-            validation_metrics["f1_macro"],
-            validation_metrics["roc_auc"],
-            validation_metrics["pr_auc"],
-            validation_metrics["mcc"],
-        )
-        logger.info(
-            "Holdout test metrics | accuracy=%.4f | balanced_accuracy=%.4f | f1_macro=%.4f | roc_auc=%.4f | pr_auc=%.4f | mcc=%.4f",
-            test_metrics["accuracy"],
-            test_metrics["balanced_accuracy"],
-            test_metrics["f1_macro"],
-            test_metrics["roc_auc"],
-            test_metrics["pr_auc"],
-            test_metrics["mcc"],
-        )
-
-        model_to_save = model
-        clip_bounds_to_save = clip_bounds
         if args.prod_train:
             logger.warning(
                 "ENABLE_PROD_TRAINING is enabled: the saved model will be retrained on the full dataset, "
                 "including the holdout test window. Use the saved test metrics for evaluation, but do not treat "
                 "subsequent backtests with this retrained artifact as out-of-sample."
             )
-            clip_bounds_to_save = build_feature_clip_bounds(dataset, feature_columns)
-            dataset = apply_feature_clip_bounds(dataset, clip_bounds_to_save)
-            model_to_save = retrain_full_model(dataset, feature_columns, args.seed, metrics["best_iteration"])
+            clip_bounds_to_save, _ = build_feature_clip_bounds(dataset_to_save, feature_columns)
+            dataset_to_save = apply_feature_clip_bounds(dataset_to_save, clip_bounds_to_save)
+            feature_columns_to_save, dropped_constant_columns = drop_constant_feature_columns(
+                dataset_to_save, feature_columns
+            )
+            if dropped_constant_columns:
+                logger.info(
+                    "Full-dataset retrain | dropped %s constant features after clipping: %s",
+                    len(dropped_constant_columns),
+                    ", ".join(sorted(dropped_constant_columns)),
+                )
+            model_to_save = retrain_full_model(
+                dataset_to_save,
+                feature_columns_to_save,
+                args.seed,
+                metrics["best_iteration"],
+            )
 
-        log_feature_importance_ranking(model_to_save, feature_columns)
-        save_directional_artifacts(model_to_save, metrics, dataset, feature_columns, clip_bounds_to_save, args)
+        log_feature_importance_ranking(model_to_save, feature_columns_to_save)
+        save_long_only_artifacts(
+            model_to_save,
+            metrics,
+            dataset_to_save,
+            feature_columns_to_save,
+            clip_bounds_to_save,
+            args,
+        )
     except Exception as exc:
         logger.error("%s", exc)
         raise SystemExit(1) from exc

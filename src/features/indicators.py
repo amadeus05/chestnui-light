@@ -94,3 +94,36 @@ def compute_trend_efficiency(close: pd.Series, window: int) -> pd.Series:
     directional_move = (close - close.shift(window)).abs()
     path_length = close.diff().abs().rolling(window).sum()
     return safe_ratio(directional_move, path_length)
+
+
+def compute_donchian_channels(
+    high: pd.Series,
+    low: pd.Series,
+    length: int,
+    shift: int = 1,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    upper = high.rolling(length, min_periods=length).max()
+    lower = low.rolling(length, min_periods=length).min()
+    if shift:
+        upper = upper.shift(shift)
+        lower = lower.shift(shift)
+    middle = (upper + lower) / 2.0
+    return upper, middle, lower
+
+
+def compute_lwti(
+    close: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    period: int,
+    smoothing_period: int,
+) -> pd.Series:
+    momentum = close - close.shift(period)
+    price_range = (high - low).replace(0, np.nan)
+    base = safe_ratio(
+        momentum.rolling(period, min_periods=period).mean(),
+        price_range.rolling(period, min_periods=period).mean(),
+    ) * 50.0 + 50.0
+    if smoothing_period <= 1:
+        return base
+    return base.ewm(span=smoothing_period, adjust=False, min_periods=smoothing_period).mean()
