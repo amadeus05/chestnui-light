@@ -31,6 +31,7 @@ USE_DYNAMIC_BARRIERS = bool(globals().get("USE_DYNAMIC_BARRIERS", True))
 BACKTEST_CHARTS_DIR = Path(globals().get("BACKTEST_CHARTS_DIR", "backtest_charts"))
 BACKTEST_CHARTS_DIR.mkdir(parents=True, exist_ok=True)
 EQUITY_CURVE_PATH = BACKTEST_CHARTS_DIR / "equity_curve.png"
+DEFAULT_MODEL_NAME = "lightgbm_target"
 
 ANSI_RESET = "\033[0m"
 ANSI_RED = "\033[91m"
@@ -542,29 +543,67 @@ def get_feature_batch_precomputed(
     return batch_symbols, pd.concat(batch_frames, axis=0)
 
 
-def backtest():
+def build_prediction_lookup(predictions: pd.DataFrame | None) -> dict:
+    if predictions is None or predictions.empty:
+        return {}
+
+    required_columns = {"timestamp", "symbol", "p_short", "p_long"}
+    missing_columns = sorted(required_columns - set(predictions.columns))
+    if missing_columns:
+        raise ValueError(f"Walk-forward predictions missing columns: {missing_columns}")
+
+    prepared = predictions.copy()
+    prepared["timestamp"] = pd.to_datetime(prepared["timestamp"])
+    prepared = prepared.drop_duplicates(subset=["timestamp", "symbol"], keep="last")
+    return {
+        (row.timestamp, row.symbol): (float(row.p_short), float(row.p_long))
+        for row in prepared.itertuples(index=False)
+    }
+
+
+def backtest(
+    model_name: str = DEFAULT_MODEL_NAME,
+    model=None,
+    features_meta: dict | None = None,
+    predictions: pd.DataFrame | None = None,
+    equity_curve_path: Path | None = None,
+    result_title: str = "PORTFOLIO BACKTEST RESULTS",
+):
     print("Loading model and features...")
 
     if not ALLOW_LONGS and not ALLOW_SHORTS:
         print("Error: both ALLOW_LONGS and ALLOW_SHORTS are disabled.")
         return
 
-    # --- Load LightGBM model ---
-    model_path = MODELS_DIR / "lightgbm_target.joblib"
-    features_meta_path = MODELS_DIR / "lightgbm_target_features.json"
-
-    if not model_path.exists():
-        print(f"Error: model not found at {model_path}. Run train.py first.")
+    # --- Load LightGBM model / metadata ---
+    using_external_predictions = predictions is not None
+    prediction_lookup = build_prediction_lookup(predictions)
+    if using_external_predictions and not prediction_lookup:
+        print("Error: walk-forward predictions are empty.")
+        return
+    if using_external_predictions and BACKTEST_REALTIME_FEATURES:
+        print("Error: walk-forward prediction backtest requires BACKTEST_REALTIME_FEATURES=False.")
         return
 
-    if not features_meta_path.exists():
-        print(f"Error: features metadata not found at {features_meta_path}. Run train.py first.")
+    if features_meta is None:
+        model_path = MODELS_DIR / f"{model_name}.joblib"
+        features_meta_path = MODELS_DIR / f"{model_name}_features.json"
+
+        if not features_meta_path.exists():
+            print(f"Error: features metadata not found at {features_meta_path}. Run train.py first.")
+            return
+
+        with open(features_meta_path, "r", encoding="utf-8") as f:
+            features_meta = json.load(f)
+
+        if model is None and not using_external_predictions:
+            if not model_path.exists():
+                print(f"Error: model not found at {model_path}. Run train.py first.")
+                return
+            model = joblib.load(model_path)
+    elif model is None and not using_external_predictions:
+        print("Error: model must be provided when features_meta is passed without predictions.")
         return
-
-    model = joblib.load(model_path)
-
-    with open(features_meta_path, "r", encoding="utf-8") as f:
-        features_meta = json.load(f)
 
     feature_names = features_meta["feature_columns"]
     try:
@@ -595,7 +634,10 @@ def backtest():
         symbol_categories = None
     feature_clip_meta = features_meta.get("feature_clip", {})
     clip_bounds = feature_clip_meta.get("bounds", {})
-    print(f"Loaded LightGBM model with {len(feature_names)} features")
+    if using_external_predictions:
+        print(f"Loaded walk-forward OOS predictions: {len(prediction_lookup)} symbol/timestamp rows")
+    else:
+        print(f"Loaded LightGBM model with {len(feature_names)} features")
     if clip_bounds:
         print(
             "Feature clipping: "
@@ -1006,7 +1048,18 @@ def backtest():
                 current_ts,
             )
             if not batch_features.empty:
-                batch_proba = model.predict_proba(batch_features[feature_names])
+                if using_external_predictions:
+                    batch_proba = []
+                    resolved_symbols = []
+                    for sym in batch_symbols:
+                        proba = prediction_lookup.get((current_ts, sym))
+                        if proba is None:
+                            continue
+                        batch_proba.append(proba)
+                        resolved_symbols.append(sym)
+                    batch_symbols = resolved_symbols
+                else:
+                    batch_proba = model.predict_proba(batch_features[feature_names])
                 for sym, proba in zip(batch_symbols, batch_proba):
                     ctx = market_batch[sym]
                     feature_row = get_feature_row_precomputed(
@@ -1233,7 +1286,7 @@ def backtest():
 
     print("\nSimulation finished.\n")
     print("╔═══════════════════════════════════════════════════════════╗")
-    print("║           PORTFOLIO BACKTEST RESULTS                     ║")
+    print(f"║{result_title[:59].center(59)}║")
     print("╚═══════════════════════════════════════════════════════════╝")
     print(f"\n📊 Trades: {total_trades} (W: {total_wins} / L: {total_losses})")
     print("💰 Equity:")
@@ -1348,9 +1401,11 @@ def backtest():
         plt.title(f"Multi-Symbol Equity Curve | {total_trades} trades | DD: {max_drawdown:.1f}%")
         plt.grid(True, alpha=0.3)
         plt.legend()
-        plt.savefig(EQUITY_CURVE_PATH, dpi=150)
+        output_chart_path = Path(equity_curve_path or EQUITY_CURVE_PATH)
+        output_chart_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(output_chart_path, dpi=150)
         plt.show()
-        print(f"\nSaved chart: {EQUITY_CURVE_PATH}")
+        print(f"\nSaved chart: {output_chart_path}")
 
 
 if __name__ == "__main__":

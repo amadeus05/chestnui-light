@@ -134,6 +134,8 @@ def load_training_frame(db_path, symbols):
     if unknown_labels:
         raise ValueError(f"Unexpected labels in {TARGET_COLUMN}: {unknown_labels}")
 
+    all_timestamps = np.sort(dataset[TIMESTAMP_COLUMN].dropna().unique())
+
     event_filter_config = resolve_event_filter_config()
     candidate_mask = build_candidate_event_mask(dataset, event_filter_config)
     dataset.attrs["event_filter_config"] = event_filter_config
@@ -148,6 +150,7 @@ def load_training_frame(db_path, symbols):
     dataset[TARGET_COLUMN] = raw_directional_labels.map({-1: 0, 1: 1})
     dataset[SYMBOL_COLUMN] = dataset[SYMBOL_COLUMN].astype("category")
     dataset.attrs["excluded_non_directional_rows"] = excluded_non_directional_rows
+    dataset.attrs["all_timestamps"] = all_timestamps
     return dataset
 
 
@@ -237,11 +240,35 @@ def apply_feature_clip_bounds(frame, clip_bounds):
 #  Model building
 # ═══════════════════════════════════════════════════════════════════════════
 
-def compute_sample_weights(timestamps: pd.Series, half_life_days: float = 365.0) -> np.ndarray:
+def compute_sample_weights(
+    timestamps: pd.Series,
+    half_life_days: float | None = None,
+    regime_aware: bool = True,
+) -> np.ndarray:
+    """
+    Вычисляет веса сэмплов с экспоненциальным затуханием.
+
+    Параметры:
+    - half_life_days: период полураспада в днях (default: из конфига или 90)
+    - regime_aware: если True, добавляет буст для самых свежих данных
+    """
+    # Получаем half-life из конфига или используем дефолт 90 дней (было 365)
+    if half_life_days is None:
+        half_life_days = float(getattr(cfg, "SAMPLE_WEIGHT_HALF_LIFE_DAYS", 90.0))
+
     ts = pd.to_datetime(timestamps)
     days_ago = (ts.max() - ts).dt.total_seconds() / 86400.0
     decay = np.log(2) / half_life_days
     weights = np.exp(-decay * days_ago.values)
+
+    # Regime-aware буст: самые свежие 30 дней получают дополнительный вес
+    if regime_aware and getattr(cfg, "REGIME_AWARE_WEIGHTING", True):
+        recent_days = float(getattr(cfg, "REGIME_RECENT_DAYS_BOOST", 30.0))
+        boost_factor = float(getattr(cfg, "REGIME_RECENT_BOOST_FACTOR", 2.0))
+
+        recent_mask = days_ago <= recent_days
+        weights = np.where(recent_mask, weights * boost_factor, weights)
+
     return weights
 
 
@@ -417,7 +444,10 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
     logger.info("=" * 72)
 
     # --- Unique sorted timestamp index for time-aware splitting -----------
-    unique_ts = np.sort(dataset[TIMESTAMP_COLUMN].unique())
+    # Use the full bar timeline when available. Event-filtered/directional
+    # rows can be sparse, so purging N selected timestamps is not the same as
+    # purging N market bars near the fold boundary.
+    unique_ts = np.asarray(dataset.attrs.get("all_timestamps", np.sort(dataset[TIMESTAMP_COLUMN].unique())))
     n_timestamps = len(unique_ts)
     if n_timestamps < n_splits + 1:
         raise RuntimeError(

@@ -1,7 +1,17 @@
 import os
 from pathlib import Path
+
+
+def _env_str(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    value = value.strip()
+    return value if value else default
+
+
 # --- BASE ---
-DB_PATH = "market_data.db"
+DB_PATH = str(_env_str("DB_PATH", "market_data.db"))
 SYMBOLS = [
     "BTC/USDT",
     "BNB/USDT",
@@ -44,7 +54,7 @@ HTF_TIMEFRAME = "4h"  # Старший таймфрейм для мульти-TF
 
 # --- DATA LOADING ---
 ACTIVE_EXCHANGE = "bybit"  # bybit: bybit, binance
-START_DATE = "2022-01-01"
+START_DATE = "2023-01-01"
 END_DATE = "2026-03-27 21:00:00"
 BYBIT_LIMIT = 1000
 BYBIT_RETRY_SLEEP = 0.33
@@ -80,27 +90,58 @@ MANUAL_DISABLED_FEATURE_COLUMNS = [
     "relative_strength_vs_btc_24h",
     "return_4h_1",
     "distance_to_session_high_1h",
-    "volatility_acceleration_1h",
-    "trend_persistence_score_24",
-    "trend_efficiency_24h",
     "cross_sectional_rank_ema_fast_slow_1h",
     "return_1h_12",
     "return_1h_6",
-    "trend_efficiency_24h_x_volatility_regime_change_1h",
     "cross_sectional_rank_4h",
-    "trend_persistence_score_12",
-    "delta_market_breadth_ema_fast_slow_1h",
-    # Additional pruning from WFV: these features were weak / destabilizing.
-    "volatility_regime_change_1h",
-    "linear_regression_slope_atr_1h_24",
-    "distance_to_rolling_low_4h",
-    "residual_return_24h",
     "is_weekend_1h",
     "crowded_longs_score_1h",
     "crowded_shorts_score_1h",
     "premium_index_change_24h",
+    "linear_regression_slope_atr_1h_24",
+    "distance_to_rolling_low_4h",
+    "residual_return_24h",
+    # Regime features - оставляем только работающие (см. feature importance)
+    # "volatility_regime_change_1h",  # ВКЛЮЧЕН - gain=282, хорошо работает
+    # "volatility_acceleration_1h",  # ВКЛЮЧЕН - gain=100
+    # "volatility_regime_stability",  # ВКЛЮЧЕН - gain=264, хорошо
+    # "vol_of_vol_1h",  # ВКЛЮЧЕН - gain=957, ТОП-6, отлично!
+    # "realized_vol_vs_ema",  # ВКЛЮЧЕН - gain=107
+    # "trend_persistence_score_24",   # ВКЛЮЧЕН - gain=26, слабый но оставим
+    # "trend_efficiency_24h",       # ВКЛЮЧЕН - gain=23, слабый но оставим
+    # "trend_persistence_score_12", # ВКЛЮЧЕН - gain=206
+    # Volume features - ВКЛЮЧЕНЫ
+    # "volume_ratio_1h",              # ВКЛЮЧЕН - gain=294
+    # "volume_zscore_1h",             # ВКЛЮЧЕН - gain=206
+    # "dollar_volume_zscore_1h",      # ВКЛЮЧЕН - gain=114
+    # Отключаем НЕРАБОТАЮЩИЕ признаки (gain=0 или низкий):
+    "delta_market_breadth_ema_fast_slow_1h",  # gain=0 - не работает
+    "high_vol_stress_indicator",  # gain=0 - не работает
+    "breakout_quality_4h",  # gain=0 - не работает (Donchian разрыв?)
+    "counter_market_penalty_1h",  # gain=0 - не работает
+    "signal_x_high_vol_stress",  # gain=0 - не работает
+    "vol_regime_classification",  # gain=85 - слабый, отключаем (категориальный нестабильный)
+    "trend_efficiency_x_vol_stability",  # gain=64 - слабый, отключаем
+    "signal_market_agreement_1h",  # gain=80 - слабый, отключаем
+    "breakout_quality_4h_x_volume_ratio_1h",  # gain=8 - очень слабый, отключаем
+    # Отключаем слабые по новому тесту (gain < 100):
+    "premium_index_zscore_7d",  # gain=55 - очень слабый
+    "volume_zscore_1h",  # gain=62 - очень слабый
+    "shorts_overheated_1h",  # gain=121 - слабый
+    "trend_persistence_score_24",  # gain=146 - слабый
+    "volatility_acceleration_1h",  # gain=167 - слабый
+    "dollar_volume_zscore_1h",  # gain=167 - слабый
+    "premium_index_1h",  # gain=115 - слабый
+    # Отключаем regime интеракции, оставляем только базовые regime признаки
+    "realized_vol_vs_ema",  # оставляем vol_of_vol, vol_regime_change, vol_stability
+    "ema_fast_slow_x_vol_of_vol",  # интеракция - отключаем
+    "trend_efficiency_24h_x_volatility_regime_change_1h",  # интеракция - отключаем
+    "market_pressure_x_vol_regime",  # интеракция - отключаем
+    "trend_efficiency_24h",  # мало влияет в новом режиме
+    "trend_persistence_score_12",  # слабый
+    "donchian_width_change_4h",  # можно отключить
+    "open_interest_zscore_7d",  # слабый
 ]
-
 # --- FEATURE BUILD ---
 FEATURE_PROFILES = {
     "all": "__all__",
@@ -153,11 +194,54 @@ BARRIER_MAX_PCT = 0.06
 
 # --- EVENT FILTER (binary side model candidate universe) ---
 ENABLE_EVENT_FILTER = True
-# Более строгие пороги для отбора только высококачественных сигналов:
-EVENT_FILTER_MIN_ABS_EMA_FAST_SLOW = 0.005  # Увеличен (было 0.003) - только заметные тренды
-EVENT_FILTER_MIN_ADX_HTF = 22.0  # Увеличен (было 18.0) - только сильные тренды
-EVENT_FILTER_MIN_REALIZED_VOL_MAIN = 0.006  # Tightened after WFV sweep for a cleaner candidate universe
-EVENT_FILTER_MAX_REALIZED_VOL_MAIN = 0.035  # Уменьшен максимум (было 0.05)
+
+# Базовые пороги (используются при нормальном режиме)
+EVENT_FILTER_MIN_ABS_EMA_FAST_SLOW = 0.004  # Снижено для большего coverage
+EVENT_FILTER_MIN_ADX_HTF = 20.0  # Снижено для большего coverage
+EVENT_FILTER_MIN_REALIZED_VOL_MAIN = 0.005  # Снижен минимум
+EVENT_FILTER_MAX_REALIZED_VOL_MAIN = 0.040  # Увеличен максимум
+
+# ═══════════════════════════════════════════════════════════════════
+# ADAPTIVE EVENT FILTER - 2026-04-05
+# Автоматически подстраивает пороги под текущий режим волатильности
+# ═══════════════════════════════════════════════════════════════════
+ENABLE_ADAPTIVE_EVENT_FILTER = False  # Отключаем для теста
+
+# Пороги для разных режимов волатильности
+ADAPTIVE_FILTER_LOW_VOL = {
+    "min_abs_ema_fast_slow": 0.003,  # Меньше тренд нужен при низкой воле
+    "min_adx_4h": 18.0,
+    "min_realized_vol_1h": 0.004,
+    "max_realized_vol_1h": 0.015,
+}
+
+ADAPTIVE_FILTER_NORMAL_VOL = {
+    "min_abs_ema_fast_slow": 0.004,
+    "min_adx_4h": 20.0,
+    "min_realized_vol_1h": 0.005,
+    "max_realized_vol_1h": 0.040,
+}
+
+ADAPTIVE_FILTER_HIGH_VOL = {
+    "min_abs_ema_fast_slow": 0.006,  # Больше тренд нужен при высокой воле
+    "min_adx_4h": 24.0,
+    "min_realized_vol_1h": 0.020,
+    "max_realized_vol_1h": 0.080,
+}
+
+# Параметры определения режима (персентили волатильности)
+ADAPTIVE_VOL_PERCENTILE_LOW = 0.25   # 25-й персентиль = low vol
+ADAPTIVE_VOL_PERCENTILE_HIGH = 0.75  # 75-й персентиль = high vol
+ADAPTIVE_VOL_LOOKBACK_BARS = 96       # 4 дня для расчета персентилей
+
+# ═══════════════════════════════════════════════════════════════════
+# TEMPORAL SAMPLE WEIGHTING - 2026-04-05
+# Усиленное взвешивание для адаптации к смене режима
+# ═══════════════════════════════════════════════════════════════════
+SAMPLE_WEIGHT_HALF_LIFE_DAYS = 90.0   # Было 365 - слишком медленно для крипты
+REGIME_AWARE_WEIGHTING = True           # Дополнительный буст свежим данным
+REGIME_RECENT_DAYS_BOOST = 30.0         # Сколько дней считать "свежими"
+REGIME_RECENT_BOOST_FACTOR = 2.0        # Во сколько раз увеличить вес свежих
 
 # --- RAW REBUILD SAFETY ---
 ALLOW_REBUILD_RAW_FROM_FEATURE_ONLY = False
@@ -174,8 +258,8 @@ MIN_SIGNAL_GAP = 0.01
 ALLOW_LONGS = True
 ALLOW_SHORTS = True
 BACKTEST_REALTIME_FEATURES = False
-BACKTEST_MAX_NEW_POSITIONS_PER_BAR = 10     # 1 = берем лучший сигнал на баре, >1 = топ-N сигналов
-BACKTEST_MAX_OPEN_POSITIONS = 10            # максимум одновременно открытых позиций
+BACKTEST_MAX_NEW_POSITIONS_PER_BAR = 1     # 1 = берем лучший сигнал на баре, >1 = топ-N сигналов
+BACKTEST_MAX_OPEN_POSITIONS = 1            # максимум одновременно открытых позиций
 BACKTEST_SL_COOLDOWN_BARS = 8
 BACKTEST_MAX_SL_PER_DAY = 3
 BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES = 2
@@ -189,19 +273,19 @@ BACKTEST_CHARTS_DIR.mkdir(exist_ok=True)
 
 # --- EXECUTION LOG (paper / live, paper.py) ---
 # None → та же БД, что и ETL (DB_PATH). Отдельный файл — только если нужно изолировать WAL.
-EXECUTION_DB_PATH = None
+EXECUTION_DB_PATH = _env_str("EXECUTION_DB_PATH")
 
 # --- EXECUTION DB TYPE ---
 # "sqlite" - локальная SQLite база (по умолчанию)
 # "supabase" - облачная PostgreSQL через Supabase
-EXECUTION_DB_TYPE = "sqlite"
+EXECUTION_DB_TYPE = str(_env_str("EXECUTION_DB_TYPE", "sqlite")).lower()
 
 # --- SUPABASE CONFIG (только если EXECUTION_DB_TYPE = "supabase") ---
 # URL проекта Supabase (например: "https://xxxxxx.supabase.co")
-SUPABASE_URL = "https://jjuatlyxubeglxkrpaji.supabase.co"
+SUPABASE_URL = _env_str("SUPABASE_URL", "https://jjuatlyxubeglxkrpaji.supabase.co")
 # SUPABASE_KEY должен быть задан в переменных окружения:
 # PowerShell: $env:SUPABASE_KEY="your-anon-key-or-service-key"
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_KEY = _env_str("SUPABASE_KEY") or _env_str("SUPABASE_SERVICE_KEY")
 
 PAPER_CLOCK_SYMBOL = "BTC/USDT"
 PAPER_MODEL_NAME = "lightgbm_target"
@@ -211,3 +295,4 @@ PAPER_HTF_BARS = 900
 PAPER_MIN_MAIN_ROWS = 400
 PAPER_MIN_HTF_ROWS = 120
 PAPER_DAEMON_POLL_SEC = 45.0
+
