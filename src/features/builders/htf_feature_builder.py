@@ -24,6 +24,8 @@ class HtfFeatureBuilder(FeatureBuilderContract):
             "distance_to_rolling_high_4h",
             "distance_to_rolling_low_4h",
             "breakout_quality_4h",
+            "donchian_width_atr_4h",
+            "donchian_width_change_4h",
             "ema_slope_4h",
             "zscore_vs_vwap_4h",
         }
@@ -62,6 +64,8 @@ class HtfFeatureBuilder(FeatureBuilderContract):
             "distance_to_rolling_high_4h",
             "distance_to_rolling_low_4h",
             "breakout_quality_4h",
+            "donchian_width_atr_4h",
+            "donchian_width_change_4h",
             "ema_slope_4h",
         }
         if structure_request.intersection(active):
@@ -92,6 +96,12 @@ class HtfFeatureBuilder(FeatureBuilderContract):
                     atr_14.loc[downside_mask],
                 )
                 output["breakout_quality_4h"] = breakout_quality
+            if {"donchian_width_atr_4h", "donchian_width_change_4h"}.intersection(active):
+                donchian_width_atr = safe_ratio(rolling_high - rolling_low, atr_14)
+                if "donchian_width_atr_4h" in active:
+                    output["donchian_width_atr_4h"] = donchian_width_atr
+                if "donchian_width_change_4h" in active:
+                    output["donchian_width_change_4h"] = donchian_width_atr - donchian_width_atr.shift(3)
             if "ema_slope_4h" in active:
                 ema_base = context.indicator_cache.get_or_create(
                     "ema_base_4h",

@@ -23,6 +23,11 @@ class InteractionFeatureBuilder(FeatureBuilderContract):
             "counter_market_penalty_1h",
             "trend_efficiency_24h_x_volatility_regime_change_1h",
             "trend_alignment_1h_4h",
+            "breakout_quality_4h_x_volume_ratio_1h",
+            "ema_fast_slow_x_vol_of_vol",
+            "trend_efficiency_x_vol_stability",
+            "market_pressure_x_vol_regime",
+            "signal_x_high_vol_stress",
         }
 
     def build(self, context: FeatureContext, requested_features: set[str]) -> pd.DataFrame:
@@ -45,11 +50,12 @@ class InteractionFeatureBuilder(FeatureBuilderContract):
             "market_directional_pressure_1h",
             "signal_market_agreement_1h",
             "counter_market_penalty_1h",
+            "market_pressure_x_vol_regime",
         }
         if breadth_request.intersection(active):
             if "market_breadth_ema_fast_slow_1h" not in frame.columns:
                 raise ValueError("Market breadth interaction features require 'market_breadth_ema_fast_slow_1h'.")
-            breadth = frame["market_breadth_ema_fast_slow_1h"]
+            breadth = pd.to_numeric(frame["market_breadth_ema_fast_slow_1h"], errors="coerce")
             market_pressure = (breadth - 0.5) * 2.0
             if "delta_market_breadth_ema_fast_slow_1h" in active:
                 output["delta_market_breadth_ema_fast_slow_1h"] = breadth.diff(1)
@@ -68,9 +74,7 @@ class InteractionFeatureBuilder(FeatureBuilderContract):
                 output["ema_fast_slow_x_market_breadth_ema_fast_slow_1h"] = frame["ema_fast_slow"] * breadth
             if {"signal_market_agreement_1h", "counter_market_penalty_1h"}.intersection(active):
                 if "ema_fast_slow" not in frame.columns:
-                    raise ValueError(
-                        "Breadth agreement features require 'ema_fast_slow'."
-                    )
+                    raise ValueError("Breadth agreement features require 'ema_fast_slow'.")
                 signal_strength = pd.to_numeric(frame["ema_fast_slow"], errors="coerce")
                 signal_direction = np.sign(signal_strength)
                 if "signal_market_agreement_1h" in active:
@@ -78,14 +82,17 @@ class InteractionFeatureBuilder(FeatureBuilderContract):
                 if "counter_market_penalty_1h" in active:
                     disagreement = (-signal_direction * market_pressure).clip(lower=0)
                     output["counter_market_penalty_1h"] = signal_strength.abs() * disagreement
+            if "market_pressure_x_vol_regime" in active:
+                if "vol_regime_classification" not in frame.columns:
+                    raise ValueError("Feature 'market_pressure_x_vol_regime' requires 'vol_regime_classification'.")
+                regime_normalized = (pd.to_numeric(frame["vol_regime_classification"], errors="coerce") - 1.0) / 1.0
+                output["market_pressure_x_vol_regime"] = market_pressure * regime_normalized
 
         if "trend_efficiency_24h_x_volatility_regime_change_1h" in active:
             required = {"trend_efficiency_24h", "volatility_regime_change_1h"}
             if not required.issubset(frame.columns):
                 missing = ", ".join(sorted(required - set(frame.columns)))
-                raise ValueError(
-                    "Feature 'trend_efficiency_24h_x_volatility_regime_change_1h' requires: " + missing
-                )
+                raise ValueError("Feature 'trend_efficiency_24h_x_volatility_regime_change_1h' requires: " + missing)
             output["trend_efficiency_24h_x_volatility_regime_change_1h"] = (
                 frame["trend_efficiency_24h"] * frame["volatility_regime_change_1h"]
             )
@@ -96,5 +103,26 @@ class InteractionFeatureBuilder(FeatureBuilderContract):
                 missing = ", ".join(sorted(required - set(frame.columns)))
                 raise ValueError("Feature 'trend_alignment_1h_4h' requires: " + missing)
             output["trend_alignment_1h_4h"] = frame["ema_fast_slow"] * frame["ema_slope_4h"]
+
+        if "breakout_quality_4h_x_volume_ratio_1h" in active:
+            required = {"breakout_quality_4h", "volume_ratio_1h"}
+            if not required.issubset(frame.columns):
+                missing = ", ".join(sorted(required - set(frame.columns)))
+                raise ValueError("Feature 'breakout_quality_4h_x_volume_ratio_1h' requires: " + missing)
+            output["breakout_quality_4h_x_volume_ratio_1h"] = frame["breakout_quality_4h"] * frame["volume_ratio_1h"]
+
+        if "ema_fast_slow_x_vol_of_vol" in active:
+            if "ema_fast_slow" in frame.columns and "vol_of_vol_1h" in frame.columns:
+                output["ema_fast_slow_x_vol_of_vol"] = frame["ema_fast_slow"] * frame["vol_of_vol_1h"]
+
+        if "trend_efficiency_x_vol_stability" in active:
+            if "trend_efficiency_24h" in frame.columns and "volatility_regime_stability" in frame.columns:
+                output["trend_efficiency_x_vol_stability"] = (
+                    frame["trend_efficiency_24h"] * frame["volatility_regime_stability"]
+                )
+
+        if "signal_x_high_vol_stress" in active:
+            if "ema_fast_slow" in frame.columns and "high_vol_stress_indicator" in frame.columns:
+                output["signal_x_high_vol_stress"] = frame["ema_fast_slow"] * frame["high_vol_stress_indicator"]
 
         return output
