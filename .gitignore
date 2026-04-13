@@ -42,3 +42,5 @@ htmlcov/
 models/*.joblib
 models/*.json
 models/*.csv
+
+models/
