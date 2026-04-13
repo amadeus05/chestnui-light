@@ -28,6 +28,24 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--n-splits", type=int, default=5, help="Number of walk-forward folds.")
     parser.add_argument(
+        "--split-mode",
+        choices=["tscv", "monthly"],
+        default="tscv",
+        help="Walk-forward split mode: tscv uses TimeSeriesSplit, monthly uses 1-month rolling OOS tests.",
+    )
+    parser.add_argument(
+        "--monthly-train-months",
+        type=int,
+        default=6,
+        help="Initial training window in months for --split-mode monthly.",
+    )
+    parser.add_argument(
+        "--monthly-test-months",
+        type=int,
+        default=1,
+        help="Test window size in months for --split-mode monthly.",
+    )
+    parser.add_argument(
         "--purge-gap",
         type=int,
         default=12,
@@ -200,6 +218,110 @@ def build_walk_forward_predictions(
     return pd.concat(predictions, ignore_index=True), fold_details
 
 
+def iter_monthly_splits(unique_ts, train_months: int, test_months: int):
+    timestamps = pd.Series(pd.to_datetime(unique_ts)).dropna().sort_values()
+    if timestamps.empty:
+        return
+
+    first_ts = timestamps.iloc[0]
+    last_ts = timestamps.iloc[-1]
+    train_end = first_ts + pd.DateOffset(months=train_months)
+    fold_idx = 1
+
+    while train_end < last_ts:
+        test_end = train_end + pd.DateOffset(months=test_months)
+        train_mask = timestamps < train_end
+        test_mask = (timestamps >= train_end) & (timestamps < test_end)
+
+        train_timestamps = timestamps.loc[train_mask].to_numpy()
+        test_timestamps = timestamps.loc[test_mask].to_numpy()
+        if len(train_timestamps) > 0 and len(test_timestamps) > 0:
+            yield fold_idx, train_timestamps, test_timestamps
+            fold_idx += 1
+
+        train_end = test_end
+
+
+def build_monthly_walk_forward_predictions(
+    full_frame: pd.DataFrame,
+    candidate_frame: pd.DataFrame,
+    directional_frame: pd.DataFrame,
+    feature_columns: list[str],
+    train_months: int,
+    test_months: int,
+    purge_gap: int,
+    seed: int,
+) -> tuple[pd.DataFrame, list[dict]]:
+    if train_months <= 0 or test_months <= 0:
+        raise ValueError("monthly train/test windows must be positive month counts.")
+
+    unique_ts = np.sort(full_frame[train.TIMESTAMP_COLUMN].dropna().unique())
+    predictions = []
+    fold_details = []
+    splits = list(iter_monthly_splits(unique_ts, train_months, test_months))
+
+    for fold_idx, train_timestamps, test_timestamps in splits:
+        original_train_timestamps = train_timestamps
+        if purge_gap > 0 and len(train_timestamps) > purge_gap:
+            train_timestamps = train_timestamps[:-purge_gap]
+
+        train_df = directional_frame.loc[
+            directional_frame[train.TIMESTAMP_COLUMN].isin(set(train_timestamps))
+        ].copy()
+        test_df = candidate_frame.loc[
+            candidate_frame[train.TIMESTAMP_COLUMN].isin(set(test_timestamps))
+        ].copy()
+
+        train_classes = sorted(train_df[train.TARGET_COLUMN].dropna().unique().tolist())
+        if train_df.empty or test_df.empty or len(train_classes) < 2:
+            print(f"Fold {fold_idx}: skipped (train={len(train_df)}, test={len(test_df)}, classes={train_classes})")
+            continue
+
+        model, clip_bounds = fit_fold_model(train_df, feature_columns, seed + fold_idx)
+        clipped_test = train.apply_feature_clip_bounds(test_df, clip_bounds)
+        clipped_test = clipped_test.dropna(subset=feature_columns)
+        if clipped_test.empty:
+            print(f"Fold {fold_idx}: skipped after feature NaN cleanup")
+            continue
+
+        proba = model.predict_proba(clipped_test[feature_columns])
+        fold_predictions = pd.DataFrame(
+            {
+                "timestamp": clipped_test[train.TIMESTAMP_COLUMN].values,
+                "symbol": clipped_test[train.SYMBOL_COLUMN].astype(str).values,
+                "p_short": proba[:, 0],
+                "p_long": proba[:, 1],
+                "fold": fold_idx,
+            }
+        )
+        predictions.append(fold_predictions)
+
+        fold_info = {
+            "fold": fold_idx,
+            "split_mode": "monthly",
+            "train_rows": int(len(train_df)),
+            "prediction_rows": int(len(fold_predictions)),
+            "purged_timestamps": int(purge_gap),
+            "train_start": str(train_df[train.TIMESTAMP_COLUMN].min()),
+            "train_end": str(train_df[train.TIMESTAMP_COLUMN].max()),
+            "train_end_before_purge": str(pd.to_datetime(original_train_timestamps[-1])),
+            "test_start": str(clipped_test[train.TIMESTAMP_COLUMN].min()),
+            "test_end": str(clipped_test[train.TIMESTAMP_COLUMN].max()),
+            "best_iteration": int(getattr(model, "best_iteration_", 0) or getattr(model, "n_estimators_", 0)),
+        }
+        fold_details.append(fold_info)
+        print(
+            f"Fold {fold_idx}/{len(splits)} monthly: train={fold_info['train_rows']} "
+            f"pred={fold_info['prediction_rows']} "
+            f"[{fold_info['test_start']} -> {fold_info['test_end']}]"
+        )
+
+    if not predictions:
+        raise RuntimeError("All monthly walk-forward folds were skipped.")
+
+    return pd.concat(predictions, ignore_index=True), fold_details
+
+
 def build_features_meta(
     predictions: pd.DataFrame,
     feature_columns: list[str],
@@ -220,6 +342,9 @@ def build_features_meta(
         },
         "wfv_n_splits": int(args.n_splits),
         "wfv_purge_gap": int(args.purge_gap),
+        "wfv_split_mode": str(args.split_mode),
+        "wfv_monthly_train_months": int(args.monthly_train_months),
+        "wfv_monthly_test_months": int(args.monthly_test_months),
         "event_filter": event_filter_config,
         "feature_clip": {
             "enabled": bool(getattr(cfg, "ENABLE_FEATURE_CLIP", False)),
@@ -242,6 +367,9 @@ def save_walk_forward_payload(predictions: pd.DataFrame, fold_details: list[dict
         "symbols": list(args.symbols),
         "n_splits": int(args.n_splits),
         "purge_gap": int(args.purge_gap),
+        "split_mode": str(args.split_mode),
+        "monthly_train_months": int(args.monthly_train_months),
+        "monthly_test_months": int(args.monthly_test_months),
         "prediction_rows": int(len(predictions)),
         "prediction_period": {
             "start": str(pd.to_datetime(predictions["timestamp"]).min()),
@@ -265,15 +393,27 @@ def main():
         f"features={len(feature_columns)}"
     )
 
-    predictions, fold_details = build_walk_forward_predictions(
-        full_frame=full_frame,
-        candidate_frame=candidate_frame,
-        directional_frame=directional_frame,
-        feature_columns=feature_columns,
-        n_splits=args.n_splits,
-        purge_gap=args.purge_gap,
-        seed=args.seed,
-    )
+    if args.split_mode == "monthly":
+        predictions, fold_details = build_monthly_walk_forward_predictions(
+            full_frame=full_frame,
+            candidate_frame=candidate_frame,
+            directional_frame=directional_frame,
+            feature_columns=feature_columns,
+            train_months=args.monthly_train_months,
+            test_months=args.monthly_test_months,
+            purge_gap=args.purge_gap,
+            seed=args.seed,
+        )
+    else:
+        predictions, fold_details = build_walk_forward_predictions(
+            full_frame=full_frame,
+            candidate_frame=candidate_frame,
+            directional_frame=directional_frame,
+            feature_columns=feature_columns,
+            n_splits=args.n_splits,
+            purge_gap=args.purge_gap,
+            seed=args.seed,
+        )
     save_walk_forward_payload(predictions, fold_details, args)
 
     features_meta = build_features_meta(

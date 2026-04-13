@@ -104,6 +104,24 @@ def parse_args():
         help="Number of expanding-window folds for Walk-Forward Validation.",
     )
     parser.add_argument(
+        "--split-mode",
+        choices=["tscv", "monthly"],
+        default="tscv",
+        help="Walk-forward split mode: tscv uses TimeSeriesSplit, monthly uses rolling calendar OOS tests.",
+    )
+    parser.add_argument(
+        "--monthly-train-months",
+        type=int,
+        default=6,
+        help="Initial training window in months for --split-mode monthly.",
+    )
+    parser.add_argument(
+        "--monthly-test-months",
+        type=int,
+        default=1,
+        help="Test window size in months for --split-mode monthly.",
+    )
+    parser.add_argument(
         "--purge-gap",
         type=int,
         default=12,
@@ -484,7 +502,59 @@ def evaluate_model(y_true, y_pred, y_proba, split_name, n_rows=None):
 #  Walk-Forward Validation  (Expanding Window + Purge Gap)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_gap=12):
+def iter_monthly_timestamp_splits(unique_ts, train_months, test_months):
+    timestamps = pd.Series(pd.to_datetime(unique_ts, errors="coerce")).dropna().sort_values()
+    if timestamps.empty:
+        return
+
+    first_ts = timestamps.iloc[0]
+    last_ts = timestamps.iloc[-1]
+    train_end = first_ts + pd.DateOffset(months=train_months)
+    fold_idx = 1
+
+    while train_end < last_ts:
+        test_end = train_end + pd.DateOffset(months=test_months)
+        train_mask = timestamps < train_end
+        test_mask = (timestamps >= train_end) & (timestamps < test_end)
+        train_timestamps = timestamps.loc[train_mask].to_numpy()
+        test_timestamps = timestamps.loc[test_mask].to_numpy()
+
+        if len(train_timestamps) > 0 and len(test_timestamps) > 0:
+            yield fold_idx, train_timestamps, test_timestamps
+            fold_idx += 1
+
+        train_end = test_end
+
+
+def build_timestamp_splits(unique_ts, n_splits, split_mode, monthly_train_months, monthly_test_months):
+    if split_mode == "monthly":
+        if monthly_train_months <= 0 or monthly_test_months <= 0:
+            raise ValueError("monthly train/test windows must be positive month counts.")
+        return list(iter_monthly_timestamp_splits(unique_ts, monthly_train_months, monthly_test_months))
+
+    n_timestamps = len(unique_ts)
+    if n_timestamps < n_splits + 1:
+        raise RuntimeError(
+            f"Only {n_timestamps} unique timestamps — need at least {n_splits + 1} for {n_splits}-fold WFV."
+        )
+
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    return [
+        (fold_idx, unique_ts[train_ts_idx], unique_ts[test_ts_idx])
+        for fold_idx, (train_ts_idx, test_ts_idx) in enumerate(tscv.split(unique_ts), start=1)
+    ]
+
+
+def walk_forward_validation(
+    dataset,
+    feature_columns,
+    seed,
+    n_splits=5,
+    purge_gap=12,
+    split_mode="tscv",
+    monthly_train_months=6,
+    monthly_test_months=1,
+):
     """
     Expanding-window walk-forward cross-validation with embargo / purge gap.
 
@@ -503,7 +573,15 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
                              choosing n_estimators for the final production model)
     """
     logger.info("=" * 72)
-    logger.info("Walk-Forward Validation | n_splits=%s | purge_gap=%s timestamps", n_splits, purge_gap)
+    logger.info(
+        "Walk-Forward Validation | split_mode=%s | n_splits=%s | monthly_train=%s | "
+        "monthly_test=%s | purge_gap=%s timestamps",
+        split_mode,
+        n_splits,
+        monthly_train_months,
+        monthly_test_months,
+        purge_gap,
+    )
     logger.info("=" * 72)
 
     # --- Unique sorted timestamp index for time-aware splitting -----------
@@ -518,6 +596,15 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
         )
 
     tscv = TimeSeriesSplit(n_splits=n_splits)
+    timestamp_splits = build_timestamp_splits(
+        unique_ts=unique_ts,
+        n_splits=n_splits,
+        split_mode=split_mode,
+        monthly_train_months=monthly_train_months,
+        monthly_test_months=monthly_test_months,
+    )
+    if not timestamp_splits:
+        raise RuntimeError("No walk-forward timestamp splits were produced.")
 
     # Accumulators for the single OOS vector
     all_y_true = []
@@ -527,11 +614,9 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
     best_iterations = []
     fold_importance_frames = []
 
-    for fold_idx, (train_ts_idx, test_ts_idx) in enumerate(tscv.split(unique_ts), start=1):
+    for fold_idx, original_train_timestamps, test_timestamps in timestamp_splits:
         # --- Resolve timestamp boundaries --------------------------------
-        original_train_timestamps = unique_ts[train_ts_idx]
         train_timestamps = original_train_timestamps
-        test_timestamps = unique_ts[test_ts_idx]
 
         # Purge: remove `purge_gap` latest timestamps from train to create
         # an embargo zone that prevents triple-barrier label contamination.
@@ -614,6 +699,7 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
         fold_auc = float(roc_auc_score(y_test, y_proba_fold[:, 1]))
         fold_info = {
             "fold": fold_idx,
+            "split_mode": split_mode,
             "train_rows": int(len(train_df)),
             "test_rows": int(len(test_df)),
             "purged_timestamps": purge_gap,
@@ -644,7 +730,7 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
             "Fold %s/%s | train=%s rows [%s → %s] | test=%s rows [%s → %s] | "
             "best_iter=%s | acc=%.4f | auc=%.4f",
             fold_idx,
-            n_splits,
+            len(timestamp_splits),
             fold_info["train_rows"],
             fold_info["train_period"]["start"],
             fold_info["train_period"]["end"],
@@ -1172,6 +1258,9 @@ def main():
             seed=args.seed,
             n_splits=args.n_splits,
             purge_gap=args.purge_gap,
+            split_mode=args.split_mode,
+            monthly_train_months=args.monthly_train_months,
+            monthly_test_months=args.monthly_test_months,
         )
         dataset_diagnostics = build_dataset_diagnostics(dataset, fold_details)
 
@@ -1207,6 +1296,9 @@ def main():
             "feature_count": int(len(feature_columns)),
             "n_splits": args.n_splits,
             "purge_gap": args.purge_gap,
+            "split_mode": args.split_mode,
+            "monthly_train_months": args.monthly_train_months,
+            "monthly_test_months": args.monthly_test_months,
             "excluded_non_directional_rows": int(dataset.attrs.get("excluded_non_directional_rows", 0)),
             "candidate_rows": int(dataset.attrs.get("candidate_rows", len(dataset))),
             "excluded_by_event_filter_rows": int(dataset.attrs.get("excluded_by_event_filter_rows", 0)),
