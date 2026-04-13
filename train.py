@@ -112,12 +112,61 @@ def parse_args():
     return parser.parse_args()
 
 
+def format_timestamp(value):
+    timestamp = pd.to_datetime(value, errors="coerce")
+    if pd.isna(timestamp):
+        return None
+    return str(timestamp)
+
+
+def build_timestamp_profile(values):
+    timestamps = pd.Series(pd.to_datetime(values, errors="coerce")).dropna()
+    if timestamps.empty:
+        return {
+            "count": 0,
+            "first": None,
+            "last": None,
+        }
+    return {
+        "count": int(timestamps.nunique()),
+        "first": format_timestamp(timestamps.min()),
+        "last": format_timestamp(timestamps.max()),
+    }
+
+
+def build_symbol_row_profile(frame):
+    if frame.empty or SYMBOL_COLUMN not in frame.columns:
+        return {}
+
+    profile = {}
+    for symbol, symbol_frame in frame.groupby(SYMBOL_COLUMN, observed=True):
+        symbol_key = str(symbol)
+        row = {"rows": int(len(symbol_frame))}
+        if TIMESTAMP_COLUMN in symbol_frame.columns:
+            timestamp_profile = build_timestamp_profile(symbol_frame[TIMESTAMP_COLUMN])
+            row.update(
+                {
+                    "unique_timestamps": timestamp_profile["count"],
+                    "first_timestamp": timestamp_profile["first"],
+                    "last_timestamp": timestamp_profile["last"],
+                }
+            )
+        if TARGET_COLUMN in symbol_frame.columns:
+            target_counts = symbol_frame[TARGET_COLUMN].value_counts(dropna=False).sort_index()
+            row["target_counts"] = {str(key): int(value) for key, value in target_counts.items()}
+        profile[symbol_key] = row
+    return profile
+
+
 def load_training_frame(db_path, symbols):
     """Load dataset, filter events, keep only directional labels {-1, 1} → {0, 1}."""
     repository = HistoricalKlineRepository(db_path=db_path)
     dataset = repository.load_feature_dataset(symbols)
+    feature_table_row_counts_by_symbol = build_symbol_row_profile(dataset)
+
     dataset = dataset.dropna(subset=[TIMESTAMP_COLUMN, TARGET_COLUMN]).sort_values(TIMESTAMP_COLUMN).reset_index(drop=True)
     dataset.replace([np.inf, -np.inf], np.nan, inplace=True)
+    required_non_null_rows = int(len(dataset))
 
     end_cutoff = get_end_date_cutoff()
     if end_cutoff is not None and not pd.isna(end_cutoff):
@@ -130,6 +179,9 @@ def load_training_frame(db_path, symbols):
             before_rows,
         )
 
+    rows_before_event_filter = int(len(dataset))
+    rows_before_filter_by_symbol = build_symbol_row_profile(dataset)
+
     raw_labels = dataset[TARGET_COLUMN].astype(int)
     unknown_labels = sorted(set(raw_labels.unique()) - {-1, 0, 1})
     if unknown_labels:
@@ -141,17 +193,27 @@ def load_training_frame(db_path, symbols):
     candidate_mask = build_candidate_event_mask(dataset, event_filter_config)
     dataset.attrs["event_filter_config"] = event_filter_config
     dataset.attrs["candidate_rows"] = int(candidate_mask.sum())
+    dataset.attrs["candidate_rows_before_filter"] = rows_before_event_filter
     dataset.attrs["excluded_by_event_filter_rows"] = int((~candidate_mask).sum())
+    candidate_rows_by_symbol = build_symbol_row_profile(dataset.loc[candidate_mask])
+    dataset.attrs["candidate_rows_by_symbol"] = candidate_rows_by_symbol
     dataset = dataset.loc[candidate_mask].copy()
 
     directional_mask = dataset[TARGET_COLUMN].astype(int) != 0
     excluded_non_directional_rows = int((~directional_mask).sum())
+    directional_rows_by_symbol = build_symbol_row_profile(dataset.loc[directional_mask])
     dataset = dataset.loc[directional_mask].copy()
     raw_directional_labels = dataset[TARGET_COLUMN].astype(int)
     dataset[TARGET_COLUMN] = raw_directional_labels.map({-1: 0, 1: 1})
     dataset[SYMBOL_COLUMN] = dataset[SYMBOL_COLUMN].astype("category")
     dataset.attrs["excluded_non_directional_rows"] = excluded_non_directional_rows
     dataset.attrs["all_timestamps"] = all_timestamps
+    dataset.attrs["all_timestamps_profile"] = build_timestamp_profile(all_timestamps)
+    dataset.attrs["required_non_null_rows"] = required_non_null_rows
+    dataset.attrs["rows_before_filter_by_symbol"] = rows_before_filter_by_symbol
+    dataset.attrs["candidate_rows_by_symbol"] = candidate_rows_by_symbol
+    dataset.attrs["directional_rows_by_symbol"] = directional_rows_by_symbol
+    dataset.attrs["feature_table_row_counts_by_symbol"] = feature_table_row_counts_by_symbol
     return dataset
 
 
@@ -467,7 +529,8 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
 
     for fold_idx, (train_ts_idx, test_ts_idx) in enumerate(tscv.split(unique_ts), start=1):
         # --- Resolve timestamp boundaries --------------------------------
-        train_timestamps = unique_ts[train_ts_idx]
+        original_train_timestamps = unique_ts[train_ts_idx]
+        train_timestamps = original_train_timestamps
         test_timestamps = unique_ts[test_ts_idx]
 
         # Purge: remove `purge_gap` latest timestamps from train to create
@@ -554,6 +617,15 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
             "train_rows": int(len(train_df)),
             "test_rows": int(len(test_df)),
             "purged_timestamps": purge_gap,
+            "timestamp_boundaries": {
+                "train_start": format_timestamp(train_timestamps[0]),
+                "train_end_before_purge": format_timestamp(original_train_timestamps[-1]),
+                "train_end_after_purge": format_timestamp(train_timestamps[-1]),
+                "test_start": format_timestamp(test_timestamps[0]),
+                "test_end": format_timestamp(test_timestamps[-1]),
+                "train_unique_timestamps_after_purge": int(len(train_timestamps)),
+                "test_unique_timestamps": int(len(test_timestamps)),
+            },
             "train_period": {
                 "start": str(train_df[TIMESTAMP_COLUMN].iloc[0]),
                 "end": str(train_df[TIMESTAMP_COLUMN].iloc[-1]),
@@ -734,6 +806,47 @@ def build_period_payload(frame):
     return {
         "start": str(frame[TIMESTAMP_COLUMN].iloc[0]),
         "end": str(frame[TIMESTAMP_COLUMN].iloc[-1]),
+    }
+
+
+def build_fold_boundary_summary(fold_details):
+    return [
+        {
+            "fold": int(fold["fold"]),
+            "train_rows": int(fold["train_rows"]),
+            "test_rows": int(fold["test_rows"]),
+            **fold.get("timestamp_boundaries", {}),
+        }
+        for fold in fold_details
+    ]
+
+
+def build_dataset_diagnostics(dataset, fold_details):
+    all_timestamp_profile = dataset.attrs.get("all_timestamps_profile")
+    if not all_timestamp_profile:
+        all_timestamp_profile = build_timestamp_profile(dataset.attrs.get("all_timestamps", []))
+
+    candidate_rows_before_filter = int(dataset.attrs.get("candidate_rows_before_filter", len(dataset)))
+    candidate_rows_after_filter = int(dataset.attrs.get("candidate_rows", len(dataset)))
+    excluded_by_event_filter_rows = int(dataset.attrs.get("excluded_by_event_filter_rows", 0))
+    excluded_non_directional_rows = int(dataset.attrs.get("excluded_non_directional_rows", 0))
+
+    return {
+        "all_timestamps_count": int(all_timestamp_profile["count"]),
+        "first_all_timestamp": all_timestamp_profile["first"],
+        "last_all_timestamp": all_timestamp_profile["last"],
+        "feature_rows_after_required_columns": int(dataset.attrs.get("required_non_null_rows", 0)),
+        "candidate_rows_before_filter": candidate_rows_before_filter,
+        "candidate_rows_after_filter": candidate_rows_after_filter,
+        "excluded_by_event_filter_rows": excluded_by_event_filter_rows,
+        "directional_rows_after_filter": int(len(dataset)),
+        "excluded_non_directional_rows": excluded_non_directional_rows,
+        "dataset_period_after_filters": build_period_payload(dataset),
+        "fold_boundary_timestamps": build_fold_boundary_summary(fold_details),
+        "feature_table_row_counts_by_symbol": dataset.attrs.get("feature_table_row_counts_by_symbol", {}),
+        "rows_before_filter_by_symbol": dataset.attrs.get("rows_before_filter_by_symbol", {}),
+        "candidate_rows_by_symbol": dataset.attrs.get("candidate_rows_by_symbol", {}),
+        "directional_rows_by_symbol": dataset.attrs.get("directional_rows_by_symbol", {}),
     }
 
 
@@ -1032,6 +1145,25 @@ def main():
             "Directional baseline inside candidate universe: excluded %s non-directional rows with Target=0 before split",
             int(dataset.attrs.get("excluded_non_directional_rows", 0)),
         )
+        timeline_profile = dataset.attrs.get("all_timestamps_profile", {})
+        logger.info(
+            "Dataset timeline | all_timestamps=%s [%s -> %s] | rows before filter=%s | candidates=%s | directional=%s",
+            int(timeline_profile.get("count", 0)),
+            timeline_profile.get("first"),
+            timeline_profile.get("last"),
+            int(dataset.attrs.get("candidate_rows_before_filter", len(dataset))),
+            int(dataset.attrs.get("candidate_rows", len(dataset))),
+            len(dataset),
+        )
+        feature_rows_by_symbol = dataset.attrs.get("feature_table_row_counts_by_symbol", {})
+        if feature_rows_by_symbol:
+            logger.info(
+                "Feature table rows by symbol: %s",
+                ", ".join(
+                    f"{symbol}={profile.get('rows', 0)}"
+                    for symbol, profile in sorted(feature_rows_by_symbol.items())
+                ),
+            )
 
         # ── Step 1: Walk-Forward Validation → honest OOS metrics ──────────
         oos_metrics, fold_details, median_best_iter, fold_importance = walk_forward_validation(
@@ -1041,6 +1173,7 @@ def main():
             n_splits=args.n_splits,
             purge_gap=args.purge_gap,
         )
+        dataset_diagnostics = build_dataset_diagnostics(dataset, fold_details)
 
         # ── Step 2: Train production model on 100% of data ───────────────
         #    Clip bounds are computed on the FULL dataset because there is
@@ -1077,6 +1210,15 @@ def main():
             "excluded_non_directional_rows": int(dataset.attrs.get("excluded_non_directional_rows", 0)),
             "candidate_rows": int(dataset.attrs.get("candidate_rows", len(dataset))),
             "excluded_by_event_filter_rows": int(dataset.attrs.get("excluded_by_event_filter_rows", 0)),
+            "all_timestamps_count": dataset_diagnostics["all_timestamps_count"],
+            "first_all_timestamp": dataset_diagnostics["first_all_timestamp"],
+            "last_all_timestamp": dataset_diagnostics["last_all_timestamp"],
+            "candidate_rows_before_filter": dataset_diagnostics["candidate_rows_before_filter"],
+            "candidate_rows_after_filter": dataset_diagnostics["candidate_rows_after_filter"],
+            "directional_rows_after_filter": dataset_diagnostics["directional_rows_after_filter"],
+            "fold_boundary_timestamps": dataset_diagnostics["fold_boundary_timestamps"],
+            "feature_table_row_counts_by_symbol": dataset_diagnostics["feature_table_row_counts_by_symbol"],
+            "dataset_diagnostics": dataset_diagnostics,
             "event_filter": dataset.attrs.get("event_filter_config"),
             "experiment": experiment_snapshot,
             "dataset_period": build_period_payload(dataset),
