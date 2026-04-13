@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import shutil
 from datetime import datetime, timezone
 
 import joblib
@@ -462,6 +463,7 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
     all_y_proba = []
     fold_details = []
     best_iterations = []
+    fold_importance_frames = []
 
     for fold_idx, (train_ts_idx, test_ts_idx) in enumerate(tscv.split(unique_ts), start=1):
         # --- Resolve timestamp boundaries --------------------------------
@@ -534,6 +536,7 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
 
         best_iter = int(model.best_iteration_ or model.n_estimators_)
         best_iterations.append(best_iter)
+        fold_importance_frames.append(build_fold_importance_frame(model, feature_columns, fold_idx))
 
         # --- Predict on OOS test fold ------------------------------------
         y_pred_fold = model.predict(x_test)
@@ -615,7 +618,21 @@ def walk_forward_validation(dataset, feature_columns, seed, n_splits=5, purge_ga
     logger.info("Median best_iteration across folds: %s", median_best_iter)
     logger.info("=" * 72)
 
-    return oos_metrics, fold_details, median_best_iter
+    fold_importance = aggregate_fold_importance(fold_importance_frames, feature_columns)
+    if not fold_importance.empty:
+        logger.info("Fold feature importance top by mean gain:")
+        for rank, row in enumerate(fold_importance.head(10).itertuples(index=False), start=1):
+            logger.info(
+                "%s. %s | mean_gain=%.6f | std_gain=%.6f | top10_folds=%s | top20_folds=%s",
+                rank,
+                row.feature,
+                float(row.mean_gain_by_fold),
+                float(row.std_gain_by_fold),
+                int(row.top_10_fold_count),
+                int(row.top_20_fold_count),
+            )
+
+    return oos_metrics, fold_details, median_best_iter, fold_importance
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -648,6 +665,68 @@ def train_production_model(dataset, feature_columns, seed, n_estimators):
 # ═══════════════════════════════════════════════════════════════════════════
 #  Utilities — importance / persistence
 # ═══════════════════════════════════════════════════════════════════════════
+
+def build_fold_importance_frame(model, feature_columns, fold_idx):
+    return pd.DataFrame(
+        {
+            "feature": feature_columns,
+            f"fold_{fold_idx}_gain": model.booster_.feature_importance(importance_type="gain"),
+            f"fold_{fold_idx}_split": model.booster_.feature_importance(importance_type="split"),
+        }
+    )
+
+
+def aggregate_fold_importance(fold_importance_frames, feature_columns):
+    importance = pd.DataFrame({"feature": feature_columns})
+    if not fold_importance_frames:
+        return importance
+
+    for frame in fold_importance_frames:
+        importance = importance.merge(frame, on="feature", how="left")
+
+    gain_columns = [column for column in importance.columns if column.endswith("_gain")]
+    split_columns = [column for column in importance.columns if column.endswith("_split")]
+    importance[gain_columns + split_columns] = importance[gain_columns + split_columns].fillna(0.0)
+
+    gain_ranks = importance[gain_columns].rank(axis=0, ascending=False, method="min")
+    importance["mean_gain_by_fold"] = importance[gain_columns].mean(axis=1)
+    importance["std_gain_by_fold"] = importance[gain_columns].std(axis=1).fillna(0.0)
+    importance["mean_split_by_fold"] = importance[split_columns].mean(axis=1)
+    importance["top_10_fold_count"] = (gain_ranks <= 10).sum(axis=1).astype(int)
+    importance["top_20_fold_count"] = (gain_ranks <= 20).sum(axis=1).astype(int)
+    importance["nonzero_gain_fold_count"] = (importance[gain_columns] > 0).sum(axis=1).astype(int)
+
+    ordered_columns = [
+        "feature",
+        "mean_gain_by_fold",
+        "std_gain_by_fold",
+        "mean_split_by_fold",
+        "top_10_fold_count",
+        "top_20_fold_count",
+        "nonzero_gain_fold_count",
+        *gain_columns,
+        *split_columns,
+    ]
+    return importance[ordered_columns].sort_values(
+        ["mean_gain_by_fold", "top_10_fold_count"],
+        ascending=[False, False],
+    ).reset_index(drop=True)
+
+
+def build_fold_importance_summary(fold_importance, limit=20):
+    if fold_importance is None or fold_importance.empty:
+        return []
+
+    summary_columns = [
+        "feature",
+        "mean_gain_by_fold",
+        "std_gain_by_fold",
+        "top_10_fold_count",
+        "top_20_fold_count",
+        "nonzero_gain_fold_count",
+    ]
+    return fold_importance.head(limit)[summary_columns].to_dict(orient="records")
+
 
 def build_period_payload(frame):
     if frame.empty:
@@ -845,13 +924,15 @@ def log_feature_importance_ranking(model, feature_columns):
         )
 
 
-def save_directional_artifacts(model, metrics, dataset, feature_columns, clip_bounds, args):
+def save_directional_artifacts(model, metrics, dataset, feature_columns, clip_bounds, fold_importance, args):
     cfg.MODELS_DIR.mkdir(exist_ok=True)
 
     model_path = cfg.MODELS_DIR / f"{args.model_name}.joblib"
     metrics_path = cfg.MODELS_DIR / f"{args.model_name}_metrics.json"
     features_path = cfg.MODELS_DIR / f"{args.model_name}_features.json"
     importance_path = cfg.MODELS_DIR / f"{args.model_name}_feature_importance.csv"
+    fold_importance_path = cfg.MODELS_DIR / f"{args.model_name}_fold_feature_importance.csv"
+    artifact_paths = [model_path, metrics_path, features_path, importance_path, fold_importance_path]
 
     payload = {
         "feature_columns": feature_columns,
@@ -872,15 +953,40 @@ def save_directional_artifacts(model, metrics, dataset, feature_columns, clip_bo
         },
     }
 
+    backup_existing_artifacts(artifact_paths, args.model_name)
+
     joblib.dump(model, model_path)
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     features_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     top_feature_importance(model, feature_columns).to_csv(importance_path, index=False)
+    if fold_importance is not None and not fold_importance.empty:
+        fold_importance.to_csv(fold_importance_path, index=False)
 
     logger.info("Saved model to %s", model_path)
     logger.info("Saved metrics to %s", metrics_path)
     logger.info("Saved feature metadata to %s", features_path)
     logger.info("Saved feature importance to %s", importance_path)
+    if fold_importance is not None and not fold_importance.empty:
+        logger.info("Saved fold feature importance to %s", fold_importance_path)
+
+
+def backup_existing_artifacts(paths, model_name):
+    existing_paths = [path for path in paths if path.exists()]
+    if not existing_paths:
+        return
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    backup_dir = cfg.MODELS_DIR / "backups" / f"{model_name}_{timestamp}"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    for path in existing_paths:
+        shutil.copy2(path, backup_dir / path.name)
+
+    logger.info(
+        "Backed up %s existing model artifacts to %s",
+        len(existing_paths),
+        backup_dir,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -928,7 +1034,7 @@ def main():
         )
 
         # ── Step 1: Walk-Forward Validation → honest OOS metrics ──────────
-        oos_metrics, fold_details, median_best_iter = walk_forward_validation(
+        oos_metrics, fold_details, median_best_iter, fold_importance = walk_forward_validation(
             dataset=dataset,
             feature_columns=feature_columns,
             seed=args.seed,
@@ -962,6 +1068,7 @@ def main():
             "oos_metrics": oos_metrics,
             "fold_details": fold_details,
             "fold_stability": build_fold_stability_payload(fold_details),
+            "fold_feature_importance_top": build_fold_importance_summary(fold_importance, limit=20),
             "median_best_iteration": median_best_iter,
             "total_rows": int(len(dataset)),
             "feature_count": int(len(feature_columns)),
@@ -987,7 +1094,7 @@ def main():
         )
 
         log_feature_importance_ranking(prod_model, feature_columns)
-        save_directional_artifacts(prod_model, metrics, dataset, feature_columns, prod_clip_bounds, args)
+        save_directional_artifacts(prod_model, metrics, dataset, feature_columns, prod_clip_bounds, fold_importance, args)
         history_path = get_train_history_path(args.model_name)
         history_entry = build_train_history_entry(args, metrics, experiment_snapshot)
         history = save_train_history(history_path, history_entry)
