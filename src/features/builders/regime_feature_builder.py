@@ -138,25 +138,14 @@ class RegimeFeatureBuilder(FeatureBuilderContract):
                     rvol_long_mean = rvol.rolling(96).mean()
                     regime_high = rvol > (rvol_long_mean * 1.2)
                     regime_low = rvol < (rvol_long_mean * 0.8)
-                    regime_normal = ~(regime_high | regime_low)
+                    regime_label = pd.Series(1, index=frame.index, dtype=int)
+                    regime_label.loc[regime_low] = 0
+                    regime_label.loc[regime_high] = 2
 
-                    # Считаем стабильность (сколько баров подряд тот же режим)
-                    def count_consecutive(series):
-                        # Считаем продолжительность текущего режима
-                        changed = series != series.shift(1)
-                        groups = changed.cumsum()
-                        return groups.groupby(groups).transform("count")
-
-                    # Нормализованная стабильность (0-1, где 1 = очень стабильный режим)
-                    high_stab = count_consecutive(regime_high).clip(0, 48) / 48.0
-                    low_stab = count_consecutive(regime_low).clip(0, 48) / 48.0
-                    normal_stab = count_consecutive(regime_normal).clip(0, 48) / 48.0
-
-                    output["volatility_regime_stability"] = (
-                        high_stab.where(regime_high, 0) +
-                        low_stab.where(regime_low, 0) +
-                        normal_stab.where(regime_normal, 0)
-                    )
+                    # Causal stability: bars elapsed in the current regime up to t.
+                    regime_groups = (regime_label != regime_label.shift(1)).cumsum()
+                    regime_age = regime_label.groupby(regime_groups).cumcount() + 1
+                    output["volatility_regime_stability"] = regime_age.clip(0, 48) / 48.0
 
                 # 4. High Vol Stress Indicator - комбинация высокой волы и расширяющегося диапазона
                 if "high_vol_stress_indicator" in active:

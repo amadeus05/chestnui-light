@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pandas_ta as ta
+
+
+def _load_pandas_ta():
+    try:
+        import pandas_ta as ta
+    except Exception:
+        return None
+    return ta
 
 
 def safe_ratio(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
@@ -11,9 +18,11 @@ def safe_ratio(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
 
 
 def compute_atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int) -> pd.Series:
-    atr = ta.atr(high, low, close, length=length)
-    if atr is not None:
-        return atr
+    ta = _load_pandas_ta()
+    if ta is not None:
+        atr = ta.atr(high, low, close, length=length)
+        if atr is not None:
+            return atr
 
     prev_close = close.shift(1)
     true_range = pd.concat(
@@ -56,11 +65,13 @@ def compute_rolling_vwap(
 
 
 def compute_adx(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> pd.Series:
-    adx = ta.adx(high, low, close, length=length)
-    if adx is not None and not adx.empty:
-        target_col = f"ADX_{length}"
-        if target_col in adx.columns:
-            return adx[target_col]
+    ta = _load_pandas_ta()
+    if ta is not None:
+        adx = ta.adx(high, low, close, length=length)
+        if adx is not None and not adx.empty:
+            target_col = f"ADX_{length}"
+            if target_col in adx.columns:
+                return adx[target_col]
 
     up_move = high.diff()
     down_move = -low.diff()
