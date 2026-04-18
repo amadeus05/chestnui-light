@@ -21,7 +21,7 @@ SYMBOLS = [
     "XRP/USDT",
     "XLM/USDT",
     "ADA/USDT",
-    "TRX/USDT",
+    # "TRX/USDT",
     # "XMR/USDT",
 
     # "LINK/USDT",
@@ -200,7 +200,7 @@ BARRIER_MIN_PCT = 0.0075
 BARRIER_MAX_PCT = 0.06
 
 # --- EVENT FILTER (binary side model candidate universe) ---
-ENABLE_EVENT_FILTER = True
+ENABLE_EVENT_FILTER = False  # Временно отключаем для теста, потом включим с новыми порогами
 
 # Базовые пороги (используются при нормальном режиме)
 EVENT_FILTER_MIN_ABS_EMA_FAST_SLOW = 0.004  # Снижено для большего coverage
@@ -245,10 +245,10 @@ ADAPTIVE_VOL_LOOKBACK_BARS = 96       # 4 дня для расчета перс�
 # TEMPORAL SAMPLE WEIGHTING - 2026-04-05
 # Усиленное взвешивание для адаптации к смене режима
 # ═══════════════════════════════════════════════════════════════════
-SAMPLE_WEIGHT_HALF_LIFE_DAYS = 90.0   # Было 365 - слишком медленно для крипты
+SAMPLE_WEIGHT_HALF_LIFE_DAYS = 180.0    # Было 90
 REGIME_AWARE_WEIGHTING = True           # Дополнительный буст свежим данным
-REGIME_RECENT_DAYS_BOOST = 30.0         # Сколько дней считать "свежими"
-REGIME_RECENT_BOOST_FACTOR = 2.0        # Во сколько раз увеличить вес свежих
+REGIME_RECENT_DAYS_BOOST = 60.0         # Сколько дней считать "свежими" - было 20
+REGIME_RECENT_BOOST_FACTOR = 1.5        # Во сколько раз увеличить вес свежих - было 2.0
 
 # --- RAW REBUILD SAFETY ---
 ALLOW_REBUILD_RAW_FROM_FEATURE_ONLY = False
