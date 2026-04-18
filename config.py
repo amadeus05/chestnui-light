@@ -19,34 +19,9 @@ SYMBOLS = [
     "SOL/USDT",
 
     "XRP/USDT",
-    "XLM/USDT",
     "ADA/USDT",
-    # "TRX/USDT",
-    # "XMR/USDT",
-
-    # "LINK/USDT",
-    # "NEAR/USDT",
-    # "RENDER/USDT",
-    # "ATOM/USDT",
-    # "ARB/USDT",
-    # "HBAR/USDT",
-    # "MATIC/USDT",
-    # "OP/USDT",
-    # "TIA/USDT",
-    # "FET/USDT",
-    # "SEI/USDT",
-    # "WLD/USDT",
-    # "INJ/USDT",
-
-    # "AVAX/USDT",
-    # "SUI/USDT",
-    # "STX/USDT",
-
 
     "DOGE/USDT",
-    # "TON/USDT",
-    # "APT/USDT",
-    # "TAO/USDT",
 ]
 
 TIMEFRAME = "1h"
