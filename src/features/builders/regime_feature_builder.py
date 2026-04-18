@@ -19,6 +19,7 @@ class RegimeFeatureBuilder(FeatureBuilderContract):
             "volatility_regime_change_1h",
             "range_compression_1h",
             "volatility_acceleration_1h",
+            "volume_24h",
             "volume_ratio_1h",
             "volume_zscore_1h",
             "dollar_volume_zscore_1h",
@@ -46,6 +47,7 @@ class RegimeFeatureBuilder(FeatureBuilderContract):
         range_long_window = max(range_short_window + 1, int(getattr(cfg, "RANGE_COMPRESSION_LONG_WINDOW_1H", 48)))
         volume_ratio_window = max(2, int(getattr(cfg, "VOLUME_RATIO_WINDOW_1H", 24)))
         volume_zscore_window = max(24, int(getattr(cfg, "VOLUME_ZSCORE_WINDOW_1H", 24 * 7)))
+        volume_24h_window = max(2, int(getattr(cfg, "VOLUME_24H_WINDOW_1H", 24)))
 
         if "realized_vol_1h" in active:
             log_return_1h_1 = np.log(close / close.shift(1))
@@ -85,6 +87,9 @@ class RegimeFeatureBuilder(FeatureBuilderContract):
             range_short = high.rolling(range_short_window).max() - low.rolling(range_short_window).min()
             range_long = high.rolling(range_long_window).max() - low.rolling(range_long_window).min()
             output["range_compression_1h"] = safe_ratio(range_short, range_long)
+
+        if "volume_24h" in active:
+            output["volume_24h"] = volume.rolling(volume_24h_window).sum()
 
         volume_request = {"volume_ratio_1h", "volume_zscore_1h", "dollar_volume_zscore_1h"}
         if volume_request.intersection(active):
