@@ -23,9 +23,59 @@ BASE_OUTPUT_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
 BARRIER_OUTPUT_COLUMNS = ["barrier_stop_pct", "barrier_take_pct"]
 
 
-def compute_dynamic_barrier_stop_pct(close: pd.Series, atr_14: pd.Series, realized_vol_1h: pd.Series) -> pd.Series:
+def get_base_horizon() -> int:
+    return int(getattr(cfg, "HORIZON", 16))
+
+
+def compute_effective_horizons(df: pd.DataFrame) -> np.ndarray:
+    base_horizon = max(1, get_base_horizon())
+    if not bool(getattr(cfg, "ENABLE_ADAPTIVE_HORIZON", False)):
+        return np.full(len(df), base_horizon, dtype=np.int32)
+
+    if "realized_vol_1h" not in df.columns:
+        logger.warning("Adaptive horizon enabled, but 'realized_vol_1h' is missing. Falling back to fixed horizon=%s.", base_horizon)
+        return np.full(len(df), base_horizon, dtype=np.int32)
+
+    min_horizon = int(getattr(cfg, "ADAPTIVE_HORIZON_MIN", max(1, base_horizon // 2)))
+    max_horizon = int(getattr(cfg, "ADAPTIVE_HORIZON_MAX", base_horizon))
+    if min_horizon > max_horizon:
+        min_horizon, max_horizon = max_horizon, min_horizon
+    min_horizon = max(1, min_horizon)
+    max_horizon = max(min_horizon, max_horizon)
+
+    vol_low = float(getattr(cfg, "ADAPTIVE_HORIZON_VOL_LOW", 0.005))
+    vol_high = float(getattr(cfg, "ADAPTIVE_HORIZON_VOL_HIGH", 0.025))
+    if not np.isfinite(vol_low) or not np.isfinite(vol_high) or vol_high <= vol_low:
+        logger.warning(
+            "Invalid adaptive horizon volatility bounds (low=%s, high=%s). Falling back to fixed horizon=%s.",
+            vol_low,
+            vol_high,
+            base_horizon,
+        )
+        return np.full(len(df), base_horizon, dtype=np.int32)
+
+    vol = pd.Series(df["realized_vol_1h"], copy=False).astype(float).abs()
+    normalized = ((vol - vol_low) / (vol_high - vol_low)).clip(lower=0.0, upper=1.0)
+    normalized_values = normalized.to_numpy()
+    adaptive_raw = np.rint(max_horizon - normalized_values * (max_horizon - min_horizon))
+    adaptive = np.full(len(df), base_horizon, dtype=np.int32)
+    valid_mask = np.isfinite(adaptive_raw)
+    adaptive[valid_mask] = np.clip(adaptive_raw[valid_mask], min_horizon, max_horizon).astype(np.int32)
+    return adaptive
+
+
+def compute_dynamic_barrier_stop_pct(
+    close: pd.Series,
+    atr_14: pd.Series,
+    realized_vol_1h: pd.Series,
+    effective_horizons: np.ndarray | None = None,
+) -> pd.Series:
     atr_pct = safe_ratio(atr_14, close).abs()
-    horizon_vol_pct = realized_vol_1h.abs() * np.sqrt(int(getattr(cfg, "HORIZON", 1)))
+    if effective_horizons is None:
+        horizon_sqrt = np.sqrt(float(get_base_horizon()))
+    else:
+        horizon_sqrt = np.sqrt(np.maximum(effective_horizons.astype(float), 1.0))
+    horizon_vol_pct = realized_vol_1h.abs() * horizon_sqrt
 
     stop_pct = pd.concat(
         [
@@ -48,11 +98,17 @@ def attach_barrier_columns(df: pd.DataFrame) -> pd.DataFrame:
     output = df.copy()
     close = output["close"]
     atr_14 = compute_atr(output["high"], output["low"], close, length=14)
+    effective_horizons = compute_effective_horizons(output)
 
     if bool(getattr(cfg, "USE_DYNAMIC_BARRIERS", True)):
         if "realized_vol_1h" not in output.columns:
             raise ValueError("Dynamic barriers require feature 'realized_vol_1h' to be enabled.")
-        output["barrier_stop_pct"] = compute_dynamic_barrier_stop_pct(close, atr_14, output["realized_vol_1h"])
+        output["barrier_stop_pct"] = compute_dynamic_barrier_stop_pct(
+            close,
+            atr_14,
+            output["realized_vol_1h"],
+            effective_horizons=effective_horizons,
+        )
         output["barrier_take_pct"] = compute_dynamic_barrier_take_pct(output["barrier_stop_pct"])
     else:
         output["barrier_stop_pct"] = float(getattr(cfg, "SL_PCT", 0.015))
@@ -111,9 +167,9 @@ def simulate_trade_outcome(
     take_pcts: np.ndarray,
     start_idx: int,
     direction: int,
+    horizon: int,
 ) -> tuple[float, str | None]:
     slippage = float(getattr(cfg, "SLIPPAGE", 0.0003))
-    horizon = int(getattr(cfg, "HORIZON", 16))
     base_open = opens[start_idx + 1]
     entry_price = base_open * (1 + slippage) if direction == 1 else base_open * (1 - slippage)
     stop_pct = stop_pcts[start_idx]
@@ -144,7 +200,8 @@ def simulate_trade_outcome(
 
 def triple_barrier_labeling(df: pd.DataFrame) -> pd.DataFrame:
     labels = []
-    horizon = int(getattr(cfg, "HORIZON", 16))
+    effective_horizons = compute_effective_horizons(df)
+    max_horizon = int(np.max(effective_horizons)) if len(effective_horizons) > 0 else get_base_horizon()
 
     opens = df["open"].values
     highs = df["high"].values
@@ -152,10 +209,11 @@ def triple_barrier_labeling(df: pd.DataFrame) -> pd.DataFrame:
     stop_pcts = df["barrier_stop_pct"].values
     take_pcts = df["barrier_take_pct"].values
 
-    for i in range(len(df) - horizon):
+    for i in range(len(df) - max_horizon):
         label = 0
-        long_pnl, _ = simulate_trade_outcome(opens, highs, lows, stop_pcts, take_pcts, i, direction=1)
-        short_pnl, _ = simulate_trade_outcome(opens, highs, lows, stop_pcts, take_pcts, i, direction=-1)
+        horizon = int(effective_horizons[i]) if i < len(effective_horizons) else get_base_horizon()
+        long_pnl, _ = simulate_trade_outcome(opens, highs, lows, stop_pcts, take_pcts, i, direction=1, horizon=horizon)
+        short_pnl, _ = simulate_trade_outcome(opens, highs, lows, stop_pcts, take_pcts, i, direction=-1, horizon=horizon)
 
         if long_pnl > 0 and short_pnl <= 0:
             label = 1
@@ -164,7 +222,7 @@ def triple_barrier_labeling(df: pd.DataFrame) -> pd.DataFrame:
 
         labels.append(label)
 
-    labels.extend([0] * horizon)
+    labels.extend([0] * max_horizon)
     output = df.copy()
     output["Target"] = labels
     return output
@@ -172,12 +230,13 @@ def triple_barrier_labeling(df: pd.DataFrame) -> pd.DataFrame:
 
 def finalize_feature_frame(df: pd.DataFrame, feature_columns: list[str]) -> pd.DataFrame:
     output = df.copy()
-    horizon = int(getattr(cfg, "HORIZON", 16))
-    if horizon > 0:
-        if len(output) <= horizon:
+    effective_horizons = compute_effective_horizons(output)
+    max_horizon = int(np.max(effective_horizons)) if len(effective_horizons) > 0 else get_base_horizon()
+    if max_horizon > 0:
+        if len(output) <= max_horizon:
             empty_columns = BASE_OUTPUT_COLUMNS + feature_columns + BARRIER_OUTPUT_COLUMNS + ["Target"]
             return output.iloc[0:0][empty_columns].copy()
-        output = output.iloc[:-horizon].copy()
+        output = output.iloc[:-max_horizon].copy()
 
     output_columns = BASE_OUTPUT_COLUMNS + feature_columns + BARRIER_OUTPUT_COLUMNS + ["Target"]
     for column in output_columns:
@@ -212,6 +271,11 @@ def build_labeling_snapshot() -> dict:
         "barrier_tp_to_sl_ratio": float(getattr(cfg, "BARRIER_TP_TO_SL_RATIO", 0.0)),
         "barrier_min_pct": float(getattr(cfg, "BARRIER_MIN_PCT", 0.0)),
         "barrier_max_pct": float(getattr(cfg, "BARRIER_MAX_PCT", 0.0)),
+        "adaptive_horizon": bool(getattr(cfg, "ENABLE_ADAPTIVE_HORIZON", False)),
+        "adaptive_horizon_min": int(getattr(cfg, "ADAPTIVE_HORIZON_MIN", 0)),
+        "adaptive_horizon_max": int(getattr(cfg, "ADAPTIVE_HORIZON_MAX", 0)),
+        "adaptive_horizon_vol_low": float(getattr(cfg, "ADAPTIVE_HORIZON_VOL_LOW", 0.0)),
+        "adaptive_horizon_vol_high": float(getattr(cfg, "ADAPTIVE_HORIZON_VOL_HIGH", 0.0)),
     }
 
 
@@ -399,6 +463,14 @@ def main() -> None:
         labeling_snapshot["barrier_min_pct"],
         labeling_snapshot["barrier_max_pct"],
         labeling_snapshot["barrier_tp_to_sl_ratio"],
+    )
+    logger.info(
+        "Adaptive horizon: enabled=%s | min=%s | max=%s | vol_low=%.4f | vol_high=%.4f",
+        labeling_snapshot["adaptive_horizon"],
+        labeling_snapshot["adaptive_horizon_min"],
+        labeling_snapshot["adaptive_horizon_max"],
+        labeling_snapshot["adaptive_horizon_vol_low"],
+        labeling_snapshot["adaptive_horizon_vol_high"],
     )
 
     symbols_to_load = [exchange_service.normalize_symbol(symbol) for symbol in dict.fromkeys(getattr(cfg, "SYMBOLS", []))]

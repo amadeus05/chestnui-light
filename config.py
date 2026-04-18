@@ -184,6 +184,13 @@ HORIZON = 12
 TP_PCT = 0.03   # legacy fixed TP, kept for backward compatibility
 SL_PCT = 0.015  # legacy fixed SL, kept for backward compatibility
 
+# --- ADAPTIVE HORIZON (multi-symbol) ---
+ENABLE_ADAPTIVE_HORIZON = True
+ADAPTIVE_HORIZON_MIN = 8
+ADAPTIVE_HORIZON_MAX = 20
+ADAPTIVE_HORIZON_VOL_LOW = 0.005
+ADAPTIVE_HORIZON_VOL_HIGH = 0.025
+
 # --- DYNAMIC BARRIERS ---
 USE_DYNAMIC_BARRIERS = True
 BARRIER_ATR_MULTIPLIER = 1.25
