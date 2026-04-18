@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from src.features.contracts.feature_builder_contract import FeatureBuilderContract
-from src.features.indicators import compute_atr, safe_ratio
+from src.features.indicators import compute_atr, compute_rolling_vwap, compute_trend_efficiency, safe_ratio
 from src.features.models.feature_context import FeatureContext
 
 
@@ -17,6 +18,14 @@ class StructureFeatureBuilder(FeatureBuilderContract):
             "distance_to_resistance_1h",
             "distance_to_session_high_1h",
             "distance_to_session_low_1h",
+            "range_position_1h_48",
+            "range_width_atr_1h_48",
+            "range_center_distance_atr_1h_48",
+            "flat_efficiency_1h_24",
+            "mean_reversion_pressure_1h",
+            "zscore_vs_vwap_1h",
+            "bollinger_percent_b_1h_20",
+            "bollinger_bandwidth_atr_1h_20",
         }
 
     def build(self, context: FeatureContext, requested_features: set[str]) -> pd.DataFrame:
@@ -29,6 +38,7 @@ class StructureFeatureBuilder(FeatureBuilderContract):
         close = frame["close"]
         high = frame["high"]
         low = frame["low"]
+        volume = frame["volume"]
 
         if {"price_position_1h", "distance_to_support_1h", "distance_to_resistance_1h"}.intersection(active):
             rolling_low = low.rolling(24).min()
@@ -58,5 +68,64 @@ class StructureFeatureBuilder(FeatureBuilderContract):
                 output["distance_to_session_high_1h"] = safe_ratio(session_high - close, atr_14)
             if "distance_to_session_low_1h" in active:
                 output["distance_to_session_low_1h"] = safe_ratio(close - session_low, atr_14)
+
+        flat_request = {
+            "range_position_1h_48",
+            "range_width_atr_1h_48",
+            "range_center_distance_atr_1h_48",
+            "flat_efficiency_1h_24",
+            "mean_reversion_pressure_1h",
+            "zscore_vs_vwap_1h",
+            "bollinger_percent_b_1h_20",
+            "bollinger_bandwidth_atr_1h_20",
+        }
+        if flat_request.intersection(active):
+            atr_14 = context.indicator_cache.get_or_create(
+                "atr_14",
+                lambda: compute_atr(high, low, close, length=14),
+            )
+
+            if {
+                "range_position_1h_48",
+                "range_width_atr_1h_48",
+                "range_center_distance_atr_1h_48",
+                "mean_reversion_pressure_1h",
+            }.intersection(active):
+                range_low_48 = low.rolling(48).min()
+                range_high_48 = high.rolling(48).max()
+                range_width_48 = range_high_48 - range_low_48
+                range_position_48 = safe_ratio(close - range_low_48, range_width_48)
+
+                if "range_position_1h_48" in active:
+                    output["range_position_1h_48"] = range_position_48
+                if "range_width_atr_1h_48" in active:
+                    output["range_width_atr_1h_48"] = safe_ratio(range_width_48, atr_14)
+                if "range_center_distance_atr_1h_48" in active:
+                    range_center_48 = (range_high_48 + range_low_48) / 2.0
+                    output["range_center_distance_atr_1h_48"] = safe_ratio(close - range_center_48, atr_14)
+                if "mean_reversion_pressure_1h" in active:
+                    distance_from_center = (range_position_48 - 0.5) * 2.0
+                    output["mean_reversion_pressure_1h"] = -distance_from_center.clip(-1.0, 1.0)
+
+            if "flat_efficiency_1h_24" in active:
+                trend_efficiency = compute_trend_efficiency(close, 24)
+                output["flat_efficiency_1h_24"] = 1.0 - trend_efficiency.clip(0.0, 1.0)
+
+            if "zscore_vs_vwap_1h" in active:
+                rolling_vwap = compute_rolling_vwap(close, high, low, volume, 24)
+                vwap_distance = close - rolling_vwap
+                vwap_distance_std = vwap_distance.rolling(24).std().replace(0, np.nan)
+                output["zscore_vs_vwap_1h"] = safe_ratio(vwap_distance, vwap_distance_std)
+
+            if {"bollinger_percent_b_1h_20", "bollinger_bandwidth_atr_1h_20"}.intersection(active):
+                rolling_mean_20 = close.rolling(20).mean()
+                rolling_std_20 = close.rolling(20).std()
+                upper_band = rolling_mean_20 + 2.0 * rolling_std_20
+                lower_band = rolling_mean_20 - 2.0 * rolling_std_20
+                band_width = upper_band - lower_band
+                if "bollinger_percent_b_1h_20" in active:
+                    output["bollinger_percent_b_1h_20"] = safe_ratio(close - lower_band, band_width)
+                if "bollinger_bandwidth_atr_1h_20" in active:
+                    output["bollinger_bandwidth_atr_1h_20"] = safe_ratio(band_width, atr_14)
 
         return output
