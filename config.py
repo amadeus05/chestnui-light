@@ -21,7 +21,22 @@ SYMBOLS = [
     "XRP/USDT",
     "ADA/USDT",
 
-    "DOGE/USDT",
+    # "1000PEPE/USDT",
+    # # "LTC/USDT",
+    # "1000FLOKI/USDT",
+    # "SHIB1000/USDT",
+
+
+    # "WIF/USDT",
+    # "1000000MOG/USDT",
+    # "1000BONK/USDT",
+    # "MEW/USDT",
+    # "POPCAT/USDT",
+
+    # "AVAX/USDT",
+    # "DOT/USDT",
+
+    # "DOGE/USDT",
 ]
 
 TIMEFRAME = "1h"
@@ -56,12 +71,12 @@ MANUAL_DISABLED_FEATURE_COLUMNS = [
     # Низкий importance (< 1000 gain), создают шум:
     "distance_to_session_low_1h",
     "slope_acceleration_1h_12_24",
-    "price_position_4h",
-    "price_position_1h",
-    "distance_to_support_1h",
+    # "price_position_4h",
+    # "price_position_1h",
+    # "distance_to_support_1h",
     "range_compression_1h",
     "hour_cos_1h",
-    "distance_to_resistance_1h",
+    # "distance_to_resistance_1h",
     "relative_strength_vs_btc_24h",
     "return_4h_1",
     "distance_to_session_high_1h",
@@ -70,9 +85,9 @@ MANUAL_DISABLED_FEATURE_COLUMNS = [
     "return_1h_6",
     "cross_sectional_rank_4h",
     "is_weekend_1h",
-    "crowded_longs_score_1h",
-    "crowded_shorts_score_1h",
-    "premium_index_change_24h",
+    "crowded_longs_score_1h", #$
+    "crowded_shorts_score_1h", #@
+    # "premium_index_change_24h",
     "linear_regression_slope_atr_1h_24",
     "distance_to_rolling_low_4h",
     "residual_return_24h",
@@ -116,6 +131,49 @@ MANUAL_DISABLED_FEATURE_COLUMNS = [
     "trend_persistence_score_12",  # слабый
     "donchian_width_change_4h",  # можно отключить
     "open_interest_zscore_7d",  # слабый
+    "adx_4h",
+    "beta_to_btc_24h",
+    "ema_fast_slow_x_market_breadth_ema_fast_slow_1h",
+    "market_breadth_ema_fast_slow_1h",
+    "market_breadth_ema_fast_slow_1h_zscore",
+    "market_breadth_pos_return_4h_3",
+    "market_directional_pressure_1h",
+    "market_dispersion_return_4h_3",
+
+    "range_position_1h_48",
+    "range_width_atr_1h_48",
+    "range_center_distance_atr_1h_48",
+    "flat_efficiency_1h_24",
+    "mean_reversion_pressure_1h",
+    "zscore_vs_vwap_1h",
+
+    # "bollinger_percent_b_1h_20",
+    # "bollinger_bandwidth_atr_1h_20",
+
+    "volume_24h",
+    "open_interest_change_pct_24h",
+    "open_interest_change_pct_8h",
+    "hour_sin_1h",
+    "volume_ratio_1h",
+    "longs_overheated_1h",
+    "funding_rate_change_24h",
+
+    "open_interest_funding_crowding_1h",
+    "donchian_width_atr_4h",
+    "ema_slope_acceleration_1h",
+    #=======================
+    "vol_ratio",
+    "ema_slope_acceleration_1h",
+    "funding_rate_zscore_7d",
+        #===
+    "trend_alignment_1h_4h",
+    "return_4h_7",
+    "vol_of_vol_1h", #!
+    "realized_vol_1h", #! | 04-18 16:09 | hybrid_v1_labels_v | 56.06% | 0.119 | 0.575 | 0.553 | 1.39% | 50488 |
+    "bollinger_bandwidth_atr_1h_20",
+    "bollinger_percent_b_1h_20",
+    "distance_to_rolling_high_4h",
+    "volatility_regime_stability",
 ]
 # --- FEATURE BUILD ---
 FEATURE_PROFILES = {
@@ -277,4 +335,3 @@ PAPER_HTF_BARS = 900
 PAPER_MIN_MAIN_ROWS = 400
 PAPER_MIN_HTF_ROWS = 120
 PAPER_DAEMON_POLL_SEC = 45.0
-
