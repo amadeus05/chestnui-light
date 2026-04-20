@@ -8,3 +8,5 @@ lightgbm
 scikit-learn
 flask
 supabase
+torch
+tqdm
