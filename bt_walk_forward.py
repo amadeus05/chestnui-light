@@ -37,7 +37,13 @@ def parse_args():
         "--monthly-train-months",
         type=int,
         default=6,
-        help="Initial training window in months for --split-mode monthly.",
+        help="Training window in months for --split-mode monthly.",
+    )
+    parser.add_argument(
+        "--monthly-window-mode",
+        choices=["expanding", "rolling"],
+        default="expanding",
+        help="Monthly WFV train mode: expanding uses all history, rolling uses only the latest train window.",
     )
     parser.add_argument(
         "--monthly-test-months",
@@ -218,10 +224,12 @@ def build_walk_forward_predictions(
     return pd.concat(predictions, ignore_index=True), fold_details
 
 
-def iter_monthly_splits(unique_ts, train_months: int, test_months: int):
+def iter_monthly_splits(unique_ts, train_months: int, test_months: int, window_mode: str = "expanding"):
     timestamps = pd.Series(pd.to_datetime(unique_ts)).dropna().sort_values()
     if timestamps.empty:
         return
+    if window_mode not in {"expanding", "rolling"}:
+        raise ValueError("window_mode must be either 'expanding' or 'rolling'.")
 
     first_ts = timestamps.iloc[0]
     last_ts = timestamps.iloc[-1]
@@ -230,7 +238,11 @@ def iter_monthly_splits(unique_ts, train_months: int, test_months: int):
 
     while train_end < last_ts:
         test_end = train_end + pd.DateOffset(months=test_months)
-        train_mask = timestamps < train_end
+        if window_mode == "rolling":
+            train_start = train_end - pd.DateOffset(months=train_months)
+            train_mask = (timestamps >= train_start) & (timestamps < train_end)
+        else:
+            train_mask = timestamps < train_end
         test_mask = (timestamps >= train_end) & (timestamps < test_end)
 
         train_timestamps = timestamps.loc[train_mask].to_numpy()
@@ -249,6 +261,7 @@ def build_monthly_walk_forward_predictions(
     feature_columns: list[str],
     train_months: int,
     test_months: int,
+    window_mode: str,
     purge_gap: int,
     seed: int,
 ) -> tuple[pd.DataFrame, list[dict]]:
@@ -258,7 +271,7 @@ def build_monthly_walk_forward_predictions(
     unique_ts = np.sort(full_frame[train.TIMESTAMP_COLUMN].dropna().unique())
     predictions = []
     fold_details = []
-    splits = list(iter_monthly_splits(unique_ts, train_months, test_months))
+    splits = list(iter_monthly_splits(unique_ts, train_months, test_months, window_mode=window_mode))
 
     for fold_idx, train_timestamps, test_timestamps in splits:
         original_train_timestamps = train_timestamps
@@ -299,6 +312,7 @@ def build_monthly_walk_forward_predictions(
         fold_info = {
             "fold": fold_idx,
             "split_mode": "monthly",
+            "monthly_window_mode": window_mode,
             "train_rows": int(len(train_df)),
             "prediction_rows": int(len(fold_predictions)),
             "purged_timestamps": int(purge_gap),
@@ -345,6 +359,7 @@ def build_features_meta(
         "wfv_split_mode": str(args.split_mode),
         "wfv_monthly_train_months": int(args.monthly_train_months),
         "wfv_monthly_test_months": int(args.monthly_test_months),
+        "wfv_monthly_window_mode": str(args.monthly_window_mode),
         "event_filter": event_filter_config,
         "feature_clip": {
             "enabled": bool(getattr(cfg, "ENABLE_FEATURE_CLIP", False)),
@@ -370,6 +385,7 @@ def save_walk_forward_payload(predictions: pd.DataFrame, fold_details: list[dict
         "split_mode": str(args.split_mode),
         "monthly_train_months": int(args.monthly_train_months),
         "monthly_test_months": int(args.monthly_test_months),
+        "monthly_window_mode": str(args.monthly_window_mode),
         "prediction_rows": int(len(predictions)),
         "prediction_period": {
             "start": str(pd.to_datetime(predictions["timestamp"]).min()),
@@ -401,6 +417,7 @@ def main():
             feature_columns=feature_columns,
             train_months=args.monthly_train_months,
             test_months=args.monthly_test_months,
+            window_mode=args.monthly_window_mode,
             purge_gap=args.purge_gap,
             seed=args.seed,
         )
