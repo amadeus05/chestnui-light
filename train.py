@@ -113,7 +113,13 @@ def parse_args():
         "--monthly-train-months",
         type=int,
         default=6,
-        help="Initial training window in months for --split-mode monthly.",
+        help="Training window in months for --split-mode monthly.",
+    )
+    parser.add_argument(
+        "--monthly-window-mode",
+        choices=["expanding", "rolling"],
+        default="expanding",
+        help="Monthly WFV train mode: expanding uses all history, rolling uses only the latest train window.",
     )
     parser.add_argument(
         "--monthly-test-months",
@@ -502,10 +508,12 @@ def evaluate_model(y_true, y_pred, y_proba, split_name, n_rows=None):
 #  Walk-Forward Validation  (Expanding Window + Purge Gap)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def iter_monthly_timestamp_splits(unique_ts, train_months, test_months):
+def iter_monthly_timestamp_splits(unique_ts, train_months, test_months, window_mode="expanding"):
     timestamps = pd.Series(pd.to_datetime(unique_ts, errors="coerce")).dropna().sort_values()
     if timestamps.empty:
         return
+    if window_mode not in {"expanding", "rolling"}:
+        raise ValueError("window_mode must be either 'expanding' or 'rolling'.")
 
     first_ts = timestamps.iloc[0]
     last_ts = timestamps.iloc[-1]
@@ -514,7 +522,11 @@ def iter_monthly_timestamp_splits(unique_ts, train_months, test_months):
 
     while train_end < last_ts:
         test_end = train_end + pd.DateOffset(months=test_months)
-        train_mask = timestamps < train_end
+        if window_mode == "rolling":
+            train_start = train_end - pd.DateOffset(months=train_months)
+            train_mask = (timestamps >= train_start) & (timestamps < train_end)
+        else:
+            train_mask = timestamps < train_end
         test_mask = (timestamps >= train_end) & (timestamps < test_end)
         train_timestamps = timestamps.loc[train_mask].to_numpy()
         test_timestamps = timestamps.loc[test_mask].to_numpy()
@@ -526,11 +538,25 @@ def iter_monthly_timestamp_splits(unique_ts, train_months, test_months):
         train_end = test_end
 
 
-def build_timestamp_splits(unique_ts, n_splits, split_mode, monthly_train_months, monthly_test_months):
+def build_timestamp_splits(
+    unique_ts,
+    n_splits,
+    split_mode,
+    monthly_train_months,
+    monthly_test_months,
+    monthly_window_mode="expanding",
+):
     if split_mode == "monthly":
         if monthly_train_months <= 0 or monthly_test_months <= 0:
             raise ValueError("monthly train/test windows must be positive month counts.")
-        return list(iter_monthly_timestamp_splits(unique_ts, monthly_train_months, monthly_test_months))
+        return list(
+            iter_monthly_timestamp_splits(
+                unique_ts,
+                monthly_train_months,
+                monthly_test_months,
+                window_mode=monthly_window_mode,
+            )
+        )
 
     n_timestamps = len(unique_ts)
     if n_timestamps < n_splits + 1:
@@ -554,6 +580,7 @@ def walk_forward_validation(
     split_mode="tscv",
     monthly_train_months=6,
     monthly_test_months=1,
+    monthly_window_mode="expanding",
 ):
     """
     Expanding-window walk-forward cross-validation with embargo / purge gap.
@@ -575,11 +602,12 @@ def walk_forward_validation(
     logger.info("=" * 72)
     logger.info(
         "Walk-Forward Validation | split_mode=%s | n_splits=%s | monthly_train=%s | "
-        "monthly_test=%s | purge_gap=%s timestamps",
+        "monthly_test=%s | monthly_window=%s | purge_gap=%s timestamps",
         split_mode,
         n_splits,
         monthly_train_months,
         monthly_test_months,
+        monthly_window_mode,
         purge_gap,
     )
     logger.info("=" * 72)
@@ -602,6 +630,7 @@ def walk_forward_validation(
         split_mode=split_mode,
         monthly_train_months=monthly_train_months,
         monthly_test_months=monthly_test_months,
+        monthly_window_mode=monthly_window_mode,
     )
     if not timestamp_splits:
         raise RuntimeError("No walk-forward timestamp splits were produced.")
@@ -700,6 +729,7 @@ def walk_forward_validation(
         fold_info = {
             "fold": fold_idx,
             "split_mode": split_mode,
+            "monthly_window_mode": monthly_window_mode if split_mode == "monthly" else None,
             "train_rows": int(len(train_df)),
             "test_rows": int(len(test_df)),
             "purged_timestamps": purge_gap,
@@ -1143,6 +1173,10 @@ def save_directional_artifacts(model, metrics, dataset, feature_columns, clip_bo
         "train_period": build_period_payload(dataset),
         "wfv_n_splits": args.n_splits,
         "wfv_purge_gap": args.purge_gap,
+        "wfv_split_mode": args.split_mode,
+        "wfv_monthly_train_months": args.monthly_train_months,
+        "wfv_monthly_test_months": args.monthly_test_months,
+        "wfv_monthly_window_mode": args.monthly_window_mode,
         "event_filter": metrics.get("event_filter"),
         "feature_clip": {
             "enabled": bool(getattr(cfg, "ENABLE_FEATURE_CLIP", False)),
@@ -1261,6 +1295,7 @@ def main():
             split_mode=args.split_mode,
             monthly_train_months=args.monthly_train_months,
             monthly_test_months=args.monthly_test_months,
+            monthly_window_mode=args.monthly_window_mode,
         )
         dataset_diagnostics = build_dataset_diagnostics(dataset, fold_details)
 
@@ -1299,6 +1334,7 @@ def main():
             "split_mode": args.split_mode,
             "monthly_train_months": args.monthly_train_months,
             "monthly_test_months": args.monthly_test_months,
+            "monthly_window_mode": args.monthly_window_mode,
             "excluded_non_directional_rows": int(dataset.attrs.get("excluded_non_directional_rows", 0)),
             "candidate_rows": int(dataset.attrs.get("candidate_rows", len(dataset))),
             "excluded_by_event_filter_rows": int(dataset.attrs.get("excluded_by_event_filter_rows", 0)),
