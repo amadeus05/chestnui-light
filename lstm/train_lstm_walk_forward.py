@@ -211,6 +211,7 @@ def train_fold_model(
 
 def build_features_meta(predictions: pd.DataFrame, feature_columns: list[str], symbols: list[str], args) -> dict:
     event_filter_config = train.resolve_event_filter_config() if hasattr(train, "resolve_event_filter_config") else {}
+    feature_formulas_path = cfg.MODELS_DIR / f"{args.model_name}_feature_formulas.json"
     return {
         "feature_columns": feature_columns,
         "label_mapping": {"short": 0, "long": 1},
@@ -234,6 +235,7 @@ def build_features_meta(predictions: pd.DataFrame, feature_columns: list[str], s
             "bounds": {},
             "note": "LSTM uses fold-local standardization, not LightGBM feature clipping.",
         },
+        "feature_formulas_artifact": feature_formulas_path.name,
     }
 
 
@@ -390,6 +392,7 @@ def save_payload(metrics, fold_details, predictions, model_state, feature_column
     metrics_path = cfg.MODELS_DIR / f"{args.model_name}_metrics.json"
     model_path = cfg.MODELS_DIR / f"{args.model_name}.pt"
     features_path = cfg.MODELS_DIR / f"{args.model_name}_features.json"
+    feature_formulas_path = cfg.MODELS_DIR / f"{args.model_name}_feature_formulas.json"
 
     predictions.to_csv(predictions_path, index=False)
     payload = {
@@ -402,22 +405,31 @@ def save_payload(metrics, fold_details, predictions, model_state, feature_column
         "fold_details": fold_details,
     }
     metrics_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    feature_formulas_payload = train.build_feature_formulas_payload(
+        feature_columns=feature_columns,
+        model_name=args.model_name,
+        symbols=args.symbols,
+        experiment_snapshot=train.build_experiment_snapshot(),
+    )
     features_path.write_text(
         json.dumps(
             {
                 "feature_columns": feature_columns,
                 "sequence_length": int(args.sequence_length),
                 "symbols": list(args.symbols),
+                "feature_formulas_artifact": feature_formulas_path.name,
             },
             indent=2,
         ),
         encoding="utf-8",
     )
+    feature_formulas_path.write_text(json.dumps(feature_formulas_payload, indent=2), encoding="utf-8")
     if model_state is not None:
         torch.save(model_state, model_path)
 
     logger.info("Saved LSTM predictions to %s", predictions_path)
     logger.info("Saved LSTM metrics to %s", metrics_path)
+    logger.info("Saved LSTM feature formulas to %s", feature_formulas_path)
     logger.info("Saved LSTM model snapshot to %s", model_path)
 
 

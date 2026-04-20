@@ -22,6 +22,8 @@ from sklearn.model_selection import TimeSeriesSplit
 
 import config as cfg
 from signal_filter import build_candidate_event_mask, resolve_event_filter_config
+from src.features import MasterFeatureBuilder
+from src.features.models.feature_spec import serialize_feature_specs
 from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -1153,7 +1155,39 @@ def log_feature_importance_ranking(model, feature_columns):
         )
 
 
-def save_directional_artifacts(model, metrics, dataset, feature_columns, clip_bounds, fold_importance, args):
+def build_feature_formulas_payload(feature_columns, model_name, symbols, experiment_snapshot):
+    builder = MasterFeatureBuilder()
+    allowed_untracked = {SYMBOL_COLUMN}
+    tracked_feature_columns = [column for column in feature_columns if column not in allowed_untracked]
+    feature_specs = builder.collect_feature_specs(set(tracked_feature_columns))
+    missing_specs = sorted(set(tracked_feature_columns) - set(feature_specs))
+    if missing_specs:
+        raise RuntimeError(
+            "Missing FeatureSpec metadata for trained features: " + ", ".join(missing_specs)
+        )
+
+    return {
+        "model_name": model_name,
+        "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "feature_columns": list(feature_columns),
+        "tracked_feature_columns": tracked_feature_columns,
+        "untracked_feature_columns": [column for column in feature_columns if column in allowed_untracked],
+        "symbols": list(symbols),
+        "experiment": experiment_snapshot,
+        "features": serialize_feature_specs(feature_specs, cfg),
+    }
+
+
+def save_directional_artifacts(
+    model,
+    metrics,
+    dataset,
+    feature_columns,
+    clip_bounds,
+    fold_importance,
+    args,
+    experiment_snapshot,
+):
     cfg.MODELS_DIR.mkdir(exist_ok=True)
 
     model_path = cfg.MODELS_DIR / f"{args.model_name}.joblib"
@@ -1161,7 +1195,8 @@ def save_directional_artifacts(model, metrics, dataset, feature_columns, clip_bo
     features_path = cfg.MODELS_DIR / f"{args.model_name}_features.json"
     importance_path = cfg.MODELS_DIR / f"{args.model_name}_feature_importance.csv"
     fold_importance_path = cfg.MODELS_DIR / f"{args.model_name}_fold_feature_importance.csv"
-    artifact_paths = [model_path, metrics_path, features_path, importance_path, fold_importance_path]
+    feature_formulas_path = cfg.MODELS_DIR / f"{args.model_name}_feature_formulas.json"
+    artifact_paths = [model_path, metrics_path, features_path, importance_path, fold_importance_path, feature_formulas_path]
 
     payload = {
         "feature_columns": feature_columns,
@@ -1184,13 +1219,21 @@ def save_directional_artifacts(model, metrics, dataset, feature_columns, clip_bo
             "upper_q": float(getattr(cfg, "FEATURE_CLIP_UPPER_Q", 0.99)),
             "bounds": clip_bounds,
         },
+        "feature_formulas_artifact": feature_formulas_path.name,
     }
+    feature_formulas_payload = build_feature_formulas_payload(
+        feature_columns=feature_columns,
+        model_name=args.model_name,
+        symbols=args.symbols,
+        experiment_snapshot=experiment_snapshot,
+    )
 
     backup_existing_artifacts(artifact_paths, args.model_name)
 
     joblib.dump(model, model_path)
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     features_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    feature_formulas_path.write_text(json.dumps(feature_formulas_payload, indent=2), encoding="utf-8")
     top_feature_importance(model, feature_columns).to_csv(importance_path, index=False)
     if fold_importance is not None and not fold_importance.empty:
         fold_importance.to_csv(fold_importance_path, index=False)
@@ -1198,6 +1241,7 @@ def save_directional_artifacts(model, metrics, dataset, feature_columns, clip_bo
     logger.info("Saved model to %s", model_path)
     logger.info("Saved metrics to %s", metrics_path)
     logger.info("Saved feature metadata to %s", features_path)
+    logger.info("Saved feature formulas to %s", feature_formulas_path)
     logger.info("Saved feature importance to %s", importance_path)
     if fold_importance is not None and not fold_importance.empty:
         logger.info("Saved fold feature importance to %s", fold_importance_path)
@@ -1364,7 +1408,16 @@ def main():
         )
 
         log_feature_importance_ranking(prod_model, feature_columns)
-        save_directional_artifacts(prod_model, metrics, dataset, feature_columns, prod_clip_bounds, fold_importance, args)
+        save_directional_artifacts(
+            prod_model,
+            metrics,
+            dataset,
+            feature_columns,
+            prod_clip_bounds,
+            fold_importance,
+            args,
+            experiment_snapshot,
+        )
         history_path = get_train_history_path(args.model_name)
         history_entry = build_train_history_entry(args, metrics, experiment_snapshot)
         history = save_train_history(history_path, history_entry)

@@ -4,6 +4,7 @@ import pandas as pd
 
 from src.features.contracts.feature_builder_contract import FeatureBuilderContract
 from src.features.models.feature_context import FeatureContext
+from src.features.models.feature_spec import feature_spec
 
 
 def _normalize_rank(series: pd.Series) -> pd.Series:
@@ -15,9 +16,15 @@ def _normalize_rank(series: pd.Series) -> pd.Series:
 
 class HtfCrossSectionalFeatureBuilder(FeatureBuilderContract):
     block_name = "cross_sectional"
-
-    def provides(self) -> set[str]:
-        return {"cross_sectional_rank_4h"}
+    FEATURE_SPECS = {
+        "cross_sectional_rank_4h": feature_spec(
+            "cross_sectional_rank_4h",
+            block_name,
+            "normalized_rank(return_4h_3 across symbols at timestamp)",
+            description="Cross-sectional rank of 3-bar HTF return on each HTF bar.",
+            dependencies=("return_4h_3",),
+        ),
+    }
 
     def build(self, context: FeatureContext, requested_features: set[str]) -> pd.DataFrame:
         active = self.provides().intersection(requested_features)

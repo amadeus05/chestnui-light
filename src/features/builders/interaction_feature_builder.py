@@ -7,28 +7,27 @@ import pandas as pd
 from src.features.contracts.feature_builder_contract import FeatureBuilderContract
 from src.features.indicators import safe_ratio
 from src.features.models.feature_context import FeatureContext
+from src.features.models.feature_spec import feature_param, feature_spec
 
 
 class InteractionFeatureBuilder(FeatureBuilderContract):
     block_name = "interactions"
-
-    def provides(self) -> set[str]:
-        return {
-            "vol_ratio",
-            "delta_market_breadth_ema_fast_slow_1h",
-            "market_breadth_ema_fast_slow_1h_zscore",
-            "ema_fast_slow_x_market_breadth_ema_fast_slow_1h",
-            "market_directional_pressure_1h",
-            "signal_market_agreement_1h",
-            "counter_market_penalty_1h",
-            "trend_efficiency_24h_x_volatility_regime_change_1h",
-            "trend_alignment_1h_4h",
-            "breakout_quality_4h_x_volume_ratio_1h",
-            "ema_fast_slow_x_vol_of_vol",
-            "trend_efficiency_x_vol_stability",
-            "market_pressure_x_vol_regime",
-            "signal_x_high_vol_stress",
-        }
+    FEATURE_SPECS = {
+        "vol_ratio": feature_spec("vol_ratio", block_name, "realized_vol_1h / (realized_vol_4h_returns_20 / sqrt(4))", description="Main timeframe volatility relative to HTF volatility expressed per hour.", dependencies=("realized_vol_1h", "realized_vol_4h_returns_20")),
+        "delta_market_breadth_ema_fast_slow_1h": feature_spec("delta_market_breadth_ema_fast_slow_1h", block_name, "diff(market_breadth_ema_fast_slow_1h, 1)", description="One-bar change in market breadth.", dependencies=("market_breadth_ema_fast_slow_1h",)),
+        "market_breadth_ema_fast_slow_1h_zscore": feature_spec("market_breadth_ema_fast_slow_1h_zscore", block_name, "(market_breadth_ema_fast_slow_1h - rolling_mean(market_breadth_ema_fast_slow_1h, {MARKET_ZSCORE_WINDOW})) / rolling_std(market_breadth_ema_fast_slow_1h, {MARKET_ZSCORE_WINDOW})", description="Z-score of market breadth over the configured window.", params=(feature_param("MARKET_ZSCORE_WINDOW", 96),), dependencies=("market_breadth_ema_fast_slow_1h",)),
+        "ema_fast_slow_x_market_breadth_ema_fast_slow_1h": feature_spec("ema_fast_slow_x_market_breadth_ema_fast_slow_1h", block_name, "ema_fast_slow * market_breadth_ema_fast_slow_1h", description="Signal strength weighted by market breadth.", dependencies=("ema_fast_slow", "market_breadth_ema_fast_slow_1h")),
+        "market_directional_pressure_1h": feature_spec("market_directional_pressure_1h", block_name, "(market_breadth_ema_fast_slow_1h - 0.5) * 2", description="Breadth remapped from [0,1] to [-1,1].", dependencies=("market_breadth_ema_fast_slow_1h",)),
+        "signal_market_agreement_1h": feature_spec("signal_market_agreement_1h", block_name, "ema_fast_slow * market_directional_pressure_1h", description="Agreement between local signal and market direction.", dependencies=("ema_fast_slow", "market_directional_pressure_1h")),
+        "counter_market_penalty_1h": feature_spec("counter_market_penalty_1h", block_name, "abs(ema_fast_slow) * clip(-sign(ema_fast_slow) * market_directional_pressure_1h, lower=0)", description="Penalty for trading against the market pressure.", dependencies=("ema_fast_slow", "market_directional_pressure_1h")),
+        "trend_efficiency_24h_x_volatility_regime_change_1h": feature_spec("trend_efficiency_24h_x_volatility_regime_change_1h", block_name, "trend_efficiency_24h * volatility_regime_change_1h", description="Interaction between trend quality and volatility regime shift.", dependencies=("trend_efficiency_24h", "volatility_regime_change_1h")),
+        "trend_alignment_1h_4h": feature_spec("trend_alignment_1h_4h", block_name, "ema_fast_slow * ema_slope_4h", description="Agreement between main timeframe and HTF trend signals.", dependencies=("ema_fast_slow", "ema_slope_4h")),
+        "breakout_quality_4h_x_volume_ratio_1h": feature_spec("breakout_quality_4h_x_volume_ratio_1h", block_name, "breakout_quality_4h * volume_ratio_1h", description="HTF breakout quality confirmed by elevated main-timeframe volume.", dependencies=("breakout_quality_4h", "volume_ratio_1h")),
+        "ema_fast_slow_x_vol_of_vol": feature_spec("ema_fast_slow_x_vol_of_vol", block_name, "ema_fast_slow * vol_of_vol_1h", description="Momentum signal scaled by volatility-of-volatility.", dependencies=("ema_fast_slow", "vol_of_vol_1h")),
+        "trend_efficiency_x_vol_stability": feature_spec("trend_efficiency_x_vol_stability", block_name, "trend_efficiency_24h * volatility_regime_stability", description="Trend efficiency weighted by regime persistence.", dependencies=("trend_efficiency_24h", "volatility_regime_stability")),
+        "market_pressure_x_vol_regime": feature_spec("market_pressure_x_vol_regime", block_name, "market_directional_pressure_1h * (vol_regime_classification - 1)", description="Market pressure scaled by normalized volatility regime.", dependencies=("market_directional_pressure_1h", "vol_regime_classification")),
+        "signal_x_high_vol_stress": feature_spec("signal_x_high_vol_stress", block_name, "ema_fast_slow * high_vol_stress_indicator", description="Signal strength during high-volatility stress states.", dependencies=("ema_fast_slow", "high_vol_stress_indicator")),
+    }
 
     def build(self, context: FeatureContext, requested_features: set[str]) -> pd.DataFrame:
         active = self.provides().intersection(requested_features)

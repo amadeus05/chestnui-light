@@ -22,6 +22,7 @@ from src.features.models.feature_context import FeatureContext
 from src.features.models.feature_pipeline_result import FeaturePipelineResult
 from src.features.models.feature_request import ResolvedFeatureRequest, resolve_feature_request
 from src.features.models.indicator_cache import IndicatorCache
+from src.features.models.feature_spec import FeatureSpec
 
 
 class MasterFeatureBuilder:
@@ -58,6 +59,7 @@ class MasterFeatureBuilder:
     ) -> FeaturePipelineResult:
         request = self._resolve_request()
         requested_features = set(request.active_features)
+        requested_feature_specs = self.collect_feature_specs(requested_features)
 
         base_feature_map = self._build_symbol_map(
             candle_map=base_candle_map,
@@ -100,6 +102,7 @@ class MasterFeatureBuilder:
             feature_columns=tuple(sorted(requested_features)),
             active_blocks=request.active_blocks,
             profile_name=request.profile,
+            feature_specs=requested_feature_specs,
         )
 
     def _resolve_request(self) -> ResolvedFeatureRequest:
@@ -113,6 +116,18 @@ class MasterFeatureBuilder:
         for builder in self._all_builders():
             block_features.setdefault(builder.block_name, set()).update(builder.provides())
         return block_features
+
+    def collect_feature_specs(self, requested_features: set[str] | None = None) -> dict[str, FeatureSpec]:
+        feature_specs: dict[str, FeatureSpec] = {}
+        for builder in self._all_builders():
+            builder_specs = builder.describe_features(requested_features)
+            duplicate_features = sorted(set(feature_specs).intersection(builder_specs))
+            if duplicate_features:
+                raise ValueError(
+                    "Duplicate feature specs detected: " + ", ".join(duplicate_features)
+                )
+            feature_specs.update(builder_specs)
+        return feature_specs
 
     def _all_builders(self) -> list[FeatureBuilderContract]:
         return [

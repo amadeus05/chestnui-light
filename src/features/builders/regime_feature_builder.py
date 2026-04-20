@@ -7,29 +7,27 @@ import pandas as pd
 from src.features.contracts.feature_builder_contract import FeatureBuilderContract
 from src.features.indicators import compute_atr, safe_ratio
 from src.features.models.feature_context import FeatureContext
+from src.features.models.feature_spec import feature_param, feature_spec
 
 
 class RegimeFeatureBuilder(FeatureBuilderContract):
     block_name = "regime"
-
-    def provides(self) -> set[str]:
-        return {
-            "realized_vol_1h",
-            "atr_ratio_1h",
-            "volatility_regime_change_1h",
-            "range_compression_1h",
-            "volatility_acceleration_1h",
-            "volume_24h",
-            "volume_ratio_1h",
-            "volume_zscore_1h",
-            "dollar_volume_zscore_1h",
-            # Новые признаки для regime detection - 2026-04-05
-            "vol_of_vol_1h",  # волатильность волатильности (2-я производная)
-            "realized_vol_vs_ema",  # отклонение от EMA волатильности
-            "volatility_regime_stability",  # стабильность текущего режима
-            "high_vol_stress_indicator",  # индикатор стресса высокой волатильности
-            "vol_regime_classification",  # классификация режима: 0=low, 1=normal, 2=high
-        }
+    FEATURE_SPECS = {
+        "realized_vol_1h": feature_spec("realized_vol_1h", block_name, "rolling_std(log(close / close.shift(1)), {REALIZED_VOL_WINDOW_1H})", description="Realized volatility of 1H log returns.", params=(feature_param("REALIZED_VOL_WINDOW_1H", 24),), inputs=("close",)),
+        "atr_ratio_1h": feature_spec("atr_ratio_1h", block_name, "ATR(high, low, close, 14) / ATR(high, low, close, 100)", description="Short ATR relative to long ATR.", inputs=("high", "low", "close")),
+        "volatility_regime_change_1h": feature_spec("volatility_regime_change_1h", block_name, "ATR(high, low, close, 6) / ATR(high, low, close, 48)", description="Short-vs-long ATR ratio used as a regime shift proxy.", inputs=("high", "low", "close")),
+        "range_compression_1h": feature_spec("range_compression_1h", block_name, "(rolling_max(high, {RANGE_COMPRESSION_SHORT_WINDOW_1H}) - rolling_min(low, {RANGE_COMPRESSION_SHORT_WINDOW_1H})) / (rolling_max(high, {RANGE_COMPRESSION_LONG_WINDOW_1H}) - rolling_min(low, {RANGE_COMPRESSION_LONG_WINDOW_1H}))", description="Short range divided by long range.", params=(feature_param("RANGE_COMPRESSION_SHORT_WINDOW_1H", 12), feature_param("RANGE_COMPRESSION_LONG_WINDOW_1H", 48)), inputs=("high", "low")),
+        "volatility_acceleration_1h": feature_spec("volatility_acceleration_1h", block_name, "volatility_regime_change_1h - volatility_regime_change_1h.shift(3)", description="Three-bar acceleration of the regime change signal.", dependencies=("volatility_regime_change_1h",)),
+        "volume_24h": feature_spec("volume_24h", block_name, "rolling_sum(volume, {VOLUME_24H_WINDOW_1H})", description="Rolling traded volume over the last 24 bars.", params=(feature_param("VOLUME_24H_WINDOW_1H", 24),), inputs=("volume",)),
+        "volume_ratio_1h": feature_spec("volume_ratio_1h", block_name, "volume / rolling_mean(volume, {VOLUME_RATIO_WINDOW_1H})", description="Current volume relative to its rolling mean.", params=(feature_param("VOLUME_RATIO_WINDOW_1H", 24),), inputs=("volume",)),
+        "volume_zscore_1h": feature_spec("volume_zscore_1h", block_name, "(volume - rolling_mean(volume, {VOLUME_ZSCORE_WINDOW_1H})) / rolling_std(volume, {VOLUME_ZSCORE_WINDOW_1H})", description="Volume z-score on a long rolling window.", params=(feature_param("VOLUME_ZSCORE_WINDOW_1H", 24 * 7),), inputs=("volume",)),
+        "dollar_volume_zscore_1h": feature_spec("dollar_volume_zscore_1h", block_name, "(log1p(max(close * volume, 0)) - rolling_mean(log1p(max(close * volume, 0)), {VOLUME_ZSCORE_WINDOW_1H})) / rolling_std(log1p(max(close * volume, 0)), {VOLUME_ZSCORE_WINDOW_1H})", description="Dollar-volume z-score with log scaling.", params=(feature_param("VOLUME_ZSCORE_WINDOW_1H", 24 * 7),), inputs=("close", "volume")),
+        "vol_of_vol_1h": feature_spec("vol_of_vol_1h", block_name, "rolling_std(realized_vol_1h, 12)", description="Volatility of realized volatility.", dependencies=("realized_vol_1h",)),
+        "realized_vol_vs_ema": feature_spec("realized_vol_vs_ema", block_name, "(realized_vol_1h - ema(realized_vol_1h, 48)) / ema(realized_vol_1h, 48)", description="Deviation of realized volatility from its EMA baseline.", dependencies=("realized_vol_1h",)),
+        "volatility_regime_stability": feature_spec("volatility_regime_stability", block_name, "clip(run_length(vol_regime_label(realized_vol_1h, rolling_mean(realized_vol_1h, 96), low=0.8, high=1.2)), 0, 48) / 48", description="Normalized age of the current volatility regime.", dependencies=("realized_vol_1h",)),
+        "high_vol_stress_indicator": feature_spec("high_vol_stress_indicator", block_name, "1{ATR(high, low, close, 14) > 1.1 * ATR(high, low, close, 48) and realized_vol_1h > rolling_quantile(realized_vol_1h, 96, 0.75)}", description="Binary stress flag for expanding ranges during high volatility.", inputs=("high", "low", "close"), dependencies=("realized_vol_1h",)),
+        "vol_regime_classification": feature_spec("vol_regime_classification", block_name, "1{realized_vol_1h > rolling_quantile(realized_vol_1h, 96, 0.33)} + 1{realized_vol_1h > rolling_quantile(realized_vol_1h, 96, 0.67)}", description="Discrete volatility regime bucket: 0 low, 1 normal, 2 high.", dependencies=("realized_vol_1h",)),
+    }
 
     def build(self, context: FeatureContext, requested_features: set[str]) -> pd.DataFrame:
         active = self.provides().intersection(requested_features)
@@ -109,10 +107,6 @@ class RegimeFeatureBuilder(FeatureBuilderContract):
             if "dollar_volume_zscore_1h" in active:
                 output["dollar_volume_zscore_1h"] = (dollar_volume - dollar_roll_mean) / dollar_roll_std
 
-        # ═════════════════════════════════════════════════════════════════
-        # Новые признаки для Regime Detection - 2026-04-05
-        # Помогают обнаружить структурные сдвиги в рынке (как в Fold 5)
-        # ═════════════════════════════════════════════════════════════════
         regime_request = {
             "vol_of_vol_1h",
             "realized_vol_vs_ema",
@@ -121,40 +115,31 @@ class RegimeFeatureBuilder(FeatureBuilderContract):
             "vol_regime_classification",
         }
         if regime_request.intersection(active):
-            # Базовая волатильность должна быть рассчитана
             rvol = output.get("realized_vol_1h")
             if rvol is None and "realized_vol_1h" in active:
                 log_return_1h_1 = np.log(close / close.shift(1))
                 rvol = log_return_1h_1.rolling(realized_vol_window).std()
 
             if rvol is not None:
-                # 1. Vol of Vol - волатильность волатильности (скачет ли волатильность)
                 if "vol_of_vol_1h" in active:
                     output["vol_of_vol_1h"] = rvol.rolling(12).std()
 
-                # 2. Realized Vol vs EMA - отклонение от тренда волатильности
                 if "realized_vol_vs_ema" in active:
                     rvol_ema = rvol.ewm(span=48, adjust=False).mean()
                     output["realized_vol_vs_ema"] = safe_ratio(rvol - rvol_ema, rvol_ema)
 
-                # 3. Volatility Regime Stability - сколько баров держится текущий режим
                 if "volatility_regime_stability" in active:
-                    # Определяем режим по отношению к долгосрочной средней
                     rvol_long_mean = rvol.rolling(96).mean()
                     regime_high = rvol > (rvol_long_mean * 1.2)
                     regime_low = rvol < (rvol_long_mean * 0.8)
                     regime_label = pd.Series(1, index=frame.index, dtype=int)
                     regime_label.loc[regime_low] = 0
                     regime_label.loc[regime_high] = 2
-
-                    # Causal stability: bars elapsed in the current regime up to t.
                     regime_groups = (regime_label != regime_label.shift(1)).cumsum()
                     regime_age = regime_label.groupby(regime_groups).cumcount() + 1
                     output["volatility_regime_stability"] = regime_age.clip(0, 48) / 48.0
 
-                # 4. High Vol Stress Indicator - комбинация высокой волы и расширяющегося диапазона
                 if "high_vol_stress_indicator" in active:
-                    # Проверяем: высокая волатильность + расширяющийся ATR
                     atr_14 = context.indicator_cache.get_or_create(
                         "atr_14",
                         lambda: compute_atr(high, low, close, length=14),
@@ -167,7 +152,6 @@ class RegimeFeatureBuilder(FeatureBuilderContract):
                     vol_high = rvol > rvol.rolling(96).quantile(0.75)
                     output["high_vol_stress_indicator"] = (atr_expanding & vol_high).astype(float)
 
-                # 5. Vol Regime Classification - категориальный признак (0=low, 1=normal, 2=high)
                 if "vol_regime_classification" in active:
                     rvol_33 = rvol.rolling(96).quantile(0.33)
                     rvol_67 = rvol.rolling(96).quantile(0.67)

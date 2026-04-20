@@ -5,17 +5,16 @@ import pandas as pd
 
 from src.features.contracts.feature_builder_contract import FeatureBuilderContract
 from src.features.models.feature_context import FeatureContext
+from src.features.models.feature_spec import feature_spec
 
 
 class BtcRelativeFeatureBuilder(FeatureBuilderContract):
     block_name = "btc_relative"
-
-    def provides(self) -> set[str]:
-        return {
-            "relative_strength_vs_btc_24h",
-            "beta_to_btc_24h",
-            "residual_return_24h",
-        }
+    FEATURE_SPECS = {
+        "relative_strength_vs_btc_24h": feature_spec("relative_strength_vs_btc_24h", block_name, "return_1h_24 - btc_return_1h_24", description="Asset 24-bar return relative to BTC over the same timestamps.", inputs=("close",), dependencies=("return_1h_24",)),
+        "beta_to_btc_24h": feature_spec("beta_to_btc_24h", block_name, "rolling_cov(log(close / close.shift(1)), log(btc_close / btc_close.shift(1)), 24) / rolling_var(log(btc_close / btc_close.shift(1)), 24)", description="Rolling 24-bar beta of the asset to BTC.", inputs=("close",), dependencies=("return_1h_24",)),
+        "residual_return_24h": feature_spec("residual_return_24h", block_name, "return_1h_24 - beta_to_btc_24h * btc_return_1h_24", description="BTC-neutralized 24-bar return.", inputs=("close",), dependencies=("return_1h_24", "beta_to_btc_24h")),
+    }
 
     def build(self, context: FeatureContext, requested_features: set[str]) -> pd.DataFrame:
         active = self.provides().intersection(requested_features)

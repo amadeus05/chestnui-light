@@ -4,6 +4,7 @@ import pandas as pd
 
 from src.features.contracts.feature_builder_contract import FeatureBuilderContract
 from src.features.models.feature_context import FeatureContext
+from src.features.models.feature_spec import feature_spec
 
 
 def _normalize_rank(series: pd.Series) -> pd.Series:
@@ -15,9 +16,15 @@ def _normalize_rank(series: pd.Series) -> pd.Series:
 
 class BaseCrossSectionalFeatureBuilder(FeatureBuilderContract):
     block_name = "cross_sectional"
-
-    def provides(self) -> set[str]:
-        return {"cross_sectional_rank_ema_fast_slow_1h"}
+    FEATURE_SPECS = {
+        "cross_sectional_rank_ema_fast_slow_1h": feature_spec(
+            "cross_sectional_rank_ema_fast_slow_1h",
+            block_name,
+            "normalized_rank(ema_fast_slow across symbols at timestamp)",
+            description="Cross-sectional rank of the EMA spread signal on each main-timeframe bar.",
+            dependencies=("ema_fast_slow",),
+        ),
+    }
 
     def build(self, context: FeatureContext, requested_features: set[str]) -> pd.DataFrame:
         active = self.provides().intersection(requested_features)

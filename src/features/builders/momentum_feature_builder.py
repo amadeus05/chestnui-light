@@ -7,25 +7,94 @@ import pandas as pd
 from src.features.contracts.feature_builder_contract import FeatureBuilderContract
 from src.features.indicators import compute_atr, compute_linear_regression_slope, compute_trend_efficiency, safe_ratio
 from src.features.models.feature_context import FeatureContext
+from src.features.models.feature_spec import feature_param, feature_spec
 
 
 class MomentumFeatureBuilder(FeatureBuilderContract):
     block_name = "momentum"
-
-    def provides(self) -> set[str]:
-        return {
+    FEATURE_SPECS = {
+        "return_1h_6": feature_spec(
             "return_1h_6",
+            block_name,
+            "log(close / close.shift(6))",
+            description="6-bar log return on the main timeframe.",
+            inputs=("close",),
+        ),
+        "return_1h_12": feature_spec(
             "return_1h_12",
+            block_name,
+            "log(close / close.shift(12))",
+            description="12-bar log return on the main timeframe.",
+            inputs=("close",),
+        ),
+        "return_1h_24": feature_spec(
             "return_1h_24",
+            block_name,
+            "log(close / close.shift(24))",
+            description="24-bar log return on the main timeframe.",
+            inputs=("close",),
+        ),
+        "ema_fast_slow": feature_spec(
             "ema_fast_slow",
+            block_name,
+            "(ema(close, {EMA_FAST_WINDOW}) - ema(close, {EMA_SLOW_WINDOW})) / ema(close, {EMA_SLOW_WINDOW})",
+            description="Relative spread between fast and slow EMA.",
+            params=(
+                feature_param("EMA_FAST_WINDOW", 12),
+                feature_param("EMA_SLOW_WINDOW", 48),
+            ),
+            inputs=("close",),
+        ),
+        "linear_regression_slope_atr_1h_12": feature_spec(
             "linear_regression_slope_atr_1h_12",
+            block_name,
+            "linear_regression_slope(close, 12) / ATR(high, low, close, 14)",
+            description="12-bar linear regression slope normalized by ATR.",
+            inputs=("close", "high", "low"),
+        ),
+        "linear_regression_slope_atr_1h_24": feature_spec(
             "linear_regression_slope_atr_1h_24",
+            block_name,
+            "linear_regression_slope(close, 24) / ATR(high, low, close, 14)",
+            description="24-bar linear regression slope normalized by ATR.",
+            inputs=("close", "high", "low"),
+        ),
+        "trend_persistence_score_12": feature_spec(
             "trend_persistence_score_12",
+            block_name,
+            "rolling_mean(sign(diff(close)), 12)",
+            description="Average sign of close-to-close moves over 12 bars.",
+            inputs=("close",),
+        ),
+        "trend_persistence_score_24": feature_spec(
             "trend_persistence_score_24",
+            block_name,
+            "rolling_mean(sign(diff(close)), 24)",
+            description="Average sign of close-to-close moves over 24 bars.",
+            inputs=("close",),
+        ),
+        "trend_efficiency_24h": feature_spec(
             "trend_efficiency_24h",
+            block_name,
+            "abs(close - close.shift(24)) / rolling_sum(abs(diff(close)), 24)",
+            description="Trend efficiency ratio over the last 24 bars.",
+            inputs=("close",),
+        ),
+        "slope_acceleration_1h_12_24": feature_spec(
             "slope_acceleration_1h_12_24",
+            block_name,
+            "(linear_regression_slope(close, 12) - linear_regression_slope(close, 24)) / ATR(high, low, close, 14)",
+            description="Difference between short and long slope, normalized by ATR.",
+            inputs=("close", "high", "low"),
+        ),
+        "ema_slope_acceleration_1h": feature_spec(
             "ema_slope_acceleration_1h",
-        }
+            block_name,
+            "ema_fast_slow - ema_fast_slow.shift(3)",
+            description="Three-bar acceleration of the EMA spread signal.",
+            dependencies=("ema_fast_slow",),
+        ),
+    }
 
     def build(self, context: FeatureContext, requested_features: set[str]) -> pd.DataFrame:
         active = self.provides().intersection(requested_features)

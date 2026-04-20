@@ -7,28 +7,138 @@ import pandas as pd
 from src.features.contracts.feature_builder_contract import FeatureBuilderContract
 from src.features.indicators import compute_adx, compute_atr, compute_linear_regression_slope, compute_rolling_vwap, safe_ratio
 from src.features.models.feature_context import FeatureContext
+from src.features.models.feature_spec import feature_param, feature_spec
 
 
 class HtfFeatureBuilder(FeatureBuilderContract):
     block_name = "htf"
-
-    def provides(self) -> set[str]:
-        return {
+    FEATURE_SPECS = {
+        "return_4h_1": feature_spec(
             "return_4h_1",
+            block_name,
+            "shift(log(close / close.shift(1)), 1)",
+            description="Lagged 1-bar HTF log return.",
+            inputs=("close",),
+            shift=1,
+        ),
+        "return_4h_3": feature_spec(
             "return_4h_3",
+            block_name,
+            "shift(log(close / close.shift(3)), 1)",
+            description="Lagged 3-bar HTF log return.",
+            inputs=("close",),
+            shift=1,
+        ),
+        "return_4h_7": feature_spec(
             "return_4h_7",
+            block_name,
+            "shift(log(close / close.shift(7)), 1)",
+            description="Lagged 7-bar HTF log return.",
+            inputs=("close",),
+            shift=1,
+        ),
+        "return_4h_14": feature_spec(
             "return_4h_14",
+            block_name,
+            "shift(log(close / close.shift(14)), 1)",
+            description="Lagged 14-bar HTF log return.",
+            inputs=("close",),
+            shift=1,
+        ),
+        "realized_vol_4h_returns_20": feature_spec(
             "realized_vol_4h_returns_20",
+            block_name,
+            "shift(rolling_std(log(close / close.shift(1)), {REALIZED_VOL_WINDOW_4H}), 1)",
+            description="Lagged realized volatility of 4H returns.",
+            params=(feature_param("REALIZED_VOL_WINDOW_4H", 20),),
+            inputs=("close",),
+            shift=1,
+        ),
+        "adx_4h": feature_spec(
             "adx_4h",
+            block_name,
+            "shift(ADX(high, low, close, 14), 1)",
+            description="Lagged ADX on the higher timeframe.",
+            inputs=("high", "low", "close"),
+            shift=1,
+        ),
+        "price_position_4h": feature_spec(
             "price_position_4h",
+            block_name,
+            "shift((close - rolling_min(low, {RANGE_WINDOW_4H})) / (rolling_max(high, {RANGE_WINDOW_4H}) - rolling_min(low, {RANGE_WINDOW_4H})), 1)",
+            description="Lagged normalized position inside the recent HTF range.",
+            params=(feature_param("RANGE_WINDOW_4H", 14),),
+            inputs=("close", "high", "low"),
+            shift=1,
+        ),
+        "distance_to_rolling_high_4h": feature_spec(
             "distance_to_rolling_high_4h",
+            block_name,
+            "shift((close - rolling_max(high, {RANGE_WINDOW_4H})) / ATR(high, low, close, 14), 1)",
+            description="Lagged distance to the recent HTF high in ATR units.",
+            params=(feature_param("RANGE_WINDOW_4H", 14),),
+            inputs=("close", "high", "low"),
+            shift=1,
+        ),
+        "distance_to_rolling_low_4h": feature_spec(
             "distance_to_rolling_low_4h",
+            block_name,
+            "shift((close - rolling_min(low, {RANGE_WINDOW_4H})) / ATR(high, low, close, 14), 1)",
+            description="Lagged distance to the recent HTF low in ATR units.",
+            params=(feature_param("RANGE_WINDOW_4H", 14),),
+            inputs=("close", "high", "low"),
+            shift=1,
+        ),
+        "breakout_quality_4h": feature_spec(
             "breakout_quality_4h",
+            block_name,
+            "shift(signed_breakout_distance(close, rolling_high(high, {RANGE_WINDOW_4H}).shift(1), rolling_low(low, {RANGE_WINDOW_4H}).shift(1)) / ATR(high, low, close, 14), 1)",
+            description="Lagged signed Donchian breakout strength normalized by ATR.",
+            params=(feature_param("RANGE_WINDOW_4H", 14),),
+            inputs=("close", "high", "low"),
+            shift=1,
+        ),
+        "donchian_width_atr_4h": feature_spec(
             "donchian_width_atr_4h",
+            block_name,
+            "shift((rolling_max(high, {RANGE_WINDOW_4H}) - rolling_min(low, {RANGE_WINDOW_4H})) / ATR(high, low, close, 14), 1)",
+            description="Lagged Donchian channel width in ATR units.",
+            params=(feature_param("RANGE_WINDOW_4H", 14),),
+            inputs=("close", "high", "low"),
+            shift=1,
+        ),
+        "donchian_width_change_4h": feature_spec(
             "donchian_width_change_4h",
+            block_name,
+            "shift(donchian_width_atr_4h_raw - donchian_width_atr_4h_raw.shift(3), 1)",
+            description="Lagged three-bar change in Donchian width.",
+            params=(feature_param("RANGE_WINDOW_4H", 14),),
+            inputs=("close", "high", "low"),
+            dependencies=("donchian_width_atr_4h",),
+            shift=1,
+        ),
+        "ema_slope_4h": feature_spec(
             "ema_slope_4h",
+            block_name,
+            "shift(linear_regression_slope(ema(close, {EMA_SLOPE_BASE_WINDOW_4H}), {EMA_SLOPE_WINDOW_4H}) / ATR(high, low, close, 14), 1)",
+            description="Lagged slope of the HTF EMA baseline normalized by ATR.",
+            params=(
+                feature_param("EMA_SLOPE_BASE_WINDOW_4H", 21),
+                feature_param("EMA_SLOPE_WINDOW_4H", 6),
+            ),
+            inputs=("close", "high", "low"),
+            shift=1,
+        ),
+        "zscore_vs_vwap_4h": feature_spec(
             "zscore_vs_vwap_4h",
-        }
+            block_name,
+            "shift((close - rolling_vwap(close, high, low, volume, {VWAP_WINDOW_4H}) - rolling_mean(close - rolling_vwap(close, high, low, volume, {VWAP_WINDOW_4H}), {VWAP_WINDOW_4H})) / rolling_std(close - rolling_vwap(close, high, low, volume, {VWAP_WINDOW_4H}), {VWAP_WINDOW_4H}), 1)",
+            description="Lagged VWAP distance z-score on the higher timeframe.",
+            params=(feature_param("VWAP_WINDOW_4H", 20),),
+            inputs=("close", "high", "low", "volume"),
+            shift=1,
+        ),
+    }
 
     def build(self, context: FeatureContext, requested_features: set[str]) -> pd.DataFrame:
         active = self.provides().intersection(requested_features)

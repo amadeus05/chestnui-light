@@ -13,6 +13,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 import config as cfg
+import train
 from lstm import config_lstm as lstm_cfg
 from lstm.dataset import SequenceDataset, SequenceStandardizer
 from lstm.model import LSTMClassifier
@@ -96,6 +97,7 @@ def save_production_payload(model, standardizer, feature_columns, dataset, best_
     cfg.MODELS_DIR.mkdir(exist_ok=True)
     model_path = cfg.MODELS_DIR / f"{args.model_name}.pt"
     features_path = cfg.MODELS_DIR / f"{args.model_name}_features.json"
+    feature_formulas_path = cfg.MODELS_DIR / f"{args.model_name}_feature_formulas.json"
 
     payload = {
         "model_state_dict": model.state_dict(),
@@ -121,6 +123,12 @@ def save_production_payload(model, standardizer, feature_columns, dataset, best_
             "patience": int(args.patience),
         },
     }
+    feature_formulas_payload = train.build_feature_formulas_payload(
+        feature_columns=feature_columns,
+        model_name=args.model_name,
+        symbols=args.symbols,
+        experiment_snapshot=train.build_experiment_snapshot(),
+    )
     torch.save(payload, model_path)
     features_path.write_text(
         json.dumps(
@@ -130,13 +138,16 @@ def save_production_payload(model, standardizer, feature_columns, dataset, best_
                 "symbols": list(args.symbols),
                 "model_args": payload["model_args"],
                 "training": payload["training"],
+                "feature_formulas_artifact": feature_formulas_path.name,
             },
             indent=2,
         ),
         encoding="utf-8",
     )
+    feature_formulas_path.write_text(json.dumps(feature_formulas_payload, indent=2), encoding="utf-8")
     logger.info("Saved production LSTM model to %s", model_path)
     logger.info("Saved production LSTM feature metadata to %s", features_path)
+    logger.info("Saved production LSTM feature formulas to %s", feature_formulas_path)
 
 
 def main():

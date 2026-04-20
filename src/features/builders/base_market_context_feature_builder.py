@@ -4,13 +4,20 @@ import pandas as pd
 
 from src.features.contracts.feature_builder_contract import FeatureBuilderContract
 from src.features.models.feature_context import FeatureContext
+from src.features.models.feature_spec import feature_spec
 
 
 class BaseMarketContextFeatureBuilder(FeatureBuilderContract):
     block_name = "market_context"
-
-    def provides(self) -> set[str]:
-        return {"market_breadth_ema_fast_slow_1h"}
+    FEATURE_SPECS = {
+        "market_breadth_ema_fast_slow_1h": feature_spec(
+            "market_breadth_ema_fast_slow_1h",
+            block_name,
+            "mean(1{ema_fast_slow > 0} across symbols at timestamp)",
+            description="Share of symbols with positive EMA spread on the main timeframe.",
+            dependencies=("ema_fast_slow",),
+        ),
+    }
 
     def build(self, context: FeatureContext, requested_features: set[str]) -> pd.DataFrame:
         active = self.provides().intersection(requested_features)

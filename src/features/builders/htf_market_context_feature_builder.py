@@ -5,16 +5,15 @@ import pandas as pd
 
 from src.features.contracts.feature_builder_contract import FeatureBuilderContract
 from src.features.models.feature_context import FeatureContext
+from src.features.models.feature_spec import feature_spec
 
 
 class HtfMarketContextFeatureBuilder(FeatureBuilderContract):
     block_name = "market_context"
-
-    def provides(self) -> set[str]:
-        return {
-            "market_breadth_pos_return_4h_3",
-            "market_dispersion_return_4h_3",
-        }
+    FEATURE_SPECS = {
+        "market_breadth_pos_return_4h_3": feature_spec("market_breadth_pos_return_4h_3", block_name, "mean(1{return_4h_3 > 0} across symbols at timestamp)", description="Share of symbols with positive 3-bar HTF return.", dependencies=("return_4h_3",)),
+        "market_dispersion_return_4h_3": feature_spec("market_dispersion_return_4h_3", block_name, "std(return_4h_3 across symbols at timestamp)", description="Cross-sectional dispersion of 3-bar HTF returns.", dependencies=("return_4h_3",)),
+    }
 
     def build(self, context: FeatureContext, requested_features: set[str]) -> pd.DataFrame:
         active = self.provides().intersection(requested_features)

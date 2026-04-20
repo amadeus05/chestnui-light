@@ -5,17 +5,16 @@ import pandas as pd
 
 from src.features.contracts.feature_builder_contract import FeatureBuilderContract
 from src.features.models.feature_context import FeatureContext
+from src.features.models.feature_spec import feature_spec
 
 
 class TimeContextFeatureBuilder(FeatureBuilderContract):
     block_name = "time_context"
-
-    def provides(self) -> set[str]:
-        return {
-            "hour_sin_1h",
-            "hour_cos_1h",
-            "is_weekend_1h",
-        }
+    FEATURE_SPECS = {
+        "hour_sin_1h": feature_spec("hour_sin_1h", block_name, "sin(2 * pi * hour(timestamp) / 24)", description="Cyclical hour-of-day encoding, sine component.", inputs=("timestamp",)),
+        "hour_cos_1h": feature_spec("hour_cos_1h", block_name, "cos(2 * pi * hour(timestamp) / 24)", description="Cyclical hour-of-day encoding, cosine component.", inputs=("timestamp",)),
+        "is_weekend_1h": feature_spec("is_weekend_1h", block_name, "1{day_of_week(timestamp) >= 5}", description="Weekend flag derived from the timestamp.", inputs=("timestamp",)),
+    }
 
     def build(self, context: FeatureContext, requested_features: set[str]) -> pd.DataFrame:
         active = self.provides().intersection(requested_features)

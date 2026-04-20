@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 
+import train
 from etl import attach_barrier_columns
 from src.features import indicators
 from src.features.builders.regime_feature_builder import RegimeFeatureBuilder
@@ -147,3 +148,27 @@ def test_master_feature_builder_is_causal_for_all_requested_features(monkeypatch
             atol=1e-12,
             obj=f"{symbol} features before {cutoff_ts}",
         )
+
+
+def test_feature_specs_cover_all_builder_features():
+    builder = MasterFeatureBuilder()
+    all_features = set().union(*(feature_builder.provides() for feature_builder in builder._all_builders()))
+    all_specs = builder.collect_feature_specs()
+    assert set(all_specs) == all_features
+
+
+def test_train_feature_formula_payload_resolves_requested_features():
+    feature_columns = ["ema_fast_slow", "trend_alignment_1h_4h"]
+    payload = train.build_feature_formulas_payload(
+        feature_columns=feature_columns,
+        model_name="test_model",
+        symbols=["BTC/USDT"],
+        experiment_snapshot={"experiment": "test"},
+    )
+
+    assert payload["tracked_feature_columns"] == feature_columns
+    assert payload["untracked_feature_columns"] == []
+    formulas_by_name = {item["name"]: item for item in payload["features"]}
+    assert set(formulas_by_name) == set(feature_columns)
+    assert formulas_by_name["ema_fast_slow"]["resolved_formula"]
+    assert "ema_fast_slow" in formulas_by_name["trend_alignment_1h_4h"]["dependencies"]

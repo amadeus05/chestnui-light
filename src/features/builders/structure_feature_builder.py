@@ -6,27 +6,26 @@ import pandas as pd
 from src.features.contracts.feature_builder_contract import FeatureBuilderContract
 from src.features.indicators import compute_atr, compute_rolling_vwap, compute_trend_efficiency, safe_ratio
 from src.features.models.feature_context import FeatureContext
+from src.features.models.feature_spec import feature_spec
 
 
 class StructureFeatureBuilder(FeatureBuilderContract):
     block_name = "structure"
-
-    def provides(self) -> set[str]:
-        return {
-            "price_position_1h",
-            "distance_to_support_1h",
-            "distance_to_resistance_1h",
-            "distance_to_session_high_1h",
-            "distance_to_session_low_1h",
-            "range_position_1h_48",
-            "range_width_atr_1h_48",
-            "range_center_distance_atr_1h_48",
-            "flat_efficiency_1h_24",
-            "mean_reversion_pressure_1h",
-            "zscore_vs_vwap_1h",
-            "bollinger_percent_b_1h_20",
-            "bollinger_bandwidth_atr_1h_20",
-        }
+    FEATURE_SPECS = {
+        "price_position_1h": feature_spec("price_position_1h", block_name, "(close - rolling_min(low, 24)) / (rolling_max(high, 24) - rolling_min(low, 24))", description="Normalized position inside the recent 24-bar range.", inputs=("close", "high", "low")),
+        "distance_to_support_1h": feature_spec("distance_to_support_1h", block_name, "(close - rolling_min(low, 24)) / ATR(high, low, close, 14)", description="Distance to the recent support level in ATR units.", inputs=("close", "high", "low")),
+        "distance_to_resistance_1h": feature_spec("distance_to_resistance_1h", block_name, "(rolling_max(high, 24) - close) / ATR(high, low, close, 14)", description="Distance to the recent resistance level in ATR units.", inputs=("close", "high", "low")),
+        "distance_to_session_high_1h": feature_spec("distance_to_session_high_1h", block_name, "(session_cummax(high) - close) / ATR(high, low, close, 14)", description="Distance from close to the running daily session high.", inputs=("timestamp", "close", "high", "low")),
+        "distance_to_session_low_1h": feature_spec("distance_to_session_low_1h", block_name, "(close - session_cummin(low)) / ATR(high, low, close, 14)", description="Distance from close to the running daily session low.", inputs=("timestamp", "close", "high", "low")),
+        "range_position_1h_48": feature_spec("range_position_1h_48", block_name, "(close - rolling_min(low, 48)) / (rolling_max(high, 48) - rolling_min(low, 48))", description="Normalized position inside the 48-bar flat range.", inputs=("close", "high", "low")),
+        "range_width_atr_1h_48": feature_spec("range_width_atr_1h_48", block_name, "(rolling_max(high, 48) - rolling_min(low, 48)) / ATR(high, low, close, 14)", description="48-bar range width in ATR units.", inputs=("close", "high", "low")),
+        "range_center_distance_atr_1h_48": feature_spec("range_center_distance_atr_1h_48", block_name, "(close - ((rolling_max(high, 48) + rolling_min(low, 48)) / 2)) / ATR(high, low, close, 14)", description="Distance from close to the center of the 48-bar range.", inputs=("close", "high", "low")),
+        "flat_efficiency_1h_24": feature_spec("flat_efficiency_1h_24", block_name, "1 - clip(trend_efficiency(close, 24), 0, 1)", description="Inverse of the 24-bar trend efficiency.", inputs=("close",)),
+        "mean_reversion_pressure_1h": feature_spec("mean_reversion_pressure_1h", block_name, "-clip(((range_position_1h_48 - 0.5) * 2), -1, 1)", description="Signed pull back toward the center of the 48-bar range.", dependencies=("range_position_1h_48",)),
+        "zscore_vs_vwap_1h": feature_spec("zscore_vs_vwap_1h", block_name, "(close - rolling_vwap(close, high, low, volume, 24)) / rolling_std(close - rolling_vwap(close, high, low, volume, 24), 24)", description="Main timeframe VWAP distance z-score.", inputs=("close", "high", "low", "volume")),
+        "bollinger_percent_b_1h_20": feature_spec("bollinger_percent_b_1h_20", block_name, "(close - (rolling_mean(close, 20) - 2 * rolling_std(close, 20))) / ((rolling_mean(close, 20) + 2 * rolling_std(close, 20)) - (rolling_mean(close, 20) - 2 * rolling_std(close, 20)))", description="Bollinger percent-b on a 20-bar window.", inputs=("close",)),
+        "bollinger_bandwidth_atr_1h_20": feature_spec("bollinger_bandwidth_atr_1h_20", block_name, "((rolling_mean(close, 20) + 2 * rolling_std(close, 20)) - (rolling_mean(close, 20) - 2 * rolling_std(close, 20))) / ATR(high, low, close, 14)", description="Bollinger band width in ATR units.", inputs=("close", "high", "low")),
+    }
 
     def build(self, context: FeatureContext, requested_features: set[str]) -> pd.DataFrame:
         active = self.provides().intersection(requested_features)
