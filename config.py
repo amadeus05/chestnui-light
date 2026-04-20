@@ -80,10 +80,10 @@ MANUAL_DISABLED_FEATURE_COLUMNS = [
     "relative_strength_vs_btc_24h",
     "return_4h_1",
     "distance_to_session_high_1h",
-    "cross_sectional_rank_ema_fast_slow_1h",
+    # "cross_sectional_rank_ema_fast_slow_1h",
     "return_1h_12",
     "return_1h_6",
-    "cross_sectional_rank_4h",
+    # "cross_sectional_rank_4h",
     "is_weekend_1h",
     "crowded_longs_score_1h", #$
     "crowded_shorts_score_1h", #@
@@ -134,18 +134,18 @@ MANUAL_DISABLED_FEATURE_COLUMNS = [
     "adx_4h",
     "beta_to_btc_24h",
     "ema_fast_slow_x_market_breadth_ema_fast_slow_1h",
-    "market_breadth_ema_fast_slow_1h",
+    # "market_breadth_ema_fast_slow_1h",
     "market_breadth_ema_fast_slow_1h_zscore",
-    "market_breadth_pos_return_4h_3",
+    # "market_breadth_pos_return_4h_3",
     "market_directional_pressure_1h",
     "market_dispersion_return_4h_3",
 
-    "range_position_1h_48",
+    # "range_position_1h_48",
     "range_width_atr_1h_48",
-    "range_center_distance_atr_1h_48",
-    "flat_efficiency_1h_24",
-    "mean_reversion_pressure_1h",
-    "zscore_vs_vwap_1h",
+    # "range_center_distance_atr_1h_48",
+    # "flat_efficiency_1h_24",
+    # "mean_reversion_pressure_1h",
+    # "zscore_vs_vwap_1h",
 
     # "bollinger_percent_b_1h_20",
     # "bollinger_bandwidth_atr_1h_20",
@@ -335,3 +335,14 @@ PAPER_HTF_BARS = 900
 PAPER_MIN_MAIN_ROWS = 400
 PAPER_MIN_HTF_ROWS = 120
 PAPER_DAEMON_POLL_SEC = 45.0
+
+# Regime-aware sample-weight tuning overrides.
+REGIME_WEIGHT_STRENGTH = 0.18
+REGIME_WEIGHT_STRENGTH_CAP = 0.25
+REGIME_WEIGHT_SLOPE_SCALE_4H = 0.08
+SAMPLE_WEIGHT_MIN = 0.8
+SAMPLE_WEIGHT_MAX = 1.35
+EARLY_STOPPING_ROUNDS = 200
+UNSTABLE_FOLD_MIN_BEST_ITER = 25
+UNSTABLE_FOLD_FALLBACK_MIN_ESTIMATORS = 150
+UNSTABLE_FOLD_FALLBACK_DEFAULT_ESTIMATORS = 250

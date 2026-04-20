@@ -325,12 +325,89 @@ def apply_feature_clip_bounds(frame, clip_bounds):
     return clipped
 
 
+def resolve_internal_eval_plan(y_train: pd.Series) -> dict:
+    """
+    Pick a suffix eval slice that remains time-ordered but is less class-skewed.
+    """
+    n_rows = int(len(y_train))
+    if n_rows <= 1:
+        base_rate = float(y_train.mean()) if n_rows else 0.5
+        return {
+            "eval_size": 1,
+            "eval_fraction": 1.0,
+            "fit_rate": base_rate,
+            "eval_rate": base_rate,
+            "was_expanded": False,
+        }
+
+    min_fraction = float(getattr(cfg, "INTERNAL_EVAL_MIN_FRACTION", 0.15))
+    max_fraction = float(getattr(cfg, "INTERNAL_EVAL_MAX_FRACTION", 0.40))
+    step_fraction = float(getattr(cfg, "INTERNAL_EVAL_STEP_FRACTION", 0.05))
+    max_rate_diff = float(getattr(cfg, "INTERNAL_EVAL_MAX_CLASS_RATE_DIFF", 0.08))
+
+    min_fraction = min(max(min_fraction, 0.05), 0.45)
+    max_fraction = min(max(max_fraction, min_fraction), 0.50)
+    step_fraction = min(max(step_fraction, 0.01), 0.10)
+
+    candidate_fractions = []
+    current_fraction = min_fraction
+    while current_fraction <= max_fraction + 1e-9:
+        candidate_fractions.append(round(current_fraction, 4))
+        current_fraction += step_fraction
+
+    best_plan = None
+    for idx, fraction in enumerate(candidate_fractions):
+        eval_size = max(1, int(n_rows * fraction))
+        if eval_size >= n_rows:
+            eval_size = n_rows - 1
+        if eval_size <= 0:
+            continue
+
+        y_fit = y_train.iloc[:-eval_size]
+        y_eval = y_train.iloc[-eval_size:]
+        if y_fit.empty:
+            continue
+        if len(set(y_fit.unique().tolist())) < 2 or len(set(y_eval.unique().tolist())) < 2:
+            continue
+
+        fit_rate = float(y_fit.mean())
+        eval_rate = float(y_eval.mean())
+        plan = {
+            "eval_size": int(eval_size),
+            "eval_fraction": float(eval_size / n_rows),
+            "fit_rate": fit_rate,
+            "eval_rate": eval_rate,
+            "rate_diff": abs(eval_rate - fit_rate),
+            "was_expanded": idx > 0,
+        }
+        if best_plan is None or plan["rate_diff"] < best_plan["rate_diff"]:
+            best_plan = plan
+        if plan["rate_diff"] <= max_rate_diff:
+            return plan
+
+    if best_plan is not None:
+        return best_plan
+
+    eval_size = max(1, int(n_rows * min_fraction))
+    if eval_size >= n_rows:
+        eval_size = n_rows - 1
+    y_fit = y_train.iloc[:-eval_size]
+    y_eval = y_train.iloc[-eval_size:]
+    return {
+        "eval_size": int(eval_size),
+        "eval_fraction": float(eval_size / n_rows),
+        "fit_rate": float(y_fit.mean()) if not y_fit.empty else float(y_train.mean()),
+        "eval_rate": float(y_eval.mean()) if not y_eval.empty else float(y_train.mean()),
+        "was_expanded": False,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  Model building
 # ═══════════════════════════════════════════════════════════════════════════
 
 def compute_sample_weights(
-    timestamps: pd.Series,
+    frame_or_timestamps,
     half_life_days: float | None = None,
     regime_aware: bool = True,
 ) -> np.ndarray:
@@ -345,6 +422,13 @@ def compute_sample_weights(
     if half_life_days is None:
         half_life_days = float(getattr(cfg, "SAMPLE_WEIGHT_HALF_LIFE_DAYS", 90.0))
 
+    if isinstance(frame_or_timestamps, pd.DataFrame):
+        frame = frame_or_timestamps
+        timestamps = frame[TIMESTAMP_COLUMN]
+    else:
+        frame = None
+        timestamps = frame_or_timestamps
+
     ts = pd.to_datetime(timestamps)
     days_ago = (ts.max() - ts).dt.total_seconds() / 86400.0
     decay = np.log(2) / half_life_days
@@ -358,7 +442,42 @@ def compute_sample_weights(
         recent_mask = days_ago <= recent_days
         weights = np.where(recent_mask, weights * boost_factor, weights)
 
-    return weights
+        if frame is not None:
+            regime_score = np.zeros(len(frame), dtype=float)
+            regime_terms = 0
+
+            if "market_breadth_ema_fast_slow_1h" in frame.columns:
+                breadth_1h = pd.to_numeric(frame["market_breadth_ema_fast_slow_1h"], errors="coerce").fillna(0.5)
+                regime_score += np.abs((breadth_1h.to_numpy() * 2.0) - 1.0).clip(0.0, 1.0)
+                regime_terms += 1
+
+            if "market_breadth_pos_return_4h_3" in frame.columns:
+                breadth_4h = pd.to_numeric(frame["market_breadth_pos_return_4h_3"], errors="coerce").fillna(0.5)
+                regime_score += np.abs((breadth_4h.to_numpy() * 2.0) - 1.0).clip(0.0, 1.0)
+                regime_terms += 1
+
+            if "ema_slope_4h" in frame.columns:
+                ema_slope_4h = pd.to_numeric(frame["ema_slope_4h"], errors="coerce").fillna(0.0)
+                slope_scale = float(getattr(cfg, "REGIME_WEIGHT_SLOPE_SCALE_4H", 0.08))
+                if slope_scale > 0:
+                    regime_score += np.tanh(np.abs(ema_slope_4h.to_numpy()) / slope_scale)
+                    regime_terms += 1
+
+            if regime_terms > 0:
+                regime_score /= float(regime_terms)
+                regime_strength = np.clip(
+                    regime_score * float(getattr(cfg, "REGIME_WEIGHT_STRENGTH", 0.18)),
+                    0.0,
+                    float(getattr(cfg, "REGIME_WEIGHT_STRENGTH_CAP", 0.25)),
+                )
+                weights = weights * (1.0 + regime_strength)
+
+    min_weight = float(getattr(cfg, "SAMPLE_WEIGHT_MIN", 0.8))
+    max_weight = float(getattr(cfg, "SAMPLE_WEIGHT_MAX", 1.35))
+    if max_weight < min_weight:
+        max_weight = min_weight
+
+    return np.clip(weights, min_weight, max_weight)
 
 
 def build_model(seed, n_estimators=800):
@@ -386,6 +505,73 @@ def build_model(seed, n_estimators=800):
 # ═══════════════════════════════════════════════════════════════════════════
 #  Evaluation — accepts raw vectors, not a dataframe
 # ═══════════════════════════════════════════════════════════════════════════
+
+def fit_model_with_internal_eval(
+    x_train,
+    y_train,
+    w_train,
+    feature_columns,
+    seed,
+    best_iterations_so_far=None,
+):
+    model = build_model(seed=seed)
+    eval_plan = resolve_internal_eval_plan(y_train.reset_index(drop=True))
+    internal_eval_size = int(eval_plan["eval_size"])
+
+    x_fit = x_train.iloc[:-internal_eval_size]
+    y_fit = y_train.iloc[:-internal_eval_size]
+    w_fit = w_train[:-internal_eval_size]
+    x_eval = x_train.iloc[-internal_eval_size:]
+    y_eval = y_train.iloc[-internal_eval_size:]
+
+    model.fit(
+        x_fit,
+        y_fit,
+        sample_weight=w_fit,
+        eval_set=[(x_eval, y_eval)],
+        eval_metric="binary_logloss",
+        categorical_feature=[SYMBOL_COLUMN] if SYMBOL_COLUMN in feature_columns else "auto",
+        callbacks=[
+            lgb.early_stopping(
+                stopping_rounds=int(getattr(cfg, "EARLY_STOPPING_ROUNDS", 200)),
+                verbose=False,
+            ),
+            lgb.log_evaluation(period=0),
+        ],
+    )
+
+    best_iter = int(model.best_iteration_ or model.n_estimators_)
+    unstable_min_best_iter = int(getattr(cfg, "UNSTABLE_FOLD_MIN_BEST_ITER", 25))
+    fallback_used = False
+    fallback_n_estimators = None
+
+    if best_iter < unstable_min_best_iter:
+        prior_median = int(np.median(best_iterations_so_far)) if best_iterations_so_far else int(
+            getattr(cfg, "UNSTABLE_FOLD_FALLBACK_DEFAULT_ESTIMATORS", 250)
+        )
+        fallback_n_estimators = max(
+            int(getattr(cfg, "UNSTABLE_FOLD_FALLBACK_MIN_ESTIMATORS", 150)),
+            prior_median,
+        )
+        model = build_model(seed=seed, n_estimators=fallback_n_estimators)
+        model.fit(
+            x_train,
+            y_train,
+            sample_weight=w_train,
+            categorical_feature=[SYMBOL_COLUMN] if SYMBOL_COLUMN in feature_columns else "auto",
+        )
+        best_iter = int(model.n_estimators_)
+        fallback_used = True
+
+    fit_metadata = {
+        "internal_eval_size": internal_eval_size,
+        "eval_plan": eval_plan,
+        "best_iter": best_iter,
+        "fallback_used": fallback_used,
+        "fallback_n_estimators": fallback_n_estimators,
+    }
+    return model, fit_metadata
+
 
 def evaluate_model(y_true, y_pred, y_proba, split_name, n_rows=None):
     """
@@ -687,33 +873,21 @@ def walk_forward_validation(
         y_train = train_df[TARGET_COLUMN]
         x_test = test_df[feature_columns]
         y_test = test_df[TARGET_COLUMN]
-        w_train = compute_sample_weights(train_df[TIMESTAMP_COLUMN])
+        w_train = compute_sample_weights(train_df)
 
         # --- Train -------------------------------------------------------
-        model = build_model(seed=seed)
-        # Use last 15% of the train fold as an internal eval set for
-        # early stopping, without contaminating the OOS test fold.
-        internal_eval_size = max(1, int(len(x_train) * 0.15))
-        x_fit = x_train.iloc[:-internal_eval_size]
-        y_fit = y_train.iloc[:-internal_eval_size]
-        w_fit = w_train[:-internal_eval_size]
-        x_eval = x_train.iloc[-internal_eval_size:]
-        y_eval = y_train.iloc[-internal_eval_size:]
-
-        model.fit(
-            x_fit,
-            y_fit,
-            sample_weight=w_fit,
-            eval_set=[(x_eval, y_eval)],
-            eval_metric="binary_logloss",
-            categorical_feature=[SYMBOL_COLUMN] if SYMBOL_COLUMN in feature_columns else "auto",
-            callbacks=[
-                lgb.early_stopping(stopping_rounds=200, verbose=False),
-                lgb.log_evaluation(period=0),  # silent per-fold
-            ],
+        model, fit_metadata = fit_model_with_internal_eval(
+            x_train=x_train,
+            y_train=y_train,
+            w_train=w_train,
+            feature_columns=feature_columns,
+            seed=seed,
+            best_iterations_so_far=best_iterations,
         )
 
-        best_iter = int(model.best_iteration_ or model.n_estimators_)
+        eval_plan = fit_metadata["eval_plan"]
+        internal_eval_size = int(fit_metadata["internal_eval_size"])
+        best_iter = int(fit_metadata["best_iter"])
         best_iterations.append(best_iter)
         fold_importance_frames.append(build_fold_importance_frame(model, feature_columns, fold_idx))
 
@@ -752,6 +926,19 @@ def walk_forward_validation(
                 "start": str(test_df[TIMESTAMP_COLUMN].iloc[0]),
                 "end": str(test_df[TIMESTAMP_COLUMN].iloc[-1]),
             },
+            "internal_eval": {
+                "rows": int(internal_eval_size),
+                "fraction": float(eval_plan["eval_fraction"]),
+                "fit_positive_rate": float(eval_plan["fit_rate"]),
+                "eval_positive_rate": float(eval_plan["eval_rate"]),
+                "was_expanded": bool(eval_plan["was_expanded"]),
+                "fallback_used": bool(fit_metadata["fallback_used"]),
+                "fallback_n_estimators": (
+                    int(fit_metadata["fallback_n_estimators"])
+                    if fit_metadata["fallback_n_estimators"] is not None
+                    else None
+                ),
+            },
             "best_iteration": best_iter,
             "accuracy": fold_acc,
             "roc_auc": fold_auc,
@@ -760,7 +947,7 @@ def walk_forward_validation(
 
         logger.info(
             "Fold %s/%s | train=%s rows [%s → %s] | test=%s rows [%s → %s] | "
-            "best_iter=%s | acc=%.4f | auc=%.4f",
+            "eval=%s (fit_pos=%.3f eval_pos=%.3f%s%s) | best_iter=%s | acc=%.4f | auc=%.4f",
             fold_idx,
             len(timestamp_splits),
             fold_info["train_rows"],
@@ -769,6 +956,11 @@ def walk_forward_validation(
             fold_info["test_rows"],
             fold_info["test_period"]["start"],
             fold_info["test_period"]["end"],
+            internal_eval_size,
+            float(eval_plan["fit_rate"]),
+            float(eval_plan["eval_rate"]),
+            ", expanded" if eval_plan["was_expanded"] else "",
+            f", fallback={fit_metadata['fallback_n_estimators']}" if fit_metadata["fallback_used"] else "",
             best_iter,
             fold_acc,
             fold_auc,
@@ -842,7 +1034,7 @@ def train_production_model(dataset, feature_columns, seed, n_estimators):
         len(dataset), n_estimators,
     )
     model = build_model(seed=seed, n_estimators=n_estimators)
-    w_prod = compute_sample_weights(dataset[TIMESTAMP_COLUMN])
+    w_prod = compute_sample_weights(dataset)
     model.fit(
         dataset[feature_columns],
         dataset[TARGET_COLUMN],
@@ -1008,9 +1200,22 @@ def load_train_history(history_path):
     return payload
 
 
+def extract_configured_signal_metrics(oos_metrics):
+    threshold = round(max(0.5, float(getattr(cfg, "CONFIDENCE_THRESHOLD", 0.5))), 2)
+    threshold_key = f"{threshold:.2f}"
+    threshold_metrics = (oos_metrics.get("probability_threshold_metrics") or {}).get(threshold_key, {})
+    return {
+        "configured_threshold": threshold,
+        "signal_accuracy": threshold_metrics.get("signal_accuracy"),
+        "signal_coverage": threshold_metrics.get("coverage"),
+        "signal_rows": threshold_metrics.get("rows"),
+    }
+
+
 def build_train_history_entry(args, metrics, experiment_snapshot):
     oos_metrics = metrics["oos_metrics"]
     fold_stability = build_fold_stability_payload(metrics.get("fold_details", []))
+    configured_signal_metrics = extract_configured_signal_metrics(oos_metrics)
     return {
         "run_timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "model_name": args.model_name,
@@ -1031,6 +1236,19 @@ def build_train_history_entry(args, metrics, experiment_snapshot):
         ),
         "fold_roc_auc_stability_pct": (
             float(fold_stability["roc_auc_std"]) * 100 if fold_stability["roc_auc_std"] is not None else None
+        ),
+        "configured_threshold": float(configured_signal_metrics["configured_threshold"]),
+        "signal_accuracy": (
+            float(configured_signal_metrics["signal_accuracy"])
+            if configured_signal_metrics["signal_accuracy"] is not None else None
+        ),
+        "signal_coverage": (
+            float(configured_signal_metrics["signal_coverage"])
+            if configured_signal_metrics["signal_coverage"] is not None else None
+        ),
+        "signal_rows": (
+            int(configured_signal_metrics["signal_rows"])
+            if configured_signal_metrics["signal_rows"] is not None else None
         ),
         "median_best_iteration": int(metrics["median_best_iteration"]),
         "total_rows": int(metrics["total_rows"]),
@@ -1055,8 +1273,31 @@ def format_compact_metric_value(value, percent=False, decimals=4):
 
 
 def build_current_run_summary_lines(history_entry):
+    configured_threshold = float(history_entry.get("configured_threshold", max(0.5, float(getattr(cfg, "CONFIDENCE_THRESHOLD", 0.5)))))
     rows = [
         ("Accuracy", format_compact_metric_value(history_entry["accuracy"] * 100, percent=True, decimals=2)),
+        (
+            f"Signal acc @{configured_threshold:.2f}",
+            format_compact_metric_value(
+                (
+                    float(history_entry["signal_accuracy"]) * 100
+                    if history_entry.get("signal_accuracy") is not None else None
+                ),
+                percent=True,
+                decimals=2,
+            ),
+        ),
+        (
+            f"Coverage @{configured_threshold:.2f}",
+            format_compact_metric_value(
+                (
+                    float(history_entry["signal_coverage"]) * 100
+                    if history_entry.get("signal_coverage") is not None else None
+                ),
+                percent=True,
+                decimals=2,
+            ),
+        ),
         ("MCC", format_compact_metric_value(history_entry["mcc"], decimals=3)),
         ("ROC AUC", format_compact_metric_value(history_entry["roc_auc"], decimals=3)),
         ("PR AUC", format_compact_metric_value(history_entry["pr_auc"], decimals=3)),
@@ -1085,6 +1326,22 @@ def build_recent_runs_table_lines(history, limit=10):
         ("Run", lambda item: str(item.get("run_timestamp_utc", ""))[5:16]),
         ("Exp", lambda item: str(item.get("experiment", ""))[:18]),
         ("Acc", lambda item: format_compact_metric_value(item.get("accuracy", 0.0) * 100, percent=True, decimals=2)),
+        (
+            "Sig",
+            lambda item: format_compact_metric_value(
+                item.get("signal_accuracy") * 100 if item.get("signal_accuracy") is not None else None,
+                percent=True,
+                decimals=2,
+            ),
+        ),
+        (
+            "Cov",
+            lambda item: format_compact_metric_value(
+                item.get("signal_coverage") * 100 if item.get("signal_coverage") is not None else None,
+                percent=True,
+                decimals=2,
+            ),
+        ),
         ("MCC", lambda item: format_compact_metric_value(item.get("mcc"), decimals=3)),
         ("ROC", lambda item: format_compact_metric_value(item.get("roc_auc"), decimals=3)),
         ("PR", lambda item: format_compact_metric_value(item.get("pr_auc"), decimals=3)),
