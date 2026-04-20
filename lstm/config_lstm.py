@@ -1,0 +1,16 @@
+"""Configuration for the standalone LSTM walk-forward experiment."""
+
+SEQUENCE_LENGTH = 48
+BATCH_SIZE = 128
+HIDDEN_SIZE = 64
+NUM_LAYERS = 1
+DROPOUT = 0.2
+LEARNING_RATE = 1e-3
+WEIGHT_DECAY = 1e-4
+EPOCHS = 40
+EARLY_STOPPING_PATIENCE = 8
+GRADIENT_CLIP = 1.0
+VALIDATION_FRACTION = 0.15
+MIN_TRAIN_ROWS = 200
+MODEL_NAME = "lstm_target"
+PREDICTIONS_NAME = "lstm_walk_forward_oos_predictions"
