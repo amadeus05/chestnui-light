@@ -14,9 +14,6 @@ class MomentumFeatureBuilder(FeatureBuilderContract):
 
     def provides(self) -> set[str]:
         return {
-            "return_1h_6",
-            "return_1h_12",
-            "return_1h_24",
             "ema_fast_slow",
             "linear_regression_slope_atr_1h_12",
             "linear_regression_slope_atr_1h_24",
@@ -37,12 +34,6 @@ class MomentumFeatureBuilder(FeatureBuilderContract):
         close = frame["close"]
         ema_fast_window = max(2, int(getattr(cfg, "EMA_FAST_WINDOW", 12)))
         ema_slow_window = max(ema_fast_window + 1, int(getattr(cfg, "EMA_SLOW_WINDOW", 48)))
-
-        if {"return_1h_6", "return_1h_12", "return_1h_24"}.intersection(active):
-            for period in (6, 12, 24):
-                feature_name = f"return_1h_{period}"
-                if feature_name in active:
-                    output[feature_name] = np.log(close / close.shift(period))
 
         ema_fast_slow = None
         if {"ema_fast_slow", "ema_slope_acceleration_1h"}.intersection(active):

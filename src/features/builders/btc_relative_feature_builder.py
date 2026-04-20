@@ -24,8 +24,6 @@ class BtcRelativeFeatureBuilder(FeatureBuilderContract):
             return output
         if context.base_feature_map is None:
             raise ValueError("BTC-relative feature block requires base_feature_map.")
-        if "return_1h_24" not in context.frame.columns:
-            raise ValueError("BTC-relative features require 'return_1h_24'.")
 
         cache_key = "btc_reference_frame"
         btc_reference = context.shared_cache.get(cache_key)
@@ -34,19 +32,28 @@ class BtcRelativeFeatureBuilder(FeatureBuilderContract):
             if btc_df is None or btc_df.empty:
                 btc_reference = pd.DataFrame(columns=["timestamp", "btc_close", "btc_return_1h_24"])
             else:
-                btc_reference = btc_df[["timestamp", "close", "return_1h_24"]].copy().rename(
+                btc_reference = btc_df[["timestamp", "close"]].copy().rename(
                     columns={
                         "close": "btc_close",
-                        "return_1h_24": "btc_return_1h_24",
                     }
                 )
+                if "return_1h_24" in btc_df.columns:
+                    btc_reference["btc_return_1h_24"] = btc_df["return_1h_24"].values
+                else:
+                    btc_reference["btc_return_1h_24"] = np.log(
+                        btc_reference["btc_close"] / btc_reference["btc_close"].shift(24)
+                    )
             context.shared_cache[cache_key] = btc_reference
 
-        merged = context.frame[["timestamp", "close", "return_1h_24"]].merge(
+        merged = context.frame[["timestamp", "close"]].merge(
             btc_reference,
             on="timestamp",
             how="left",
         )
+        if "return_1h_24" in context.frame.columns:
+            merged["asset_return_1h_24"] = context.frame["return_1h_24"].values
+        else:
+            merged["asset_return_1h_24"] = np.log(merged["close"] / merged["close"].shift(24))
         if merged["btc_close"].isna().all():
             for feature_name in sorted(active):
                 output[feature_name] = np.nan
@@ -58,11 +65,11 @@ class BtcRelativeFeatureBuilder(FeatureBuilderContract):
         beta_24h = asset_return_1h.rolling(24).cov(btc_return_1h) / btc_var_24h
 
         if "relative_strength_vs_btc_24h" in active:
-            output["relative_strength_vs_btc_24h"] = merged["return_1h_24"] - merged["btc_return_1h_24"]
+            output["relative_strength_vs_btc_24h"] = merged["asset_return_1h_24"] - merged["btc_return_1h_24"]
         if "beta_to_btc_24h" in active:
             output["beta_to_btc_24h"] = beta_24h
         if "residual_return_24h" in active:
-            output["residual_return_24h"] = merged["return_1h_24"] - (beta_24h * merged["btc_return_1h_24"])
+            output["residual_return_24h"] = merged["asset_return_1h_24"] - (beta_24h * merged["btc_return_1h_24"])
 
         if context.symbol == "BTC/USDT":
             if "relative_strength_vs_btc_24h" in active:

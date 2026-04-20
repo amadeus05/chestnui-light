@@ -13,7 +13,7 @@ def _env_str(name: str, default: str | None = None) -> str | None:
 # --- BASE ---
 DB_PATH = str(_env_str("DB_PATH", "market_data.db"))
 SYMBOLS = [
-    "BTC/USDT",
+    "BTC/USDT",  # Keep enabled for beta_test_v3 BTC-relative context; comment out for prod execution tests.
     "BNB/USDT",
     "ETH/USDT",
     "SOL/USDT",
@@ -21,17 +21,17 @@ SYMBOLS = [
     "XRP/USDT",
     "ADA/USDT",
 
-    # "1000PEPE/USDT",
-    # # "LTC/USDT",
-    # "1000FLOKI/USDT",
-    # "SHIB1000/USDT",
+    # # "1000PEPE/USDT",
+    # # # "LTC/USDT",
+    # # "1000FLOKI/USDT",
+    # # "SHIB1000/USDT",
 
 
-    # "WIF/USDT",
-    # "1000000MOG/USDT",
-    # "1000BONK/USDT",
-    # "MEW/USDT",
-    # "POPCAT/USDT",
+    # # "WIF/USDT",
+    # # "1000000MOG/USDT",
+    # # "1000BONK/USDT",
+    # # "MEW/USDT",
+    # # "POPCAT/USDT",
 
     # "AVAX/USDT",
     # "DOT/USDT",
@@ -179,6 +179,97 @@ MANUAL_DISABLED_FEATURE_COLUMNS = [
 FEATURE_PROFILES = {
     "all": "__all__",
     "empty": [],
+    "beta_test": [
+        "return_1h_1",
+        "return_1h_3",
+        "return_1h_6",
+        "return_1h_12",
+        "return_1h_24",
+        "return_1h_48",
+        "return_1h_72",
+        "return_4h_1",
+        "return_4h_3",
+        "return_4h_6",
+    ],
+    "beta_test_v2": [
+        "return_1h_1",
+        "return_1h_3",
+        "return_1h_6",
+        "return_1h_12",
+        "return_1h_24",
+        "return_1h_48",
+        "return_1h_72",
+        "return_4h_1",
+        "return_4h_3",
+        "return_4h_6",
+        "ema_fast_slow",
+        "ema_slope_4h",
+        "linear_regression_slope_atr_1h_12",
+        "linear_regression_slope_atr_1h_24",
+        "trend_efficiency_24h",
+        "trend_persistence_score_12",
+        "trend_persistence_score_24",
+        "realized_vol_1h",
+        "atr_ratio_1h",
+        "vol_of_vol_1h",
+    ],
+    "beta_test_v3": [
+        "return_1h_1",
+        "return_1h_3",
+        "return_1h_6",
+        "return_1h_12",
+        "return_1h_24",
+        "return_1h_48",
+        "return_1h_72",
+        "return_4h_1",
+        "return_4h_3",
+        "return_4h_6",
+        "ema_fast_slow",
+        "ema_slope_4h",
+        "linear_regression_slope_atr_1h_12",
+        "linear_regression_slope_atr_1h_24",
+        "trend_efficiency_24h",
+        "trend_persistence_score_12",
+        "trend_persistence_score_24",
+        "realized_vol_1h",
+        "atr_ratio_1h",
+        "vol_of_vol_1h",
+        "relative_strength_vs_btc_24h",
+        "residual_return_24h",
+        "beta_to_btc_24h",
+        "market_breadth_pos_return_4h_3",
+        "market_dispersion_return_4h_3",
+        "market_breadth_ema_fast_slow_1h",
+        "market_directional_pressure_1h",
+        "cross_sectional_rank_4h",
+        "volume_ratio_1h",
+        "price_position_1h",
+        "zscore_vs_vwap_1h",
+    ],
+    "beta_test_v2_1": [
+        "return_1h_6",
+        "return_1h_12",
+        "return_1h_48",
+        "return_1h_72",
+        "return_4h_1",
+        "return_4h_3",
+        "return_4h_6",
+        "ema_fast_slow",
+        "ema_slope_4h",
+        "linear_regression_slope_atr_1h_12",
+        "linear_regression_slope_atr_1h_24",
+        "trend_efficiency_24h",
+        "trend_persistence_score_24",
+        "realized_vol_1h",
+        "atr_ratio_1h",
+        "vol_of_vol_1h",
+        "market_breadth_ema_fast_slow_1h",
+        "market_directional_pressure_1h",
+        "beta_to_btc_24h",
+        "residual_return_24h",
+        "volume_ratio_1h",
+        "zscore_vs_vwap_1h",
+    ],
     "base_only": [
         "realized_vol_1h",
         "ema_fast_slow",
@@ -203,11 +294,14 @@ FEATURE_PROFILES = {
     ],
 }
 FEATURE_BUILD_REQUEST = {
-    "profile": "all",
+    "profile": "beta_test_v2_1",
     "include_features": [],
     "exclude_features": [],
     "exclude_blocks": [],
 }
+
+# Beta-test experiment: build and train only the beta_test profile features.
+MANUAL_DISABLED_FEATURE_COLUMNS = []
 
 # Hybrid setup:
 # - ETL labeling stays on v1.
@@ -218,14 +312,14 @@ TP_PCT = 0.03   # legacy fixed TP, kept for backward compatibility
 SL_PCT = 0.015  # legacy fixed SL, kept for backward compatibility
 
 # --- ADAPTIVE HORIZON (multi-symbol) ---
-ENABLE_ADAPTIVE_HORIZON = True
+ENABLE_ADAPTIVE_HORIZON = False
 ADAPTIVE_HORIZON_MIN = 8
 ADAPTIVE_HORIZON_MAX = 20
 ADAPTIVE_HORIZON_VOL_LOW = 0.005
 ADAPTIVE_HORIZON_VOL_HIGH = 0.025
 
 # --- DYNAMIC BARRIERS ---
-USE_DYNAMIC_BARRIERS = True
+USE_DYNAMIC_BARRIERS = False
 BARRIER_ATR_MULTIPLIER = 1.25
 BARRIER_RVOL_MULTIPLIER = 0.75
 BARRIER_TP_TO_SL_RATIO = 2.0

@@ -5,6 +5,7 @@ import pandas as pd
 
 from src.features.builders.base_cross_sectional_feature_builder import BaseCrossSectionalFeatureBuilder
 from src.features.builders.base_market_context_feature_builder import BaseMarketContextFeatureBuilder
+from src.features.builders.beta_test_feature_builder import BetaTestFeatureBuilder
 from src.features.builders.btc_relative_feature_builder import BtcRelativeFeatureBuilder
 from src.features.builders.funding_feature_builder import FundingFeatureBuilder
 from src.features.builders.htf_cross_sectional_feature_builder import HtfCrossSectionalFeatureBuilder
@@ -27,6 +28,7 @@ from src.features.models.indicator_cache import IndicatorCache
 class MasterFeatureBuilder:
     def __init__(self) -> None:
         self.main_builders: list[FeatureBuilderContract] = [
+            BetaTestFeatureBuilder("1h"),
             MomentumFeatureBuilder(),
             RegimeFeatureBuilder(),
             StructureFeatureBuilder(),
@@ -36,6 +38,7 @@ class MasterFeatureBuilder:
             OpenInterestFeatureBuilder(),
         ]
         self.htf_builders: list[FeatureBuilderContract] = [
+            BetaTestFeatureBuilder("4h"),
             HtfFeatureBuilder(),
         ]
         self.base_enrichment_builders: list[FeatureBuilderContract] = [

@@ -14,8 +14,6 @@ class HtfFeatureBuilder(FeatureBuilderContract):
 
     def provides(self) -> set[str]:
         return {
-            "return_4h_1",
-            "return_4h_3",
             "return_4h_7",
             "return_4h_14",
             "realized_vol_4h_returns_20",
@@ -46,8 +44,8 @@ class HtfFeatureBuilder(FeatureBuilderContract):
         ema_slope_base_window = max(2, int(getattr(cfg, "EMA_SLOPE_BASE_WINDOW_4H", 21)))
         ema_slope_window = max(2, int(getattr(cfg, "EMA_SLOPE_WINDOW_4H", 6)))
 
-        if {"return_4h_1", "return_4h_3", "return_4h_7", "return_4h_14"}.intersection(active):
-            for period in (1, 3, 7, 14):
+        if {"return_4h_7", "return_4h_14"}.intersection(active):
+            for period in (7, 14):
                 feature_name = f"return_4h_{period}"
                 if feature_name in active:
                     output[feature_name] = np.log(close / close.shift(period))
