@@ -10,3 +10,4 @@ flask
 supabase
 torch
 tqdm
+websocket-client
