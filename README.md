@@ -69,6 +69,34 @@ python train.py
 python bt.py
 ```
 
+### LSTM experiment
+
+Отдельная LSTM-ветка не заменяет текущий LightGBM pipeline. Она использует существующие feature tables,
+event filter и target, обучает sequence-модель по walk-forward folds, сохраняет OOS probabilities и может
+сразу прогнать их через текущий backtest engine.
+
+```powershell
+python lstm/train_lstm_walk_forward.py --split-mode monthly --monthly-train-months 6 --monthly-test-months 1 --purge-gap 12
+```
+
+Rolling-window вариант обучает каждый monthly fold только на последних `--monthly-train-months` месяцах:
+
+```powershell
+python bt_walk_forward.py --split-mode monthly --monthly-window-mode rolling --monthly-train-months 12 --monthly-test-months 1 --purge-gap 12
+```
+
+Быстрый smoke run без бектеста:
+
+```powershell
+python lstm/train_lstm_walk_forward.py --split-mode tscv --n-splits 2 --sequence-length 24 --epochs 2 --skip-backtest
+```
+
+Быстрый monthly experiment на первых 3 фолдах:
+
+```powershell
+python lstm/train_lstm_walk_forward.py --split-mode monthly --monthly-train-months 6 --monthly-test-months 1 --purge-gap 12 --sequence-length 24 --epochs 8 --hidden-size 32 --dropout 0.4 --lr 0.0003 --weight-decay 0.001 --batch-size 512 --patience 3 --max-folds 3 --skip-backtest
+```
+
 ## Как работает пайплайн
 
 ### `etl.py`
