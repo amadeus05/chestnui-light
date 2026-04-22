@@ -402,6 +402,115 @@ class HistoricalKlineRepository:
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         return df
 
+    def fetch_candles_range(
+        self,
+        symbol: str | Symbol,
+        timeframe: str,
+        start_ts: int,
+        end_ts: int,
+    ) -> list[HistoricalKline]:
+        with self.connection_factory() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT open_time, open, high, low, close, volume, quote_volume
+                FROM {self._candles_table_name()}
+                WHERE symbol=? AND timeframe=? AND open_time>=? AND open_time<=?
+                ORDER BY open_time
+                """,
+                (self._symbol_name(symbol), timeframe, start_ts, end_ts),
+            ).fetchall()
+        return [
+            HistoricalKline(
+                open_time=int(row[0]),
+                open=float(row[1]),
+                high=float(row[2]),
+                low=float(row[3]),
+                close=float(row[4]),
+                volume=float(row[5]),
+                quote_volume=float(row[6]),
+            )
+            for row in rows
+        ]
+
+    def fetch_premium_index_klines_range(
+        self,
+        symbol: str | Symbol,
+        timeframe: str,
+        start_ts: int,
+        end_ts: int,
+    ) -> list[HistoricalKline]:
+        with self.connection_factory() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT open_time, open, high, low, close
+                FROM {self._premium_index_table_name()}
+                WHERE symbol=? AND timeframe=? AND open_time>=? AND open_time<=?
+                ORDER BY open_time
+                """,
+                (self._symbol_name(symbol), timeframe, start_ts, end_ts),
+            ).fetchall()
+        return [
+            HistoricalKline(
+                open_time=int(row[0]),
+                open=float(row[1]),
+                high=float(row[2]),
+                low=float(row[3]),
+                close=float(row[4]),
+                volume=0.0,
+                quote_volume=0.0,
+            )
+            for row in rows
+        ]
+
+    def fetch_open_interest_range(
+        self,
+        symbol: str | Symbol,
+        timeframe: str,
+        start_ts: int,
+        end_ts: int,
+    ) -> list[OpenInterestPoint]:
+        with self.connection_factory() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT timestamp, open_interest
+                FROM {self._open_interest_table_name()}
+                WHERE symbol=? AND timeframe=? AND timestamp>=? AND timestamp<=?
+                ORDER BY timestamp
+                """,
+                (self._symbol_name(symbol), timeframe, start_ts, end_ts),
+            ).fetchall()
+        return [
+            OpenInterestPoint(
+                timestamp=int(row[0]),
+                open_interest=float(row[1]),
+            )
+            for row in rows
+        ]
+
+    def fetch_funding_rates_range(
+        self,
+        symbol: str | Symbol,
+        start_ts: int,
+        end_ts: int,
+    ) -> list[FundingRatePoint]:
+        with self.connection_factory() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT funding_time, funding_rate
+                FROM {self._funding_table_name()}
+                WHERE symbol=? AND funding_time>=? AND funding_time<=?
+                ORDER BY funding_time
+                """,
+                (self._symbol_name(symbol), start_ts, end_ts),
+            ).fetchall()
+        return [
+            FundingRatePoint(
+                funding_time=int(row[0]),
+                funding_rate=float(row[1]),
+            )
+            for row in rows
+        ]
+
     def sync_funding_rates(
         self,
         exchange: ExchangeContract,
