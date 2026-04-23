@@ -44,6 +44,8 @@ HTF_TIMEFRAME = "4h"  # Старший таймфрейм для мульти-TF
 
 # --- DATA LOADING ---
 ACTIVE_EXCHANGE = "bybit"  # bybit: bybit, binance
+SIMULATION_BASE_EXCHANGE = "bybit"
+SIMULATION_DB_PATH = DB_PATH
 START_DATE = "2023-01-01"
 END_DATE = "2026-03-27 21:00:00"
 BYBIT_LIMIT = 1000
@@ -328,13 +330,22 @@ SUPABASE_URL = _env_str("SUPABASE_URL", "https://jjuatlyxubeglxkrpaji.supabase.c
 SUPABASE_KEY = _env_str("SUPABASE_KEY") or _env_str("SUPABASE_SERVICE_KEY")
 
 PAPER_CLOCK_SYMBOL = "BTC/USDT"
-PAPER_MODEL_NAME = "lightgbm_target"
+PAPER_MODEL_NAME = "lstm_target_production"
+PAPER_MODEL_TYPE = str(_env_str("PAPER_MODEL_TYPE", "lstm")).lower()  # auto | lightgbm | lstm
+PAPER_LSTM_MODEL_NAME = "lstm_target_production"
 PAPER_INITIAL_BALANCE = BACKTEST_INITIAL_BALANCE
 PAPER_MAIN_BARS = 3000
 PAPER_HTF_BARS = 900
 PAPER_MIN_MAIN_ROWS = 400
 PAPER_MIN_HTF_ROWS = 120
 PAPER_DAEMON_POLL_SEC = 45.0
+
+# --- TELEGRAM NOTIFICATIONS (paper.py) ---
+TELEGRAM_NOTIFICATIONS_ENABLED = str(_env_str("TELEGRAM_NOTIFICATIONS_ENABLED", "false")).lower() in {"1", "true", "yes", "on"}
+TELEGRAM_BOT_TOKEN = _env_str("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = _env_str("TELEGRAM_CHAT_ID")
+TELEGRAM_NOTIFY_OPEN = str(_env_str("TELEGRAM_NOTIFY_OPEN", "true")).lower() in {"1", "true", "yes", "on"}
+TELEGRAM_NOTIFY_CLOSE = str(_env_str("TELEGRAM_NOTIFY_CLOSE", "true")).lower() in {"1", "true", "yes", "on"}
 
 # Regime-aware sample-weight tuning overrides.
 REGIME_WEIGHT_STRENGTH = 0.18
