@@ -16,6 +16,7 @@ from .history import (
 )
 from .importance import build_fold_importance_summary
 from .log import logger
+from .metrics import format_optional_metric
 from .production import train_production_model
 from .walk_forward import walk_forward_validation
 
@@ -125,7 +126,8 @@ def main():
             "total_rows": int(len(dataset)),
             "feature_count": int(len(feature_columns)),
             "n_splits": args.n_splits,
-            "purge_gap": args.purge_gap,
+            "requested_purge_gap": args.purge_gap,
+            "purge_gap": int(fold_details[0]["purged_timestamps"]) if fold_details else args.purge_gap,
             "split_mode": args.split_mode,
             "monthly_train_months": args.monthly_train_months,
             "monthly_test_months": args.monthly_test_months,
@@ -148,14 +150,14 @@ def main():
         }
 
         logger.info(
-            "OOS metrics | accuracy=%.4f | balanced_accuracy=%.4f | f1_macro=%.4f | "
-            "roc_auc=%.4f | pr_auc=%.4f | mcc=%.4f",
+            "OOS metrics | accuracy=%.4f | balanced_accuracy=%s | f1_macro=%.4f | "
+            "roc_auc=%s | pr_auc=%s | mcc=%s",
             oos_metrics["accuracy"],
-            oos_metrics["balanced_accuracy"],
+            format_optional_metric(oos_metrics["balanced_accuracy"]),
             oos_metrics["f1_macro"],
-            oos_metrics["roc_auc"],
-            oos_metrics["pr_auc"],
-            oos_metrics["mcc"],
+            format_optional_metric(oos_metrics["roc_auc"]),
+            format_optional_metric(oos_metrics["pr_auc"]),
+            format_optional_metric(oos_metrics["mcc"]),
         )
 
         log_feature_importance_ranking(prod_model, feature_columns)
@@ -176,5 +178,5 @@ def main():
         log_train_history_summary(history_entry, history, limit=10)
 
     except Exception as exc:
-        logger.error("%s", exc)
+        logger.exception("%s", exc)
         raise SystemExit(1) from exc

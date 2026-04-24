@@ -41,6 +41,10 @@ def extract_configured_signal_metrics(oos_metrics):
     }
 
 
+def optional_float(value):
+    return float(value) if value is not None else None
+
+
 def build_train_history_entry(args, metrics, experiment_snapshot):
     oos_metrics = metrics["oos_metrics"]
     fold_stability = build_fold_stability_payload(metrics.get("fold_details", []))
@@ -52,11 +56,11 @@ def build_train_history_entry(args, metrics, experiment_snapshot):
         "labeling_profile": experiment_snapshot["labeling_profile"],
         "training_profile": experiment_snapshot["training_profile"],
         "accuracy": float(oos_metrics["accuracy"]),
-        "balanced_accuracy": float(oos_metrics["balanced_accuracy"]),
+        "balanced_accuracy": optional_float(oos_metrics["balanced_accuracy"]),
         "f1_macro": float(oos_metrics["f1_macro"]),
-        "roc_auc": float(oos_metrics["roc_auc"]),
-        "pr_auc": float(oos_metrics["pr_auc"]),
-        "mcc": float(oos_metrics["mcc"]),
+        "roc_auc": optional_float(oos_metrics["roc_auc"]),
+        "pr_auc": optional_float(oos_metrics["pr_auc"]),
+        "mcc": optional_float(oos_metrics["mcc"]),
         "fold_stability_pct": (
             float(fold_stability["accuracy_std"]) * 100 if fold_stability["accuracy_std"] is not None else None
         ),

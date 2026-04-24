@@ -12,6 +12,39 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
+
+def has_two_classes(y_true) -> bool:
+    return len(np.unique(np.asarray(y_true))) >= 2
+
+
+def safe_roc_auc_score(y_true, p_long):
+    if not has_two_classes(y_true):
+        return None
+    return float(roc_auc_score(y_true, p_long))
+
+
+def safe_average_precision_score(y_true, p_long):
+    if not has_two_classes(y_true):
+        return None
+    return float(average_precision_score(y_true, p_long))
+
+
+def safe_balanced_accuracy_score(y_true, y_pred):
+    if not has_two_classes(y_true):
+        return None
+    return float(balanced_accuracy_score(y_true, y_pred))
+
+
+def safe_matthews_corrcoef(y_true, y_pred):
+    if not has_two_classes(y_true):
+        return None
+    return float(matthews_corrcoef(y_true, y_pred))
+
+
+def format_optional_metric(value, digits=4):
+    return "n/a" if value is None else f"{float(value):.{digits}f}"
+
+
 def evaluate_model(y_true, y_pred, y_proba, split_name, n_rows=None):
     """
     Compute a full metrics dictionary from pre-assembled OOS vectors.
@@ -106,7 +139,7 @@ def evaluate_model(y_true, y_pred, y_proba, split_name, n_rows=None):
             "short_signals": short_signals,
             "no_trade": no_trade,
             "signal_accuracy": float(accuracy_score(subset_y_true, subset_y_pred)),
-            "signal_balanced_accuracy": float(balanced_accuracy_score(subset_y_true, subset_y_pred)),
+            "signal_balanced_accuracy": safe_balanced_accuracy_score(subset_y_true, subset_y_pred),
             "signal_f1_macro": float(f1_score(subset_y_true, subset_y_pred, average="macro")),
             "signal_confusion_matrix": confusion_matrix(subset_y_true, subset_y_pred, labels=[0, 1]).tolist(),
             "signal_classification_report": subset_report,
@@ -118,11 +151,11 @@ def evaluate_model(y_true, y_pred, y_proba, split_name, n_rows=None):
 
     metrics = {
         "accuracy": float(accuracy_score(y_true, y_pred)),
-        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
+        "balanced_accuracy": safe_balanced_accuracy_score(y_true, y_pred),
         "f1_macro": float(f1_score(y_true, y_pred, average="macro")),
-        "roc_auc": float(roc_auc_score(y_true, p_long)),
-        "pr_auc": float(average_precision_score(y_true, p_long)),
-        "mcc": float(matthews_corrcoef(y_true, y_pred)),
+        "roc_auc": safe_roc_auc_score(y_true, p_long),
+        "pr_auc": safe_average_precision_score(y_true, p_long),
+        "mcc": safe_matthews_corrcoef(y_true, y_pred),
         "confusion_matrix": confusion_matrix(y_true, y_pred, labels=[0, 1]).tolist(),
         "classification_report": report,
         f"{split_name}_rows": n_rows,

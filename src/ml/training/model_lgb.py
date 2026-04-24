@@ -81,7 +81,10 @@ def compute_sample_weights(
 
 
 def build_model(seed, n_estimators=800):
-    """Instantiate LightGBM binary classifier. class_weight=None → calibrated probs."""
+    """Instantiate LightGBM binary classifier."""
+    class_weight = getattr(cfg, "LGBM_CLASS_WEIGHT", None)
+    if isinstance(class_weight, str) and class_weight.lower() in {"", "none", "null"}:
+        class_weight = None
     return lgb.LGBMClassifier(
         objective="binary",
         n_estimators=n_estimators,
@@ -93,7 +96,7 @@ def build_model(seed, n_estimators=800):
         colsample_bytree=0.5,
         reg_alpha=1.0,
         reg_lambda=3.0,
-        class_weight="balanced",
+        class_weight=class_weight,
         random_state=seed,
         n_jobs=-1,
         verbosity=-1,
@@ -155,9 +158,9 @@ def fit_model_with_internal_eval(
         )
         model = build_model(seed=seed, n_estimators=fallback_n_estimators)
         model.fit(
-            x_train,
-            y_train,
-            sample_weight=w_train,
+            x_fit,
+            y_fit,
+            sample_weight=w_fit,
             categorical_feature=[SYMBOL_COLUMN] if SYMBOL_COLUMN in feature_columns else "auto",
         )
         best_iter = int(model.n_estimators_)

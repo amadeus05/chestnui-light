@@ -1,5 +1,6 @@
 import json
 import shutil
+import hashlib
 from datetime import datetime, timezone
 
 import joblib
@@ -68,6 +69,13 @@ def build_feature_formulas_payload(feature_columns, model_name, symbols, experim
     }
 
 
+def build_payload_fingerprint(payload):
+    stable_payload = dict(payload)
+    stable_payload.pop("generated_at_utc", None)
+    canonical = json.dumps(stable_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def save_directional_artifacts(
     model,
     metrics,
@@ -87,6 +95,14 @@ def save_directional_artifacts(
     fold_importance_path = cfg.MODELS_DIR / f"{args.model_name}_fold_feature_importance.csv"
     feature_formulas_path = cfg.MODELS_DIR / f"{args.model_name}_feature_formulas.json"
     artifact_paths = [model_path, metrics_path, features_path, importance_path, fold_importance_path, feature_formulas_path]
+
+    feature_formulas_payload = build_feature_formulas_payload(
+        feature_columns=feature_columns,
+        model_name=args.model_name,
+        symbols=args.symbols,
+        experiment_snapshot=experiment_snapshot,
+    )
+    feature_formulas_hash = build_payload_fingerprint(feature_formulas_payload)
 
     payload = {
         "feature_columns": feature_columns,
@@ -110,13 +126,8 @@ def save_directional_artifacts(
             "bounds": clip_bounds,
         },
         "feature_formulas_artifact": feature_formulas_path.name,
+        "feature_formulas_sha256": feature_formulas_hash,
     }
-    feature_formulas_payload = build_feature_formulas_payload(
-        feature_columns=feature_columns,
-        model_name=args.model_name,
-        symbols=args.symbols,
-        experiment_snapshot=experiment_snapshot,
-    )
 
     backup_existing_artifacts(artifact_paths, args.model_name)
 

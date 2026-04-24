@@ -64,10 +64,17 @@ def build_fold_stability_payload(fold_details):
         }
 
     accuracy_values = np.asarray([float(fold["accuracy"]) for fold in fold_details], dtype=float)
-    roc_auc_values = np.asarray([float(fold["roc_auc"]) for fold in fold_details], dtype=float)
+    roc_auc_values = np.asarray(
+        [float(fold["roc_auc"]) for fold in fold_details if fold.get("roc_auc") is not None],
+        dtype=float,
+    )
     return {
         "accuracy_std": float(np.std(accuracy_values)),
         "accuracy_range": float(np.max(accuracy_values) - np.min(accuracy_values)),
-        "roc_auc_std": float(np.std(roc_auc_values)),
-        "roc_auc_range": float(np.max(roc_auc_values) - np.min(roc_auc_values)),
+        "roc_auc_std": float(np.std(roc_auc_values)) if len(roc_auc_values) else None,
+        "roc_auc_range": (
+            float(np.max(roc_auc_values) - np.min(roc_auc_values))
+            if len(roc_auc_values)
+            else None
+        ),
     }
