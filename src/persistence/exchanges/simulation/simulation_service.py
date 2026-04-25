@@ -3,8 +3,8 @@ from __future__ import annotations
 import config as cfg
 
 from src.contracts.exchange_contract import ExchangeContract
-from src.exchanges.binance.binance_mapper import BinanceMapper
-from src.exchanges.bybit.bybit_mapper import BybitMapper
+from src.persistence.exchanges.binance.binance_mapper import BinanceMapper
+from src.persistence.exchanges.bybit.bybit_mapper import BybitMapper
 from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
 from src.types.common import FundingRatePoint, HistoricalKline, OpenInterestPoint, Symbol
 

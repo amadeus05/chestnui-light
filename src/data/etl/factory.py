@@ -1,8 +1,8 @@
 import config as cfg
 
 from src.contracts.exchange_contract import ExchangeContract
-from src.exchanges.binance.binance_service import BinanceService
-from src.exchanges.bybit.bybit_service import BybitService
+from src.persistence.exchanges.binance.binance_service import BinanceService
+from src.persistence.exchanges.bybit.bybit_service import BybitService
 
 
 def create_exchange_service() -> ExchangeContract:
