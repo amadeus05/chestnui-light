@@ -32,7 +32,7 @@ import config as cfg
 import etl
 from bt import build_entry_score, compute_trade_outcome, resolve_directional_signal
 from signal_filter import build_candidate_event_mask, resolve_event_filter_config
-from src.features import MasterFeatureBuilder
+from src.features import FeaturePipeline
 from src.persistence.repositories.base_trades_repository import BaseTradesRepository
 from src.persistence.repositories.trades_repository_factory import create_trades_repository_from_config
 
@@ -319,7 +319,7 @@ def run_hourly_entries(
         logger.warning("Нет символов с данными для часового тика.")
         return
 
-    pipeline_result = MasterFeatureBuilder().build(base_map, htf_map)
+    pipeline_result = FeaturePipeline().compute(base_map, htf_map)
     use_symbol = "symbol" in feature_names
 
     leverage = float(getattr(cfg, "LEVERAGE", 1))
