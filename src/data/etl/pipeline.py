@@ -1,6 +1,6 @@
 import config as cfg
 
-from src.features import MasterFeatureBuilder
+from src.features import FeaturePipeline
 from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
 
 from .barriers import attach_barrier_columns
@@ -73,8 +73,8 @@ def main() -> None:
         logger.info("%s open interest %s: %s new points", symbol_name, timeframe, open_interest_loaded)
 
     base_candle_map, htf_candle_map = build_candle_maps(repository, symbols_to_load)
-    feature_builder = MasterFeatureBuilder()
-    pipeline_result = feature_builder.build(base_candle_map, htf_candle_map)
+    pipeline = FeaturePipeline()
+    pipeline_result = pipeline.compute(base_candle_map, htf_candle_map)
     logger.info(
         "Feature build request resolved: profile=%s | blocks=%s | features=%s",
         pipeline_result.profile_name,

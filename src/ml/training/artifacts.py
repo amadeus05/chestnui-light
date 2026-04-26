@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import config as cfg
 
-from src.features import MasterFeatureBuilder
+from src.features import FeaturePipeline
 from src.features.models.feature_spec import serialize_feature_specs
 
 from .constants import CLASS_TO_LABEL, SYMBOL_COLUMN, TIMESTAMP_COLUMN
@@ -47,10 +47,10 @@ def log_feature_importance_ranking(model, feature_columns):
 
 
 def build_feature_formulas_payload(feature_columns, model_name, symbols, experiment_snapshot):
-    builder = MasterFeatureBuilder()
+    pipeline = FeaturePipeline()
     allowed_untracked = {SYMBOL_COLUMN}
     tracked_feature_columns = [column for column in feature_columns if column not in allowed_untracked]
-    feature_specs = builder.collect_feature_specs(set(tracked_feature_columns))
+    feature_specs = pipeline.feature_specs(set(tracked_feature_columns))
     missing_specs = sorted(set(tracked_feature_columns) - set(feature_specs))
     if missing_specs:
         raise RuntimeError(
