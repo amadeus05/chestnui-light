@@ -18,9 +18,18 @@ class BybitService(ExchangeContract):
         self,
         adapter: BybitAdapter | None = None,
         mapper: BybitMapper | None = None,
+        *,
+        api_key: str | None = None,
+        api_secret: str | None = None,
+        testnet: bool = False,
     ) -> None:
         self.adapter = adapter or BybitAdapter()
         self.mapper = mapper or BybitMapper()
+        self._api_key = api_key
+        self._api_secret = api_secret
+        self._testnet = testnet
+        if testnet:
+            logger.info("[BybitService] Testnet mode enabled")
 
     def get_exchange_code(self) -> str:
         return "bybit"

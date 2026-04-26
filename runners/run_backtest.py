@@ -1,5 +1,5 @@
 """Тонкий CLI: запуск портфельного бэктеста (параметры из config.py)."""
-from src.application.backtest_engine import backtest
+from src.application.backtest import BacktestOrchestrator
 
 if __name__ == "__main__":
-    backtest()
+    BacktestOrchestrator().run()

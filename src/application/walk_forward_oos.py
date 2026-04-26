@@ -13,7 +13,7 @@ from sklearn.model_selection import TimeSeriesSplit
 import config as cfg
 import train
 from signal_filter import build_candidate_event_mask, resolve_event_filter_config
-from src.application.backtest_engine import backtest
+from src.application.backtest import BacktestOrchestrator
 from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
 
 
@@ -392,7 +392,7 @@ def run_walk_forward_oos(args: argparse.Namespace) -> None:
         args=args,
     )
     chart_path = cfg.BACKTEST_CHARTS_DIR / "equity_curve_walk_forward.png"
-    backtest(
+    BacktestOrchestrator().run(
         features_meta=features_meta,
         predictions=predictions,
         equity_curve_path=chart_path,
