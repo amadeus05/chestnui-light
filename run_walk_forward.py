@@ -1,4 +1,6 @@
-"""CLI: walk-forward OOS-предикты и портфельный бэктест."""
+"""CLI: walk-forward OOS-предикты и портфельный бэктест (те же правила close t → exec t+1)."""
+from __future__ import annotations
+
 import argparse
 
 import config as cfg

@@ -1,8 +1,14 @@
-"""TradingEngine — единый движок для бэктеста, paper и live trading.
+"""TradingEngine — единый движок для paper и live; опционально replay по барам.
 
-Портфельный бэктест со сдвигом «сигнал на закрытии t → исполнение на баре t+1»:
-``PortfolioReplayFeed`` + ``PortfolioBacktestContext``, либо отдельный runner в
-``src.application.backtest.portfolio_backtest_runner``.
+Оффлайн-бэктест с семантикой «close(t) → исполнение на t+1» — это **не** ветка
+``ReplayDataFeed`` по умолчанию: используй ``run_backtest.py`` /
+``BacktestOrchestrator`` → ``portfolio_backtest_runner``.
+
+Тот же движок с той же семантикой t→t+1 можно собрать как
+``PortfolioReplayFeed`` + ``PortfolioBacktestContext`` + ``trading_engine_portfolio_backtest``.
+
+Ветка ``ReplayDataFeed`` + этот класс — пошаговый цикл по общим таймстампам без
+обязательного сдвига decision/exec; не считай её основным бэктестом проекта.
 """
 from __future__ import annotations
 
