@@ -303,7 +303,6 @@ CONFIDENCE_THRESHOLD = 0.55
 MIN_SIGNAL_GAP = 0.01
 ALLOW_LONGS = True
 ALLOW_SHORTS = True
-BACKTEST_REALTIME_FEATURES = False
 BACKTEST_MAX_NEW_POSITIONS_PER_BAR = 1     # 1 = берем лучший сигнал на баре, >1 = топ-N сигналов
 BACKTEST_MAX_OPEN_POSITIONS = 1            # максимум одновременно открытых позиций
 BACKTEST_SL_COOLDOWN_BARS = 8

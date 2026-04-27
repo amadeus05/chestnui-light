@@ -5,7 +5,6 @@ import pandas as pd
 import numpy as np
 import joblib
 import matplotlib.pyplot as plt
-import etl
 from config import *
 from signal_filter import build_candidate_event_mask, resolve_event_filter_config
 from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
@@ -363,63 +362,6 @@ def filter_symbols_with_period_overlap(all_data: dict, start_ts: pd.Timestamp, e
     return filtered, dropped
 
 
-def prepare_dataset_for_time(df: pd.DataFrame, analysis_ts: pd.Timestamp) -> pd.DataFrame:
-    if df is None or df.empty:
-        return df
-
-    out = df[df["close_time"] <= analysis_ts].copy()
-    if out.empty:
-        return out
-
-    return out.drop(columns=["close_time"], errors="ignore").reset_index(drop=True)
-
-
-def build_feature_row_at_time(
-    symbol: str,
-    main_df: pd.DataFrame,
-    htf_df: pd.DataFrame,
-    analysis_ts: pd.Timestamp,
-    feature_names: list,
-    symbol_categories=None,
-):
-    main_cut = prepare_dataset_for_time(main_df, analysis_ts)
-    htf_cut = prepare_dataset_for_time(htf_df, analysis_ts)
-
-    if main_cut is None or main_cut.empty or len(main_cut) < 250:
-        return None
-
-    if htf_cut is None or htf_cut.empty or len(htf_cut) < 60:
-        return None
-
-    try:
-        feat_main = etl.add_features(main_cut)
-        if feat_main is None or feat_main.empty:
-            return None
-
-        feat_main = etl.add_htf_features(feat_main, htf_cut)
-        if feat_main is None or feat_main.empty:
-            return None
-
-        feat_main["symbol"] = symbol
-        if symbol_categories is None:
-            feat_main["symbol"] = feat_main["symbol"].astype("category")
-        else:
-            feat_main["symbol"] = pd.Categorical(feat_main["symbol"], categories=symbol_categories)
-        latest_row = feat_main.iloc[[-1]].copy()
-        missing = [f for f in feature_names if f not in latest_row.columns]
-        if missing:
-            print(f"Warning: {symbol} missing features: {missing[:10]}")
-            return None
-
-        if latest_row[feature_names].isna().any(axis=None):
-            return None
-
-        return latest_row
-    except Exception as e:
-        print(f"Warning: feature build failed for {symbol} @ {analysis_ts}: {e}")
-        return None
-
-
 def get_exec_row_by_ts(df: pd.DataFrame, ts: pd.Timestamp):
     row = df[df["timestamp"] == ts]
     if row.empty:
@@ -581,9 +523,6 @@ def backtest(
     if using_external_predictions and not prediction_lookup:
         print("Error: walk-forward predictions are empty.")
         return
-    if using_external_predictions and BACKTEST_REALTIME_FEATURES:
-        print("Error: walk-forward prediction backtest requires BACKTEST_REALTIME_FEATURES=False.")
-        return
 
     if features_meta is None:
         model_path = MODELS_DIR / f"{model_name}.joblib"
@@ -660,51 +599,46 @@ def backtest(
         print("Error: no raw data for backtest.")
         return
 
-    print(
-        "Feature mode: "
-        + ("realtime rebuild" if BACKTEST_REALTIME_FEATURES else "precomputed DB features")
-    )
+    print("Feature mode: precomputed DB features (ETL)")
 
     all_features = {}
     all_main_index = {}
-    if not BACKTEST_REALTIME_FEATURES:
-        for sym in list(all_raw.keys()):
-            feat_df = load_precomputed_features(
-                sym,
-                symbol_categories=symbol_categories,
-                required_columns=feature_names + ["barrier_stop_pct", "barrier_take_pct"],
-            )
-            if feat_df.empty:
-                print(f"Warning: {sym} has no precomputed features table.")
-                continue
-            all_features[sym] = feat_df
+    for sym in list(all_raw.keys()):
+        feat_df = load_precomputed_features(
+            sym,
+            symbol_categories=symbol_categories,
+            required_columns=feature_names + ["barrier_stop_pct", "barrier_take_pct"],
+        )
+        if feat_df.empty:
+            print(f"Warning: {sym} has no precomputed features table.")
+            continue
+        all_features[sym] = feat_df
 
-        all_raw = {sym: payload for sym, payload in all_raw.items() if sym in all_features}
-        if not all_raw:
-            print("Error: no symbols with precomputed features available.")
-            return
+    all_raw = {sym: payload for sym, payload in all_raw.items() if sym in all_features}
+    if not all_raw:
+        print("Error: no symbols with precomputed features available.")
+        return
 
     for sym, payload in all_raw.items():
         all_main_index[sym] = build_timestamp_index(payload["main"])
 
     all_features_prepared = {}
-    if not BACKTEST_REALTIME_FEATURES:
-        for sym, feat_df in all_features.items():
-            prepared = prepare_precomputed_feature_store(
-                feat_df,
-                feature_names,
-                symbol_categories=symbol_categories,
-                clip_bounds=clip_bounds,
-            )
-            if prepared.empty:
-                print(f"Warning: {sym} has no usable precomputed feature rows after preparation.")
-                continue
-            all_features_prepared[sym] = prepared
+    for sym, feat_df in all_features.items():
+        prepared = prepare_precomputed_feature_store(
+            feat_df,
+            feature_names,
+            symbol_categories=symbol_categories,
+            clip_bounds=clip_bounds,
+        )
+        if prepared.empty:
+            print(f"Warning: {sym} has no usable precomputed feature rows after preparation.")
+            continue
+        all_features_prepared[sym] = prepared
 
-        all_raw = {sym: payload for sym, payload in all_raw.items() if sym in all_features_prepared}
-        if not all_raw:
-            print("Error: no symbols with prepared precomputed features available.")
-            return
+    all_raw = {sym: payload for sym, payload in all_raw.items() if sym in all_features_prepared}
+    if not all_raw:
+        print("Error: no symbols with prepared precomputed features available.")
+        return
 
     all_raw, dropped_symbols = filter_symbols_with_period_overlap(all_raw, test_start_ts, test_end_ts, min_candles=2)
     if dropped_symbols:
@@ -958,38 +892,44 @@ def backtest(
 
         snapshot_balance = balance
         entry_candidates = []
-        if BACKTEST_REALTIME_FEATURES:
-            for sym, ctx in market_batch.items():
-                if positions[sym] is not None:
-                    continue
-                if i < stop_cooldown_until_index.get(sym, -1):
-                    continue
-
-                latest_row = build_feature_row_at_time(
-                    symbol=sym,
-                    main_df=ctx["main"],
-                    htf_df=ctx["htf"],
-                    analysis_ts=next_ts,
-                    feature_names=feature_names,
-                    symbol_categories=symbol_categories,
+        candidate_symbols = [
+            sym for sym in market_batch
+            if (
+                positions[sym] is None
+                and sym in all_features_prepared
+                and i >= stop_cooldown_until_index.get(sym, -1)
+            )
+        ]
+        batch_symbols, batch_features = get_feature_batch_precomputed(
+            all_features_prepared,
+            candidate_symbols,
+            current_ts,
+        )
+        if not batch_features.empty:
+            if using_external_predictions:
+                batch_proba = []
+                resolved_symbols = []
+                for sym in batch_symbols:
+                    proba = prediction_lookup.get((current_ts, sym))
+                    if proba is None:
+                        continue
+                    batch_proba.append(proba)
+                    resolved_symbols.append(sym)
+                batch_symbols = resolved_symbols
+            else:
+                batch_proba = model.predict_proba(batch_features[feature_names])
+            for sym, proba in zip(batch_symbols, batch_proba):
+                ctx = market_batch[sym]
+                feature_row = get_feature_row_precomputed(
+                    all_features[sym],
+                    current_ts,
+                    feature_names + ["barrier_stop_pct", "barrier_take_pct"],
                 )
-
-                if latest_row is None or latest_row.empty:
-                    continue
-
-                current_features = normalize_features_for_model(
-                    latest_row,
-                    feature_names,
-                    symbol_categories=symbol_categories,
-                )
-                current_features = apply_feature_clip_bounds(current_features, clip_bounds)
-                if not is_candidate_event(latest_row, event_filter_config):
-                    continue
-                stop_pct, take_pct = get_barrier_pcts(latest_row)
+                stop_pct, take_pct = get_barrier_pcts(feature_row)
                 if stop_pct is None or take_pct is None:
                     continue
-
-                proba = model.predict_proba(current_features)[0]
+                if not is_candidate_event(feature_row, event_filter_config):
+                    continue
                 p_short = float(proba[0])
                 p_long = float(proba[1])
 
@@ -1033,88 +973,6 @@ def backtest(
                         "score": build_entry_score(direction_prob, signal_gap),
                     }
                 )
-        else:
-            candidate_symbols = [
-                sym for sym in market_batch
-                if (
-                    positions[sym] is None
-                    and sym in all_features_prepared
-                    and i >= stop_cooldown_until_index.get(sym, -1)
-                )
-            ]
-            batch_symbols, batch_features = get_feature_batch_precomputed(
-                all_features_prepared,
-                candidate_symbols,
-                current_ts,
-            )
-            if not batch_features.empty:
-                if using_external_predictions:
-                    batch_proba = []
-                    resolved_symbols = []
-                    for sym in batch_symbols:
-                        proba = prediction_lookup.get((current_ts, sym))
-                        if proba is None:
-                            continue
-                        batch_proba.append(proba)
-                        resolved_symbols.append(sym)
-                    batch_symbols = resolved_symbols
-                else:
-                    batch_proba = model.predict_proba(batch_features[feature_names])
-                for sym, proba in zip(batch_symbols, batch_proba):
-                    ctx = market_batch[sym]
-                    feature_row = get_feature_row_precomputed(
-                        all_features[sym],
-                        current_ts,
-                        feature_names + ["barrier_stop_pct", "barrier_take_pct"],
-                    )
-                    stop_pct, take_pct = get_barrier_pcts(feature_row)
-                    if stop_pct is None or take_pct is None:
-                        continue
-                    if not is_candidate_event(feature_row, event_filter_config):
-                        continue
-                    p_short = float(proba[0])
-                    p_long = float(proba[1])
-
-                    signal, direction_prob, signal_gap = resolve_directional_signal(p_long, p_short)
-
-                    if signal == 0:
-                        continue
-
-                    if signal == 1 and not ALLOW_LONGS:
-                        continue
-                    if signal == -1 and not ALLOW_SHORTS:
-                        continue
-
-                    if signal == 1:
-                        direction_str = "LONG"
-                        entry_price = ctx["next_open"] * (1 + SLIPPAGE)
-                    else:
-                        direction_str = "SHORT"
-                        entry_price = ctx["next_open"] * (1 - SLIPPAGE)
-
-                    risk_capital = snapshot_balance * effective_risk_per_trade
-                    position_notional = min(risk_capital / stop_pct, snapshot_balance * LEVERAGE)
-                    required_margin = position_notional / LEVERAGE
-
-                    if position_notional < 10:
-                        continue
-
-                    entry_candidates.append(
-                        {
-                            "sym": sym,
-                            "signal": signal,
-                            "direction_str": direction_str,
-                            "entry_price": entry_price,
-                            "position_notional": position_notional,
-                            "required_margin": required_margin,
-                            "stop_pct": stop_pct,
-                            "take_pct": take_pct,
-                            "p_long": p_long,
-                            "p_short": p_short,
-                            "direction_prob": direction_prob,
-                            "score": build_entry_score(direction_prob, signal_gap),
-                        }
-                    )
 
         if not entry_candidates:
             continue
