@@ -18,6 +18,7 @@ from lstm import config_lstm as lstm_cfg
 from lstm.dataset import SequenceDataset, SequenceStandardizer
 from lstm.model import LSTMClassifier
 from lstm.train_lstm_walk_forward import (
+    is_meaningful_eval_improvement,
     load_frames,
     run_epoch,
     set_seed,
@@ -43,6 +44,16 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=lstm_cfg.LEARNING_RATE)
     parser.add_argument("--weight-decay", type=float, default=lstm_cfg.WEIGHT_DECAY)
     parser.add_argument("--patience", type=int, default=lstm_cfg.EARLY_STOPPING_PATIENCE)
+    parser.add_argument(
+        "--min-epochs-before-early-stop",
+        type=int,
+        default=lstm_cfg.MIN_EPOCHS_BEFORE_EARLY_STOP,
+    )
+    parser.add_argument(
+        "--early-stopping-min-delta",
+        type=float,
+        default=lstm_cfg.EARLY_STOPPING_MIN_DELTA,
+    )
     parser.add_argument("--model-name", default="lstm_target_production")
     return parser.parse_args()
 
@@ -76,7 +87,7 @@ def train_production_model(dataset: SequenceDataset, train_indices: list[int], e
     for epoch in range(1, args.epochs + 1):
         train_loss = run_epoch(model, fit_loader, criterion, optimizer, device, train_mode=True)
         eval_loss = run_epoch(model, eval_loader, criterion, optimizer, device, train_mode=False)
-        if eval_loss < best_eval_loss:
+        if is_meaningful_eval_improvement(eval_loss, best_eval_loss, args.early_stopping_min_delta):
             best_eval_loss = eval_loss
             best_epoch = epoch
             stale_epochs = 0
@@ -85,7 +96,7 @@ def train_production_model(dataset: SequenceDataset, train_indices: list[int], e
             stale_epochs += 1
 
         logger.info("epoch=%s train_loss=%.5f eval_loss=%.5f", epoch, train_loss, eval_loss)
-        if stale_epochs >= args.patience:
+        if epoch >= args.min_epochs_before_early_stop and stale_epochs >= args.patience:
             break
 
     if best_state is not None:
@@ -121,6 +132,8 @@ def save_production_payload(model, standardizer, feature_columns, dataset, best_
             "lr": float(args.lr),
             "weight_decay": float(args.weight_decay),
             "patience": int(args.patience),
+            "min_epochs_before_early_stop": int(args.min_epochs_before_early_stop),
+            "early_stopping_min_delta": float(args.early_stopping_min_delta),
         },
     }
     feature_formulas_payload = train.build_feature_formulas_payload(
