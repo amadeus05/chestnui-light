@@ -176,6 +176,10 @@ MANUAL_DISABLED_FEATURE_COLUMNS = [
     "bollinger_percent_b_1h_20",
     "distance_to_rolling_high_4h",
     "volatility_regime_stability",
+    "market_abs_avg_ema_slope_4h",
+    "market_avg_ema_slope_4h",
+    "market_breadth_pos_return_4h_14",
+    "market_mean_return_4h_14",
 ]
 # --- FEATURE BUILD ---
 FEATURE_PROFILES = {
