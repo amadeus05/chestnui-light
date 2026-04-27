@@ -11,7 +11,6 @@ from src.persistence.repositories.historical_kline_repo import HistoricalKlineRe
 
 # Futures settings come from config.py
 TAKER_COM = globals().get("TAKER_COM", 0.0004)
-MAKER_COM = globals().get("MAKER_COM", 0.0002)
 SLIPPAGE = globals().get("SLIPPAGE", 0.0003)
 LEVERAGE = globals().get("LEVERAGE", 1)
 RISK_PER_TRADE = globals().get("RISK_PER_TRADE", 0.01)
@@ -84,10 +83,6 @@ def parse_period_payload(period_payload: dict | None, period_name: str) -> tuple
         raise RuntimeError(f"Model metadata has {period_name} start after end: {period_payload}")
     return start, end
 
-# LightGBM binary directional mapping (from train.py)
-LABEL_TO_CLASS = {-1: 0, 1: 1}
-CLASS_TO_LABEL = {v: k for k, v in LABEL_TO_CLASS.items()}
-
 
 def timeframe_to_ms(timeframe: str) -> int:
     if timeframe not in TF_MS:
@@ -115,14 +110,6 @@ def format_reason(reason: str) -> str:
 def build_entry_score(direction_prob: float, signal_gap: float) -> float:
     edge = max(0.0, direction_prob - DIRECTIONAL_PROBA_THRESHOLD)
     return edge * 10 + signal_gap
-
-
-def format_reason(reason: str) -> str:
-    if reason == "TP":
-        return colorize("TP", ANSI_GREEN)
-    if reason == "SL":
-        return colorize("SL", ANSI_RED)
-    return reason
 
 
 def resolve_directional_signal(p_long: float, p_short: float) -> tuple[int, float, float]:
@@ -324,26 +311,6 @@ def get_common_main_timestamps(all_data: dict) -> list:
     return sorted(list(set.intersection(*ts_sets))) if ts_sets else []
 
 
-def filter_symbols_with_recent_data(all_data: dict, min_common_candles: int = 300):
-    if not all_data:
-        return {}, []
-
-    timeframe_delta = pd.to_timedelta(timeframe_to_ms(TIMEFRAME), unit="ms")
-    latest_timestamp = max(payload["main"]["timestamp"].iloc[-1] for payload in all_data.values())
-    recent_cutoff = latest_timestamp - (timeframe_delta * min_common_candles)
-
-    filtered = {}
-    dropped = []
-    for symbol, payload in all_data.items():
-        symbol_last_ts = payload["main"]["timestamp"].iloc[-1]
-        if symbol_last_ts < recent_cutoff:
-            dropped.append(symbol)
-            continue
-        filtered[symbol] = payload
-
-    return filtered, dropped
-
-
 def filter_symbols_with_period_overlap(all_data: dict, start_ts: pd.Timestamp, end_ts: pd.Timestamp, min_candles: int = 2):
     if not all_data:
         return {}, []
@@ -360,13 +327,6 @@ def filter_symbols_with_period_overlap(all_data: dict, start_ts: pd.Timestamp, e
         filtered[symbol] = payload
 
     return filtered, dropped
-
-
-def get_exec_row_by_ts(df: pd.DataFrame, ts: pd.Timestamp):
-    row = df[df["timestamp"] == ts]
-    if row.empty:
-        return None
-    return row.iloc[0]
 
 
 def get_feature_row_precomputed(df: pd.DataFrame, ts: pd.Timestamp, feature_names: list):
@@ -390,22 +350,6 @@ def get_exec_row_by_ts_index(indexed_rows: dict, ts: pd.Timestamp):
     if row is None:
         return None
     return row
-
-
-def get_feature_row_precomputed_index(indexed_rows: dict, ts: pd.Timestamp, feature_names: list):
-    row = indexed_rows.get(ts)
-    if row is None:
-        return None
-
-    latest_row = pd.DataFrame([row])
-    missing = [f for f in feature_names if f not in latest_row.columns]
-    if missing:
-        return None
-
-    if latest_row[feature_names].isna().any(axis=None):
-        return None
-
-    return latest_row
 
 
 def is_candidate_event(feature_row: pd.DataFrame, event_filter_config: dict) -> bool:
