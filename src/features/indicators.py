@@ -107,6 +107,21 @@ def compute_trend_efficiency(close: pd.Series, window: int) -> pd.Series:
     return safe_ratio(directional_move, path_length)
 
 
+def compute_rsi(close: pd.Series, length: int = 14) -> pd.Series:
+    """
+    Wilder-style RSI on close: RMA of gains/losses with alpha=1/length, range [0, 100].
+    """
+    length = max(2, int(length))
+    delta = close.diff()
+    gain = delta.clip(lower=0.0)
+    loss = (-delta).clip(lower=0.0)
+    alpha = 1.0 / float(length)
+    avg_gain = gain.ewm(alpha=alpha, adjust=False, min_periods=length).mean()
+    avg_loss = loss.ewm(alpha=alpha, adjust=False, min_periods=length).mean()
+    rs = safe_ratio(avg_gain, avg_loss)
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
 def matthews_corrcoef_binary(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """Matthews correlation for two 0/1 vectors of equal length (sklearn-equivalent)."""
     y_true = np.asarray(y_true, dtype=np.int64).ravel()

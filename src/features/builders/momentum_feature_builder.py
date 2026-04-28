@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from src.features.contracts.feature_builder_contract import FeatureBuilderContract
-from src.features.indicators import compute_atr, compute_linear_regression_slope, compute_trend_efficiency, safe_ratio
+from src.features.indicators import compute_atr, compute_linear_regression_slope, compute_rsi, compute_trend_efficiency, safe_ratio
 from src.features.models.feature_context import FeatureContext
 from src.features.models.feature_spec import feature_param, feature_spec
 
@@ -43,6 +43,14 @@ class MomentumFeatureBuilder(FeatureBuilderContract):
                 feature_param("EMA_FAST_WINDOW", 12),
                 feature_param("EMA_SLOW_WINDOW", 48),
             ),
+            inputs=("close",),
+        ),
+        "rsi_1h": feature_spec(
+            "rsi_1h",
+            block_name,
+            "RSI(close, {RSI_LENGTH}) Wilder on main timeframe",
+            description="Relative Strength Index (Wilder) on main timeframe close.",
+            params=(feature_param("RSI_LENGTH", 14),),
             inputs=("close",),
         ),
         "linear_regression_slope_atr_1h_12": feature_spec(
@@ -112,6 +120,13 @@ class MomentumFeatureBuilder(FeatureBuilderContract):
                 feature_name = f"return_1h_{period}"
                 if feature_name in active:
                     output[feature_name] = np.log(close / close.shift(period))
+
+        if "rsi_1h" in active:
+            rsi_len = max(2, int(getattr(cfg, "RSI_LENGTH", 14)))
+            output["rsi_1h"] = context.indicator_cache.get_or_create(
+                f"rsi_close_{rsi_len}",
+                lambda: compute_rsi(close, rsi_len),
+            )
 
         ema_fast_slow = None
         if {"ema_fast_slow", "ema_slope_acceleration_1h"}.intersection(active):

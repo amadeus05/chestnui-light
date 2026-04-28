@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import config as cfg
 import numpy as np
 import pandas as pd
 
 from src.features.contracts.feature_builder_contract import FeatureBuilderContract
+from src.features.indicators import rolling_matthews_corrcoef_sign_agreement
 from src.features.models.feature_context import FeatureContext
 from src.features.models.feature_spec import feature_spec
 
@@ -14,6 +16,14 @@ class BtcRelativeFeatureBuilder(FeatureBuilderContract):
         "relative_strength_vs_btc_24h": feature_spec("relative_strength_vs_btc_24h", block_name, "return_1h_24 - btc_return_1h_24", description="Asset 24-bar return relative to BTC over the same timestamps.", inputs=("close",), dependencies=("return_1h_24",)),
         "beta_to_btc_24h": feature_spec("beta_to_btc_24h", block_name, "rolling_cov(log(close / close.shift(1)), log(btc_close / btc_close.shift(1)), 24) / rolling_var(log(btc_close / btc_close.shift(1)), 24)", description="Rolling 24-bar beta of the asset to BTC.", inputs=("close",), dependencies=("return_1h_24",)),
         "residual_return_24h": feature_spec("residual_return_24h", block_name, "return_1h_24 - beta_to_btc_24h * btc_return_1h_24", description="BTC-neutralized 24-bar return.", inputs=("close",), dependencies=("return_1h_24", "beta_to_btc_24h")),
+        "mcc_sign_agreement_btc_24h": feature_spec(
+            "mcc_sign_agreement_btc_24h",
+            block_name,
+            "MCC(1{r_asset>0}, 1{r_btc>0}) over MCC_SIGN_BTC_WINDOW 1h log-returns",
+            description="Rolling Matthews correlation between up/down of 1h returns (asset vs BTC).",
+            inputs=("close",),
+            dependencies=("return_1h_24",),
+        ),
     }
 
     def build(self, context: FeatureContext, requested_features: set[str]) -> pd.DataFrame:
@@ -63,6 +73,17 @@ class BtcRelativeFeatureBuilder(FeatureBuilderContract):
         if "residual_return_24h" in active:
             output["residual_return_24h"] = merged["return_1h_24"] - (beta_24h * merged["btc_return_1h_24"])
 
+        if "mcc_sign_agreement_btc_24h" in active:
+            win = max(2, int(getattr(cfg, "MCC_SIGN_BTC_WINDOW", 24)))
+            min_override = getattr(cfg, "MCC_SIGN_BTC_MIN_PERIODS", None)
+            min_periods = max(3, int(min_override)) if min_override is not None else max(3, win // 2)
+            output["mcc_sign_agreement_btc_24h"] = rolling_matthews_corrcoef_sign_agreement(
+                asset_return_1h,
+                btc_return_1h,
+                window=win,
+                min_periods=min_periods,
+            )
+
         if context.symbol == "BTC/USDT":
             if "relative_strength_vs_btc_24h" in active:
                 output["relative_strength_vs_btc_24h"] = 0.0
@@ -70,5 +91,7 @@ class BtcRelativeFeatureBuilder(FeatureBuilderContract):
                 output["beta_to_btc_24h"] = 1.0
             if "residual_return_24h" in active:
                 output["residual_return_24h"] = 0.0
+            if "mcc_sign_agreement_btc_24h" in active:
+                output["mcc_sign_agreement_btc_24h"] = 1.0
 
         return output

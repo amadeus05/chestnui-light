@@ -219,6 +219,9 @@ FEATURE_BUILD_REQUEST = {
 MCC_SIGN_BTC_WINDOW = 24
 MCC_SIGN_BTC_MIN_PERIODS = None
 
+# Main-TF Wilder RSI (momentum feature `rsi_1h`)
+RSI_LENGTH = 14
+
 # Hybrid setup:
 # - ETL labeling stays on v1.
 # - Training-side filtering and feature pruning stay on v2.
