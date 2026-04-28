@@ -105,3 +105,48 @@ def compute_trend_efficiency(close: pd.Series, window: int) -> pd.Series:
     directional_move = (close - close.shift(window)).abs()
     path_length = close.diff().abs().rolling(window).sum()
     return safe_ratio(directional_move, path_length)
+
+
+def matthews_corrcoef_binary(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Matthews correlation for two 0/1 vectors of equal length (sklearn-equivalent)."""
+    y_true = np.asarray(y_true, dtype=np.int64).ravel()
+    y_pred = np.asarray(y_pred, dtype=np.int64).ravel()
+    if len(y_true) != len(y_pred) or len(y_true) == 0:
+        return float("nan")
+    tp = int(np.sum((y_true == 1) & (y_pred == 1)))
+    tn = int(np.sum((y_true == 0) & (y_pred == 0)))
+    fp = int(np.sum((y_true == 1) & (y_pred == 0)))
+    fn = int(np.sum((y_true == 0) & (y_pred == 1)))
+    denom = np.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    if denom <= 0 or not np.isfinite(denom):
+        return float("nan")
+    return float((tp * tn - fp * fn) / denom)
+
+
+def rolling_matthews_corrcoef_sign_agreement(
+    return_a: pd.Series,
+    return_b: pd.Series,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """
+    Rolling MCC between binary \"up\" indicators: 1 if log-return > 0 else 0.
+    Uses only past `window` rows ending at t (causal). Rows with non-finite returns
+    are excluded from the window (need at least min_periods valid pairs).
+    """
+    if min_periods is None:
+        min_periods = max(3, window // 2)
+    a = return_a.to_numpy(dtype=float)
+    b = return_b.to_numpy(dtype=float)
+    n = len(a)
+    out = np.full(n, np.nan, dtype=float)
+    valid = np.isfinite(a) & np.isfinite(b)
+    y_t = (a > 0).astype(np.int64)
+    y_p = (b > 0).astype(np.int64)
+    for i in range(window - 1, n):
+        s = slice(i - window + 1, i + 1)
+        m = valid[s]
+        if m.sum() < min_periods:
+            continue
+        out[i] = matthews_corrcoef_binary(y_t[s][m], y_p[s][m])
+    return pd.Series(out, index=return_a.index)

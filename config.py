@@ -133,7 +133,7 @@ MANUAL_DISABLED_FEATURE_COLUMNS = [
     "trend_persistence_score_12",  # слабый
     "donchian_width_change_4h",  # можно отключить
     "open_interest_zscore_7d",  # слабый
-    "adx_4h",
+    # "adx_4h",
     "beta_to_btc_24h",
     "ema_fast_slow_x_market_breadth_ema_fast_slow_1h",
     # "market_breadth_ema_fast_slow_1h",
@@ -215,6 +215,10 @@ FEATURE_BUILD_REQUEST = {
     "exclude_blocks": [],
 }
 
+# Rolling MCC (asset vs BTC 1h return sign): window in bars; min_periods None = max(3, window//2)
+MCC_SIGN_BTC_WINDOW = 24
+MCC_SIGN_BTC_MIN_PERIODS = None
+
 # Hybrid setup:
 # - ETL labeling stays on v1.
 # - Training-side filtering and feature pruning stay on v2.
@@ -229,6 +233,25 @@ ADAPTIVE_HORIZON_MIN = 8
 ADAPTIVE_HORIZON_MAX = 20
 ADAPTIVE_HORIZON_VOL_LOW = 0.005
 ADAPTIVE_HORIZON_VOL_HIGH = 0.025
+
+
+def effective_max_label_horizon() -> int:
+    """
+    Upper bound (in main-TF bars) on how far the triple-barrier label can look ahead
+    from a given row — used e.g. for WFV purge_gap so train y does not use test-period
+    prices. Mirrors the extrema of etl.compute_effective_horizons.
+    """
+    base_horizon = max(1, int(HORIZON))
+    if not bool(ENABLE_ADAPTIVE_HORIZON):
+        return base_horizon
+    h_min = int(ADAPTIVE_HORIZON_MIN)
+    h_max = int(ADAPTIVE_HORIZON_MAX)
+    if h_min > h_max:
+        h_min, h_max = h_max, h_min
+    h_min = max(1, h_min)
+    h_max = max(h_min, h_max)
+    return max(base_horizon, h_max)
+
 
 # --- DYNAMIC BARRIERS ---
 USE_DYNAMIC_BARRIERS = True
