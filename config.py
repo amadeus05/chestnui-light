@@ -180,6 +180,17 @@ MANUAL_DISABLED_FEATURE_COLUMNS = [
     "market_avg_ema_slope_4h",
     "market_breadth_pos_return_4h_14",
     "market_mean_return_4h_14",
+    "cross_sectional_rank_4h",
+    # "price_position_1h",
+    "zscore_vs_vwap_1h",
+
+    # "cross_sectional_rank_ema_fast_slow_1h",
+    # "distance_to_resistance_1h",
+    # "flat_efficiency_1h_24",
+    "linear_regression_slope_atr_1h_12",
+
+    "range_position_1h_48",
+    "mean_reversion_pressure_1h",
 ]
 # --- FEATURE BUILD ---
 FEATURE_PROFILES = {
