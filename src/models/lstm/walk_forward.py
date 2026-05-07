@@ -4,12 +4,15 @@ from argparse import Namespace
 from dataclasses import dataclass, field
 from typing import Literal
 
+import pandas as pd
 import torch
 
 import config as cfg
+import train
 from lstm import config_lstm as lstm_cfg
 from lstm.train_lstm_walk_forward import walk_forward_lstm
 from src.models.lstm.data_builder import LstmDataBuilder, LstmDataRequest
+from src.models.lstm.dataset import SequenceDataset
 
 
 SplitMode = Literal["tscv", "monthly"]
@@ -52,11 +55,81 @@ class LstmWalkForwardResult:
     request: LstmWalkForwardRequest
 
 
+@dataclass(slots=True)
+class LstmWalkForwardPlan:
+    sample_rows: int
+    history_rows: int
+    feature_count: int
+    symbols: list[str]
+    split_mode: SplitMode
+    monthly_window_mode: MonthlyWindowMode
+    purge_gap: int
+    sequence_length: int
+    folds: list[dict]
+
+    @property
+    def estimated_prediction_rows(self) -> int:
+        return sum(int(fold["test_sequences"]) for fold in self.folds)
+
+
 class LstmWalkForwardRunner:
     """Walk-forward OOS runner for ETL-sequence LSTM."""
 
     def __init__(self, data_builder: LstmDataBuilder | None = None):
         self.data_builder = data_builder or LstmDataBuilder()
+
+    def plan(self, request: LstmWalkForwardRequest) -> LstmWalkForwardPlan:
+        data = self.data_builder.load(
+            LstmDataRequest(
+                db_path=request.db_path,
+                symbols=request.symbols,
+            )
+        )
+        timestamp_splits = self.build_timestamp_splits(data.sample_frame, request)
+        folds = []
+        for fold_idx, original_train_timestamps, test_timestamps in timestamp_splits:
+            train_timestamps = original_train_timestamps
+            if request.purge_gap > 0 and len(train_timestamps) > request.purge_gap:
+                train_timestamps = train_timestamps[:-request.purge_gap]
+
+            train_df = data.sample_frame.loc[data.sample_frame[train.TIMESTAMP_COLUMN].isin(set(train_timestamps))].copy()
+            test_df = data.sample_frame.loc[data.sample_frame[train.TIMESTAMP_COLUMN].isin(set(test_timestamps))].copy()
+            train_sequences = len(
+                SequenceDataset(train_df, data.history_by_symbol, data.feature_columns, request.sequence_length)
+            )
+            test_sequences = len(
+                SequenceDataset(test_df, data.history_by_symbol, data.feature_columns, request.sequence_length)
+            )
+            folds.append(
+                {
+                    "fold": int(fold_idx),
+                    "train_timestamps": int(len(train_timestamps)),
+                    "test_timestamps": int(len(test_timestamps)),
+                    "train_rows": int(len(train_df)),
+                    "test_rows": int(len(test_df)),
+                    "train_sequences": int(train_sequences),
+                    "test_sequences": int(test_sequences),
+                    "train_start": str(pd.to_datetime(train_timestamps[0])) if len(train_timestamps) else None,
+                    "train_end_after_purge": str(pd.to_datetime(train_timestamps[-1])) if len(train_timestamps) else None,
+                    "train_end_before_purge": str(pd.to_datetime(original_train_timestamps[-1]))
+                    if len(original_train_timestamps)
+                    else None,
+                    "test_start": str(pd.to_datetime(test_timestamps[0])) if len(test_timestamps) else None,
+                    "test_end": str(pd.to_datetime(test_timestamps[-1])) if len(test_timestamps) else None,
+                }
+            )
+
+        return LstmWalkForwardPlan(
+            sample_rows=int(len(data.sample_frame)),
+            history_rows=int(len(data.full_frame)),
+            feature_count=int(len(data.feature_columns)),
+            symbols=list(request.symbols),
+            split_mode=request.split_mode,
+            monthly_window_mode=request.monthly_window_mode,
+            purge_gap=int(request.purge_gap),
+            sequence_length=int(request.sequence_length),
+            folds=folds,
+        )
 
     def run(self, request: LstmWalkForwardRequest, device: torch.device | None = None) -> LstmWalkForwardResult:
         data = self.data_builder.load(
@@ -83,6 +156,24 @@ class LstmWalkForwardRunner:
             symbols=list(request.symbols),
             request=request,
         )
+
+    @staticmethod
+    def build_timestamp_splits(sample_frame, request: LstmWalkForwardRequest):
+        unique_ts = sample_frame.attrs.get(
+            "all_timestamps",
+            pd.Series(sample_frame[train.TIMESTAMP_COLUMN].dropna().unique()).sort_values().to_numpy(),
+        )
+        timestamp_splits = train.build_timestamp_splits(
+            unique_ts=unique_ts,
+            n_splits=request.n_splits,
+            split_mode=request.split_mode,
+            monthly_train_months=request.monthly_train_months,
+            monthly_test_months=request.monthly_test_months,
+            monthly_window_mode=request.monthly_window_mode,
+        )
+        if request.max_folds is not None:
+            timestamp_splits = timestamp_splits[: request.max_folds]
+        return timestamp_splits
 
     @staticmethod
     def to_legacy_args(request: LstmWalkForwardRequest) -> Namespace:

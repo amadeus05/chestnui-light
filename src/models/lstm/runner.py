@@ -24,31 +24,35 @@ class LstmRunner(BaseModelRunner):
 
     def run_walk_forward(self, argv: Sequence[str] | None = None) -> None:
         args = self.parse_walk_forward_args(argv)
-        result = LstmWalkForwardRunner().run(
-            LstmWalkForwardRequest(
-                db_path=args.db_path,
-                symbols=args.symbols,
-                seed=args.seed,
-                n_splits=args.n_splits,
-                split_mode=args.split_mode,
-                monthly_train_months=args.monthly_train_months,
-                monthly_test_months=args.monthly_test_months,
-                monthly_window_mode=args.monthly_window_mode,
-                purge_gap=args.purge_gap,
-                sequence_length=args.sequence_length,
-                batch_size=args.batch_size,
-                epochs=args.epochs,
-                hidden_size=args.hidden_size,
-                num_layers=args.num_layers,
-                dropout=args.dropout,
-                lr=args.lr,
-                weight_decay=args.weight_decay,
-                patience=args.patience,
-                min_epochs_before_early_stop=args.min_epochs_before_early_stop,
-                early_stopping_min_delta=args.early_stopping_min_delta,
-                max_folds=args.max_folds,
-            )
+        request = LstmWalkForwardRequest(
+            db_path=args.db_path,
+            symbols=args.symbols,
+            seed=args.seed,
+            n_splits=args.n_splits,
+            split_mode=args.split_mode,
+            monthly_train_months=args.monthly_train_months,
+            monthly_test_months=args.monthly_test_months,
+            monthly_window_mode=args.monthly_window_mode,
+            purge_gap=args.purge_gap,
+            sequence_length=args.sequence_length,
+            batch_size=args.batch_size,
+            epochs=args.epochs,
+            hidden_size=args.hidden_size,
+            num_layers=args.num_layers,
+            dropout=args.dropout,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            patience=args.patience,
+            min_epochs_before_early_stop=args.min_epochs_before_early_stop,
+            early_stopping_min_delta=args.early_stopping_min_delta,
+            max_folds=args.max_folds,
         )
+        if args.dry_run:
+            plan = LstmWalkForwardRunner().plan(request)
+            self.print_walk_forward_plan(plan)
+            return
+
+        result = LstmWalkForwardRunner().run(request)
         paths = LstmArtifactWriter(
             spec=self.spec,
             artifact_store=self.artifact_store,
@@ -156,6 +160,7 @@ class LstmRunner(BaseModelRunner):
         parser.add_argument("--skip-backtest", action="store_true", help="Only build and save OOS predictions.")
         parser.add_argument("--backtest-start-date", default=None, help="Optional replay backtest start timestamp.")
         parser.add_argument("--backtest-end-date", default=None, help="Optional replay backtest end timestamp.")
+        parser.add_argument("--dry-run", action="store_true", help="Print the WFV plan without training folds.")
         return parser.parse_args(list(argv or []))
 
     @staticmethod
@@ -187,4 +192,27 @@ class LstmRunner(BaseModelRunner):
         print(f"Predictions: {len(result.predictions)} | avg/fold={avg_predictions:.1f}")
         print(f"Prediction period: {period_start} -> {period_end}")
         print(f"Features: {len(result.feature_columns)}")
+        print("=" * 72)
+
+    @staticmethod
+    def print_walk_forward_plan(plan) -> None:
+        print("=" * 72)
+        print("LSTM WALK-FORWARD PLAN (DRY RUN)")
+        print(f"Symbols: {', '.join(plan.symbols)}")
+        print(f"Split: {plan.split_mode} | window={plan.monthly_window_mode}")
+        print(f"Purge gap: {plan.purge_gap}")
+        print(f"Sequence length: {plan.sequence_length}")
+        print(f"Sample rows: {plan.sample_rows}")
+        print(f"History rows: {plan.history_rows}")
+        print(f"Features: {plan.feature_count}")
+        print(f"Folds: {len(plan.folds)}")
+        print(f"Estimated prediction sequences: {plan.estimated_prediction_rows}")
+        print("-" * 72)
+        for fold in plan.folds[:5]:
+            print(
+                "Fold {fold}: train_seq={train_sequences} test_seq={test_sequences} "
+                "[{test_start} -> {test_end}]".format(**fold)
+            )
+        if len(plan.folds) > 5:
+            print(f"... {len(plan.folds) - 5} more folds")
         print("=" * 72)
