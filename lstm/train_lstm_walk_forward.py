@@ -48,7 +48,11 @@ def parse_args():
         default="expanding",
         help="Monthly WFV train mode: expanding uses all history, rolling uses only the latest train window.",
     )
-    parser.add_argument("--purge-gap", type=int, default=12)
+    parser.add_argument(
+        "--purge-gap",
+        type=int,
+        default=cfg.effective_max_label_horizon(),
+    )
     parser.add_argument("--sequence-length", type=int, default=lstm_cfg.SEQUENCE_LENGTH)
     parser.add_argument("--batch-size", type=int, default=lstm_cfg.BATCH_SIZE)
     parser.add_argument("--epochs", type=int, default=lstm_cfg.EPOCHS)

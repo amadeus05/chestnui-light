@@ -38,7 +38,11 @@ def parse_args():
     parser.add_argument("--monthly-train-months", type=int, default=6)
     parser.add_argument("--monthly-test-months", type=int, default=1)
     parser.add_argument("--monthly-window-mode", choices=["expanding", "rolling"], default="expanding")
-    parser.add_argument("--purge-gap", type=int, default=12)
+    parser.add_argument(
+        "--purge-gap",
+        type=int,
+        default=cfg.effective_max_label_horizon(),
+    )
     parser.add_argument("--sequence-length", type=int, default=raw_cfg.SEQUENCE_LENGTH)
     parser.add_argument("--batch-size", type=int, default=raw_cfg.BATCH_SIZE)
     parser.add_argument("--epochs", type=int, default=raw_cfg.EPOCHS)
@@ -64,14 +68,38 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def split_train_eval_indices(n_items: int, validation_fraction: float):
+def split_train_eval_indices(dataset: SequenceDataset, validation_fraction: float, purge_gap_timestamps: int):
+    n_items = len(dataset)
     if n_items < 2:
         return list(range(n_items)), []
-    eval_size = max(1, int(n_items * validation_fraction))
-    if eval_size >= n_items:
+
+    sample_timestamps = np.asarray([pd.Timestamp(sample.timestamp) for sample in dataset.samples])
+    unique_timestamps = np.unique(sample_timestamps)
+    if len(unique_timestamps) < 2:
+        return list(range(n_items)), []
+
+    eval_size = max(1, int(len(unique_timestamps) * validation_fraction))
+    if eval_size >= len(unique_timestamps):
         eval_size = 1
-    split_at = n_items - eval_size
-    return list(range(split_at)), list(range(split_at, n_items))
+
+    train_timestamps = unique_timestamps[:-eval_size]
+    eval_timestamps = unique_timestamps[-eval_size:]
+    if len(train_timestamps) == 0:
+        return [], list(range(n_items))
+
+    if purge_gap_timestamps > 0:
+        purge_count = min(int(purge_gap_timestamps), len(train_timestamps))
+        if purge_count > 0:
+            train_timestamps = train_timestamps[:-purge_count]
+
+    if len(train_timestamps) == 0:
+        return [], []
+
+    train_ts_set = set(train_timestamps.tolist())
+    eval_ts_set = set(eval_timestamps.tolist())
+    train_indices = [idx for idx, ts in enumerate(sample_timestamps) if ts in train_ts_set]
+    eval_indices = [idx for idx, ts in enumerate(sample_timestamps) if ts in eval_ts_set]
+    return train_indices, eval_indices
 
 
 def run_epoch(model, loader, criterion, optimizer, device, train_mode: bool):
@@ -222,7 +250,15 @@ def walk_forward_lstm(sample_frame, history_by_symbol, feature_columns, args, de
             logger.warning("Fold %s skipped: only %s train sequences.", fold_idx, len(raw_train_dataset))
             continue
 
-        train_indices, eval_indices = split_train_eval_indices(len(raw_train_dataset), raw_cfg.VALIDATION_FRACTION)
+        internal_eval_purge = max(args.sequence_length - 1, int(args.purge_gap))
+        train_indices, eval_indices = split_train_eval_indices(
+            raw_train_dataset,
+            raw_cfg.VALIDATION_FRACTION,
+            purge_gap_timestamps=internal_eval_purge,
+        )
+        if not train_indices or not eval_indices:
+            logger.warning("Fold %s skipped: empty train/eval after internal purge.", fold_idx)
+            continue
         standardizer = SequenceStandardizer().fit(raw_train_dataset.sequences_array(train_indices))
         train_dataset = SequenceDataset(train_df, history_by_symbol, feature_columns, args.sequence_length, standardizer=standardizer)
         test_dataset = SequenceDataset(test_df, history_by_symbol, feature_columns, args.sequence_length, standardizer=standardizer)
