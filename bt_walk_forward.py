@@ -54,8 +54,11 @@ def parse_args():
     parser.add_argument(
         "--purge-gap",
         type=int,
-        default=12,
-        help="Purge gap in timestamps between train and test folds.",
+        default=cfg.effective_max_label_horizon(),
+        help=(
+            "Purge gap in timestamps between train and test folds (default: "
+            "cfg.effective_max_label_horizon() for triple-barrier y safety)."
+        ),
     )
     parser.add_argument(
         "--predictions-name",
