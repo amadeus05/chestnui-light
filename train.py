@@ -132,8 +132,11 @@ def parse_args():
     parser.add_argument(
         "--purge-gap",
         type=int,
-        default=12,
-        help="Purge gap in timestamps between train and test folds to avoid target leakage.",
+        default=cfg.effective_max_label_horizon(),
+        help=(
+            "Purge gap in timestamps between train and test folds to avoid triple-barrier "
+            "target leakage (default = cfg.effective_max_label_horizon())."
+        ),
     )
     return parser.parse_args()
 
@@ -764,7 +767,7 @@ def walk_forward_validation(
     feature_columns,
     seed,
     n_splits=5,
-    purge_gap=12,
+    purge_gap=None,
     split_mode="tscv",
     monthly_train_months=6,
     monthly_test_months=1,
@@ -787,6 +790,9 @@ def walk_forward_validation(
     median_best_iter : int — median best_iteration across folds (useful for
                              choosing n_estimators for the final production model)
     """
+    if purge_gap is None:
+        purge_gap = cfg.effective_max_label_horizon()
+
     logger.info("=" * 72)
     logger.info(
         "Walk-Forward Validation | split_mode=%s | n_splits=%s | monthly_train=%s | "
