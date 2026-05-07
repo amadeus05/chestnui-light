@@ -16,6 +16,7 @@ their logic is migrated behind common contracts.
 
 ```bash
 python model.py list
+python model.py sync lightgbm
 python model.py train lightgbm -- --split-mode monthly
 python model.py wfv lstm -- --split-mode monthly --skip-backtest
 python model.py backtest lstm
@@ -23,3 +24,6 @@ python model.py wfv lstm_candles -- --max-folds 3 --skip-backtest
 ```
 
 Arguments after the model key are forwarded to the selected legacy runner.
+
+`sync` copies existing flat legacy artifacts into the new per-model folder and
+builds `metadata.json` using the unified `ModelMetadata` schema.

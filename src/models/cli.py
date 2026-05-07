@@ -17,7 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser("list", help="List registered models.")
     list_parser.set_defaults(handler=handle_list)
 
-    for command in ("train", "production", "wfv", "backtest"):
+    for command in ("train", "production", "wfv", "backtest", "sync"):
         command_parser = subparsers.add_parser(command, help=f"Run {command} for a registered model.")
         command_parser.add_argument("model", choices=[spec.key for spec in list_model_specs()])
         command_parser.add_argument(
@@ -62,6 +62,8 @@ def handle_run(args: argparse.Namespace) -> None:
         runner.run_walk_forward(forwarded)
     elif args.command == "backtest":
         runner.run_backtest(forwarded)
+    elif args.command == "sync":
+        runner.sync_artifacts()
     else:
         raise ValueError(f"Unsupported command: {args.command}")
 

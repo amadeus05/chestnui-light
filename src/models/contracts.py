@@ -69,6 +69,7 @@ class ModelMetadata:
     sequence_length: int | None = None
     model_args: dict[str, Any] | None = None
     standardizer: dict[str, Any] | None = None
+    legacy_artifacts: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +88,7 @@ class ModelMetadata:
             "sequence_length": self.sequence_length,
             "model_args": self.model_args,
             "standardizer": self.standardizer,
+            "legacy_artifacts": self.legacy_artifacts,
         }
 
 
