@@ -57,6 +57,8 @@ class LightGbmRunner(BaseModelRunner):
                     predictions_path=paths.predictions,
                     metadata_path=paths.metadata,
                     chart_path=cfg.BACKTEST_CHARTS_DIR / self.spec.default_chart_name,
+                    start_date=args.backtest_start_date,
+                    end_date=args.backtest_end_date,
                 )
             )
 
@@ -113,6 +115,8 @@ class LightGbmRunner(BaseModelRunner):
         parser.add_argument("--monthly-window-mode", choices=["expanding", "rolling"], default="expanding")
         parser.add_argument("--purge-gap", type=int, default=cfg.effective_max_label_horizon())
         parser.add_argument("--skip-backtest", action="store_true", help="Only build and save OOS predictions.")
+        parser.add_argument("--backtest-start-date", default=None, help="Optional replay backtest start timestamp.")
+        parser.add_argument("--backtest-end-date", default=None, help="Optional replay backtest end timestamp.")
         parser.add_argument("--dry-run", action="store_true", help="Print the WFV plan without training folds.")
         return parser.parse_args(list(argv or []))
 
