@@ -1,3 +1,4 @@
+from src.models.lstm_candles.artifacts import LstmCandlesArtifactWriter
 from src.models.lstm_candles.data_builder import LstmCandlesDataBuilder, LstmCandlesDataBundle, LstmCandlesDataRequest
 from src.models.lstm_candles.runner import LstmCandlesRunner
 from src.models.lstm_candles.spec import SPEC
@@ -8,6 +9,7 @@ from src.models.lstm_candles.walk_forward import (
 )
 
 __all__ = [
+    "LstmCandlesArtifactWriter",
     "LstmCandlesDataBuilder",
     "LstmCandlesDataBundle",
     "LstmCandlesDataRequest",
