@@ -41,6 +41,18 @@ class LightGbmRunner(BaseModelRunner):
             artifact_store=self.artifact_store,
         ).save_walk_forward_result(result)
         print(f"Saved '{self.spec.key}' walk-forward artifacts to {paths.root}")
+        self.print_walk_forward_summary(result)
+        if not args.skip_backtest:
+            LightGbmBacktestRunner(
+                spec=self.spec,
+                artifact_store=self.artifact_store,
+            ).run(
+                LightGbmBacktestRequest(
+                    predictions_path=paths.predictions,
+                    metadata_path=paths.metadata,
+                    chart_path=cfg.BACKTEST_CHARTS_DIR / self.spec.default_chart_name,
+                )
+            )
 
     def run_backtest(self, argv: Sequence[str] | None = None) -> None:
         args = self.parse_backtest_args(argv)
@@ -94,6 +106,7 @@ class LightGbmRunner(BaseModelRunner):
         parser.add_argument("--monthly-test-months", type=int, default=1)
         parser.add_argument("--monthly-window-mode", choices=["expanding", "rolling"], default="expanding")
         parser.add_argument("--purge-gap", type=int, default=cfg.effective_max_label_horizon())
+        parser.add_argument("--skip-backtest", action="store_true", help="Only build and save OOS predictions.")
         return parser.parse_args(list(argv or []))
 
     @staticmethod
@@ -105,3 +118,23 @@ class LightGbmRunner(BaseModelRunner):
         parser.add_argument("--start-date", default=None)
         parser.add_argument("--end-date", default=None)
         return parser.parse_args(list(argv or []))
+
+    @staticmethod
+    def print_walk_forward_summary(result) -> None:
+        if result.predictions.empty:
+            print("Walk-forward summary: no predictions.")
+            return
+        period_start = result.predictions["timestamp"].min()
+        period_end = result.predictions["timestamp"].max()
+        fold_count = len(result.fold_details)
+        avg_predictions = len(result.predictions) / max(fold_count, 1)
+        print("=" * 72)
+        print("LIGHTGBM WALK-FORWARD OOS SUMMARY")
+        print(f"Split: {result.request.split_mode} | window={result.request.monthly_window_mode}")
+        print(f"Train/test months: {result.request.monthly_train_months}/{result.request.monthly_test_months}")
+        print(f"Purge gap: {result.request.purge_gap}")
+        print(f"Folds: {fold_count}")
+        print(f"Predictions: {len(result.predictions)} | avg/fold={avg_predictions:.1f}")
+        print(f"Prediction period: {period_start} -> {period_end}")
+        print(f"Features: {len(result.feature_columns)}")
+        print("=" * 72)
