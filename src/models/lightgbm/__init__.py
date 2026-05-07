@@ -1,4 +1,5 @@
 from src.models.lightgbm.artifacts import LightGbmArtifactWriter
+from src.models.lightgbm.backtest import LightGbmBacktestRequest, LightGbmBacktestRunner
 from src.models.lightgbm.dataset import LightGbmDatasetBuilder, LightGbmDatasetBundle, LightGbmDatasetRequest
 from src.models.lightgbm.runner import LightGbmRunner
 from src.models.lightgbm.spec import SPEC
@@ -14,6 +15,8 @@ __all__ = [
     "LightGbmDatasetBundle",
     "LightGbmDatasetRequest",
     "LightGbmArtifactWriter",
+    "LightGbmBacktestRequest",
+    "LightGbmBacktestRunner",
     "LightGbmRunner",
     "LightGbmTrainer",
     "LightGbmTrainRequest",

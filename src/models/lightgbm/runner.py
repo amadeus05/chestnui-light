@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 from typing import Sequence
 
 import config as cfg
 from src.models.base import BaseModelRunner
 from src.models.lightgbm.artifacts import LightGbmArtifactWriter
+from src.models.lightgbm.backtest import LightGbmBacktestRequest, LightGbmBacktestRunner
 from src.models.lightgbm.trainer import LightGbmTrainer, LightGbmTrainRequest
 from src.models.lightgbm.walk_forward import LightGbmWalkForwardRequest, LightGbmWalkForwardRunner
 
@@ -39,6 +41,21 @@ class LightGbmRunner(BaseModelRunner):
             artifact_store=self.artifact_store,
         ).save_walk_forward_result(result)
         print(f"Saved '{self.spec.key}' walk-forward artifacts to {paths.root}")
+
+    def run_backtest(self, argv: Sequence[str] | None = None) -> None:
+        args = self.parse_backtest_args(argv)
+        LightGbmBacktestRunner(
+            spec=self.spec,
+            artifact_store=self.artifact_store,
+        ).run(
+            LightGbmBacktestRequest(
+                predictions_path=args.predictions,
+                metadata_path=args.metadata,
+                chart_path=args.chart,
+                start_date=args.start_date,
+                end_date=args.end_date,
+            )
+        )
 
     def run_new_production_train(self, argv: Sequence[str] | None = None) -> None:
         args = self.parse_train_args(argv)
@@ -77,4 +94,14 @@ class LightGbmRunner(BaseModelRunner):
         parser.add_argument("--monthly-test-months", type=int, default=1)
         parser.add_argument("--monthly-window-mode", choices=["expanding", "rolling"], default="expanding")
         parser.add_argument("--purge-gap", type=int, default=cfg.effective_max_label_horizon())
+        return parser.parse_args(list(argv or []))
+
+    @staticmethod
+    def parse_backtest_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+        parser = argparse.ArgumentParser(description="Replay LightGBM OOS predictions via the new model runner.")
+        parser.add_argument("--predictions", default=None, type=Path)
+        parser.add_argument("--metadata", default=None, type=Path)
+        parser.add_argument("--chart", default=None, type=Path)
+        parser.add_argument("--start-date", default=None)
+        parser.add_argument("--end-date", default=None)
         return parser.parse_args(list(argv or []))
