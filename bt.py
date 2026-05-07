@@ -172,36 +172,6 @@ def compute_trade_outcome(position: dict, exit_price: float) -> tuple[float, flo
     return pnl_clean, trade_profit, commission
 
 
-def resolve_trade_exit(
-    direction: int,
-    entry_price: float,
-    next_open: float,
-    next_high: float,
-    next_low: float,
-    stop_pct: float,
-    take_pct: float,
-) -> tuple[float | None, str | None]:
-    if direction == 1:
-        stop_price = entry_price * (1 - stop_pct)
-        take_price = entry_price * (1 + take_pct)
-        if next_low <= stop_price:
-            exit_price = (next_open if next_open < stop_price else stop_price) * (1 - SLIPPAGE)
-            return exit_price, "SL"
-        if next_high >= take_price:
-            exit_price = take_price * (1 - SLIPPAGE)
-            return exit_price, "TP"
-    else:
-        stop_price = entry_price * (1 + stop_pct)
-        take_price = entry_price * (1 - take_pct)
-        if next_high >= stop_price:
-            exit_price = (next_open if next_open > stop_price else stop_price) * (1 + SLIPPAGE)
-            return exit_price, "SL"
-        if next_low <= take_price:
-            exit_price = take_price * (1 + SLIPPAGE)
-            return exit_price, "TP"
-    return None, None
-
-
 def compute_portfolio_equity(balance: float, positions: dict, mark_prices: dict[str, float]) -> float:
     equity = float(balance)
     for sym, position in positions.items():
@@ -736,16 +706,43 @@ def backtest(
                 continue
 
             pos = positions[sym]
-            exit_price, reason = resolve_trade_exit(
-                pos["dir"],
-                pos["entry"],
-                ctx["next_open"],
-                ctx["next_high"],
-                ctx["next_low"],
-                pos["stop_pct"],
-                pos["take_pct"],
-            )
-            if exit_price is None or reason is None:
+            entry_price = pos["entry"]
+            direction = pos["dir"]
+            stop_pct = pos["stop_pct"]
+            take_pct = pos["take_pct"]
+            next_open = ctx["next_open"]
+            next_high = ctx["next_high"]
+            next_low = ctx["next_low"]
+            exit_signal = False
+            exit_price = 0.0
+            reason = ""
+
+            if direction == 1:
+                stop_price = entry_price * (1 - stop_pct)
+                take_price = entry_price * (1 + take_pct)
+
+                if next_low <= stop_price:
+                    exit_price = (next_open if next_open < stop_price else stop_price) * (1 - SLIPPAGE)
+                    exit_signal = True
+                    reason = "SL"
+                elif next_high >= take_price:
+                    exit_price = take_price * (1 - SLIPPAGE)
+                    exit_signal = True
+                    reason = "TP"
+            else:
+                stop_price = entry_price * (1 + stop_pct)
+                take_price = entry_price * (1 - take_pct)
+
+                if next_high >= stop_price:
+                    exit_price = (next_open if next_open > stop_price else stop_price) * (1 + SLIPPAGE)
+                    exit_signal = True
+                    reason = "SL"
+                elif next_low <= take_price:
+                    exit_price = take_price * (1 + SLIPPAGE)
+                    exit_signal = True
+                    reason = "TP"
+
+            if not exit_signal:
                 continue
 
             pnl_clean, trade_profit, commission = compute_trade_outcome(pos, exit_price)
@@ -761,7 +758,7 @@ def backtest(
                 {
                     "trade_number": pos["trade_number"],
                     "sym": sym,
-                    "direction": "LONG" if pos["dir"] == 1 else "SHORT",
+                    "direction": "LONG" if direction == 1 else "SHORT",
                     "reason": reason,
                     "pnl_pct": pnl_clean,
                     "pnl_abs": trade_profit,
@@ -974,100 +971,6 @@ def backtest(
                 f"Size: {position_notional:.2f}$ "
                 f"Margin: {required_margin:.2f}$"
             )
-
-            # Keep backtest execution aligned with ETL labeling:
-            # a newly opened trade can be stopped/taken on the entry candle.
-            exit_price, reason = resolve_trade_exit(
-                candidate["signal"],
-                candidate["entry_price"],
-                ctx["next_open"],
-                ctx["next_high"],
-                ctx["next_low"],
-                candidate["stop_pct"],
-                candidate["take_pct"],
-            )
-            if exit_price is None or reason is None:
-                continue
-
-            pos = positions[candidate["sym"]]
-            if pos is None:
-                continue
-
-            pnl_clean, trade_profit, commission = compute_trade_outcome(pos, exit_price)
-            previous_loss_streak = consecutive_loss_count
-
-            used_margin -= pos["margin"]
-            if used_margin < 0:
-                used_margin = 0.0
-
-            balance += trade_profit
-            trades.append(
-                {
-                    "trade_number": pos["trade_number"],
-                    "sym": candidate["sym"],
-                    "direction": "LONG" if candidate["signal"] == 1 else "SHORT",
-                    "reason": reason,
-                    "pnl_pct": pnl_clean,
-                    "pnl_abs": trade_profit,
-                    "commission": commission,
-                    "ts": next_ts,
-                }
-            )
-            monthly_stats[month_key]["pnl_abs"] += trade_profit
-            monthly_stats[month_key]["trades"] += 1
-            if pnl_clean > 0:
-                monthly_stats[month_key]["wins"] += 1
-                consecutive_loss_count = 0
-            else:
-                monthly_stats[month_key]["losses"] += 1
-                consecutive_loss_count += 1
-
-            if reason == "SL":
-                if BACKTEST_SL_COOLDOWN_BARS > 0:
-                    stop_cooldown_until_index[candidate["sym"]] = i + BACKTEST_SL_COOLDOWN_BARS
-                daily_sl_count += 1
-
-            positions[candidate["sym"]] = None
-            open_positions_count = max(0, open_positions_count - 1)
-
-            exit_icon = "\u274C" if reason == "SL" else "\u2705" if reason == "TP" else "\u2139\uFE0F"
-            print(
-                f"[{next_ts}] \u2116 {pos['trade_number']} {exit_icon} {candidate['sym']}: {format_reason(reason)} | "
-                f"PnL: {format_pnl_pct(pnl_clean * 100)} | "
-                f"Com: {commission:.2f}$ | "
-                f"Bal: {balance:.2f}"
-            )
-            if (
-                BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES > 0
-                and BACKTEST_REDUCED_RISK_PER_TRADE < RISK_PER_TRADE
-            ):
-                if (
-                    previous_loss_streak < BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES
-                    <= consecutive_loss_count
-                ):
-                    print(
-                        f"[{next_ts}] \u26A0\uFE0F Loss streak {consecutive_loss_count}: "
-                        f"risk per trade reduced to {BACKTEST_REDUCED_RISK_PER_TRADE * 100:.2f}%"
-                    )
-                elif (
-                    pnl_clean > 0
-                    and previous_loss_streak >= BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES
-                ):
-                    print(
-                        f"[{next_ts}] \u2139\uFE0F Loss streak reset: "
-                        f"risk per trade restored to {RISK_PER_TRADE * 100:.2f}%"
-                    )
-            if (
-                reason == "SL"
-                and BACKTEST_MAX_SL_PER_DAY > 0
-                and daily_sl_count >= BACKTEST_MAX_SL_PER_DAY
-                and not daily_stop_announced
-            ):
-                daily_stop_announced = True
-                print(
-                    f"[{next_ts}] \u26D4 Daily SL limit reached ({daily_sl_count}), "
-                    "new entries are paused until next day"
-                )
 
     last_timestamp = test_timestamps[-1]
     last_mark_prices = {}
