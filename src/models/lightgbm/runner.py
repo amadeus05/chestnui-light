@@ -7,6 +7,7 @@ import config as cfg
 from src.models.base import BaseModelRunner
 from src.models.lightgbm.artifacts import LightGbmArtifactWriter
 from src.models.lightgbm.trainer import LightGbmTrainer, LightGbmTrainRequest
+from src.models.lightgbm.walk_forward import LightGbmWalkForwardRequest, LightGbmWalkForwardRunner
 
 
 class LightGbmRunner(BaseModelRunner):
@@ -17,6 +18,27 @@ class LightGbmRunner(BaseModelRunner):
 
     def run_production(self, argv: Sequence[str] | None = None) -> None:
         self.run_new_production_train(argv)
+
+    def run_walk_forward(self, argv: Sequence[str] | None = None) -> None:
+        args = self.parse_walk_forward_args(argv)
+        result = LightGbmWalkForwardRunner().run(
+            LightGbmWalkForwardRequest(
+                db_path=args.db_path,
+                symbols=args.symbols,
+                seed=args.seed,
+                n_splits=args.n_splits,
+                split_mode=args.split_mode,
+                monthly_train_months=args.monthly_train_months,
+                monthly_test_months=args.monthly_test_months,
+                monthly_window_mode=args.monthly_window_mode,
+                purge_gap=args.purge_gap,
+            )
+        )
+        paths = LightGbmArtifactWriter(
+            spec=self.spec,
+            artifact_store=self.artifact_store,
+        ).save_walk_forward_result(result)
+        print(f"Saved '{self.spec.key}' walk-forward artifacts to {paths.root}")
 
     def run_new_production_train(self, argv: Sequence[str] | None = None) -> None:
         args = self.parse_train_args(argv)
@@ -41,4 +63,18 @@ class LightGbmRunner(BaseModelRunner):
         parser.add_argument("--symbols", nargs="+", default=list(cfg.SYMBOLS), help="Symbols to load.")
         parser.add_argument("--seed", type=int, default=42, help="Random seed.")
         parser.add_argument("--n-estimators", type=int, default=800, help="Number of production estimators.")
+        return parser.parse_args(list(argv or []))
+
+    @staticmethod
+    def parse_walk_forward_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+        parser = argparse.ArgumentParser(description="Build LightGBM walk-forward OOS predictions via the new model runner.")
+        parser.add_argument("--db-path", default=cfg.DB_PATH, help="Path to SQLite database.")
+        parser.add_argument("--symbols", nargs="+", default=list(cfg.SYMBOLS), help="Symbols to load.")
+        parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+        parser.add_argument("--n-splits", type=int, default=5, help="Number of walk-forward folds.")
+        parser.add_argument("--split-mode", choices=["tscv", "monthly"], default="tscv")
+        parser.add_argument("--monthly-train-months", type=int, default=6)
+        parser.add_argument("--monthly-test-months", type=int, default=1)
+        parser.add_argument("--monthly-window-mode", choices=["expanding", "rolling"], default="expanding")
+        parser.add_argument("--purge-gap", type=int, default=cfg.effective_max_label_horizon())
         return parser.parse_args(list(argv or []))
