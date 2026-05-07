@@ -5,6 +5,7 @@ from src.models.lstm.network import LSTMClassifier
 from src.models.lstm.runner import LstmRunner
 from src.models.lstm.spec import SPEC
 from src.models.lstm.trainer import LstmTrainer, LstmTrainRequest, TrainedLstmModel
+from src.models.lstm.walk_forward import LstmWalkForwardRequest, LstmWalkForwardResult, LstmWalkForwardRunner
 
 __all__ = [
     "LSTMClassifier",
@@ -15,6 +16,9 @@ __all__ = [
     "LstmRunner",
     "LstmTrainer",
     "LstmTrainRequest",
+    "LstmWalkForwardRequest",
+    "LstmWalkForwardResult",
+    "LstmWalkForwardRunner",
     "SequenceDataset",
     "SequenceSampleIndex",
     "SequenceStandardizer",
