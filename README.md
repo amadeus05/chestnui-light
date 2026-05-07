@@ -166,3 +166,45 @@ python lstm/train_lstm_walk_forward.py --split-mode monthly --monthly-train-mont
 pip install -r requirements.txt
 ```
 !!! WARNING - train data was used to 28-03-26
+
+!!! WARNING - train data was used to 28-03-26
+
+
+python lstm/train_lstm_walk_forward.py --split-mode monthly --monthly-train-months 6 --monthly-test-months 1 --purge-gap 12 --sequence-length 24 --epochs 20 --hidden-size 32 --num-layers 1 --dropout 0.4 --lr 0.0003 --weight-decay 0.001 --batch-size 256
+
+
+Монеты, на которых эта модель обучалась, из models/lstm_target_features.json:
+
+BTC/USDT
+BNB/USDT
+ETH/USDT
+SOL/USDT
+XRP/USDT
+ADA/USDT
+AVAX/USDT
+DOT/USDT
+DOGE/USDT
+Фичи этой модели:
+
+atr_ratio_1h
+bollinger_bandwidth_atr_1h_20
+bollinger_percent_b_1h_20
+distance_to_resistance_1h
+distance_to_rolling_high_4h
+distance_to_support_1h
+ema_fast_slow
+ema_slope_4h
+funding_rate_8h
+linear_regression_slope_atr_1h_12
+premium_index_change_24h
+price_position_1h
+price_position_4h
+realized_vol_4h_returns_20
+return_4h_14
+volatility_regime_change_1h
+volatility_regime_stability
+zscore_vs_vwap_4h
+Дополнительно:
+
+sequence_length у этой модели: 24
+альтернативная свечная модель из models/lstm_candles_target.pt здесь не участвует, потому что для неё были бы нужны models/lstm_candles_walk_forward_oos_predictions.csv и models/lstm_candles_target_features.json.

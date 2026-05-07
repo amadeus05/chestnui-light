@@ -64,6 +64,8 @@ class LstmCandlesRunner(BaseModelRunner):
                     predictions_path=paths.predictions,
                     metadata_path=paths.metadata,
                     chart_path=cfg.BACKTEST_CHARTS_DIR / self.spec.default_chart_name,
+                    start_date=args.backtest_start_date,
+                    end_date=args.backtest_end_date,
                 )
             )
 
@@ -152,6 +154,8 @@ class LstmCandlesRunner(BaseModelRunner):
         parser.add_argument("--early-stopping-min-delta", type=float, default=candle_cfg.EARLY_STOPPING_MIN_DELTA)
         parser.add_argument("--max-folds", type=int, default=None)
         parser.add_argument("--skip-backtest", action="store_true", help="Only build and save OOS predictions.")
+        parser.add_argument("--backtest-start-date", default=None, help="Optional replay backtest start timestamp.")
+        parser.add_argument("--backtest-end-date", default=None, help="Optional replay backtest end timestamp.")
         return parser.parse_args(list(argv or []))
 
     @staticmethod
