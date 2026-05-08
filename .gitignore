@@ -38,6 +38,9 @@ htmlcov/
 # Local tool metadata
 .python-version
 
+# Secrets / local env (шаблон — .env.example)
+.env
+
 #model artifacts
 models/*.joblib
 models/*.json
