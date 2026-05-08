@@ -133,6 +133,7 @@ class LightGbmWalkForwardRunner:
                 seed=request.seed,
             )
 
+        predictions = self.attach_barrier_columns(predictions, candidate_frame)
         return LightGbmWalkForwardResult(
             predictions=predictions,
             fold_details=fold_details,
@@ -162,3 +163,37 @@ class LightGbmWalkForwardRunner:
             (fold_idx, unique_ts[train_ts_idx], unique_ts[test_ts_idx])
             for fold_idx, (train_ts_idx, test_ts_idx) in enumerate(splitter.split(unique_ts), start=1)
         ]
+
+    @staticmethod
+    def attach_barrier_columns(predictions: pd.DataFrame, candidate_frame: pd.DataFrame) -> pd.DataFrame:
+        required_columns = [
+            bt_walk_forward.train.TIMESTAMP_COLUMN,
+            bt_walk_forward.train.SYMBOL_COLUMN,
+            "barrier_stop_pct",
+            "barrier_take_pct",
+        ]
+        missing = [column for column in required_columns if column not in candidate_frame.columns]
+        if missing:
+            raise RuntimeError(f"Candidate frame is missing barrier columns required by trading backtest: {missing}")
+
+        barriers = candidate_frame[required_columns].copy()
+        barriers.rename(
+            columns={
+                bt_walk_forward.train.TIMESTAMP_COLUMN: "timestamp",
+                bt_walk_forward.train.SYMBOL_COLUMN: "symbol",
+            },
+            inplace=True,
+        )
+        barriers["timestamp"] = pd.to_datetime(barriers["timestamp"])
+        barriers["symbol"] = barriers["symbol"].astype(str)
+        barriers = barriers.drop_duplicates(subset=["timestamp", "symbol"], keep="last")
+
+        enriched = predictions.copy()
+        enriched["timestamp"] = pd.to_datetime(enriched["timestamp"])
+        enriched["symbol"] = enriched["symbol"].astype(str)
+        enriched = enriched.merge(barriers, on=["timestamp", "symbol"], how="left")
+
+        missing_barriers = enriched[["barrier_stop_pct", "barrier_take_pct"]].isna().any(axis=1).sum()
+        if missing_barriers:
+            raise RuntimeError(f"Failed to attach barrier columns for {int(missing_barriers)} prediction rows.")
+        return enriched
