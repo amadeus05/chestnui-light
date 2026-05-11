@@ -11,7 +11,7 @@ def _env_str(name: str, default: str | None = None) -> str | None:
 
 
 # --- BASE ---
-DB_PATH = str(_env_str("DB_PATH", "market_data.db"))
+DB_PATH = str(_env_str("DB_PATH", "./data/market_data.db"))
 SYMBOLS = [
     "BTC/USDT",
     "BNB/USDT",
