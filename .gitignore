@@ -38,9 +38,9 @@ htmlcov/
 # Local tool metadata
 .python-version
 
-#model artifacts
-models/*.joblib
-models/*.json
-models/*.csv
+# Model artifacts
+/models/*.joblib
+/models/*.json
+/models/*.csv
 
-models/
+/models/
