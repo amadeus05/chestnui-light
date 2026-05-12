@@ -21,7 +21,6 @@ from sklearn.metrics import (
 from sklearn.model_selection import TimeSeriesSplit
 
 import config as cfg
-from signal_filter import build_candidate_event_mask, resolve_event_filter_config
 from src.features import MasterFeatureBuilder
 from src.features.models.feature_spec import serialize_feature_specs
 from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
@@ -208,7 +207,6 @@ def load_training_frame(db_path, symbols):
             before_rows,
         )
 
-    rows_before_event_filter = int(len(dataset))
     rows_before_filter_by_symbol = build_symbol_row_profile(dataset)
 
     raw_labels = dataset[TARGET_COLUMN].astype(int)
@@ -217,16 +215,6 @@ def load_training_frame(db_path, symbols):
         raise ValueError(f"Unexpected labels in {TARGET_COLUMN}: {unknown_labels}")
 
     all_timestamps = np.sort(dataset[TIMESTAMP_COLUMN].dropna().unique())
-
-    event_filter_config = resolve_event_filter_config()
-    candidate_mask = build_candidate_event_mask(dataset, event_filter_config)
-    dataset.attrs["event_filter_config"] = event_filter_config
-    dataset.attrs["candidate_rows"] = int(candidate_mask.sum())
-    dataset.attrs["candidate_rows_before_filter"] = rows_before_event_filter
-    dataset.attrs["excluded_by_event_filter_rows"] = int((~candidate_mask).sum())
-    candidate_rows_by_symbol = build_symbol_row_profile(dataset.loc[candidate_mask])
-    dataset.attrs["candidate_rows_by_symbol"] = candidate_rows_by_symbol
-    dataset = dataset.loc[candidate_mask].copy()
 
     directional_mask = dataset[TARGET_COLUMN].astype(int) != 0
     excluded_non_directional_rows = int((~directional_mask).sum())
@@ -240,7 +228,6 @@ def load_training_frame(db_path, symbols):
     dataset.attrs["all_timestamps_profile"] = build_timestamp_profile(all_timestamps)
     dataset.attrs["required_non_null_rows"] = required_non_null_rows
     dataset.attrs["rows_before_filter_by_symbol"] = rows_before_filter_by_symbol
-    dataset.attrs["candidate_rows_by_symbol"] = candidate_rows_by_symbol
     dataset.attrs["directional_rows_by_symbol"] = directional_rows_by_symbol
     dataset.attrs["feature_table_row_counts_by_symbol"] = feature_table_row_counts_by_symbol
     return dataset
@@ -1142,9 +1129,6 @@ def build_dataset_diagnostics(dataset, fold_details):
     if not all_timestamp_profile:
         all_timestamp_profile = build_timestamp_profile(dataset.attrs.get("all_timestamps", []))
 
-    candidate_rows_before_filter = int(dataset.attrs.get("candidate_rows_before_filter", len(dataset)))
-    candidate_rows_after_filter = int(dataset.attrs.get("candidate_rows", len(dataset)))
-    excluded_by_event_filter_rows = int(dataset.attrs.get("excluded_by_event_filter_rows", 0))
     excluded_non_directional_rows = int(dataset.attrs.get("excluded_non_directional_rows", 0))
 
     return {
@@ -1152,16 +1136,12 @@ def build_dataset_diagnostics(dataset, fold_details):
         "first_all_timestamp": all_timestamp_profile["first"],
         "last_all_timestamp": all_timestamp_profile["last"],
         "feature_rows_after_required_columns": int(dataset.attrs.get("required_non_null_rows", 0)),
-        "candidate_rows_before_filter": candidate_rows_before_filter,
-        "candidate_rows_after_filter": candidate_rows_after_filter,
-        "excluded_by_event_filter_rows": excluded_by_event_filter_rows,
         "directional_rows_after_filter": int(len(dataset)),
         "excluded_non_directional_rows": excluded_non_directional_rows,
         "dataset_period_after_filters": build_period_payload(dataset),
         "fold_boundary_timestamps": build_fold_boundary_summary(fold_details),
         "feature_table_row_counts_by_symbol": dataset.attrs.get("feature_table_row_counts_by_symbol", {}),
         "rows_before_filter_by_symbol": dataset.attrs.get("rows_before_filter_by_symbol", {}),
-        "candidate_rows_by_symbol": dataset.attrs.get("candidate_rows_by_symbol", {}),
         "directional_rows_by_symbol": dataset.attrs.get("directional_rows_by_symbol", {}),
     }
 
@@ -1475,7 +1455,6 @@ def save_directional_artifacts(
         "wfv_monthly_train_months": args.monthly_train_months,
         "wfv_monthly_test_months": args.monthly_test_months,
         "wfv_monthly_window_mode": args.monthly_window_mode,
-        "event_filter": metrics.get("event_filter"),
         "feature_clip": {
             "enabled": bool(getattr(cfg, "ENABLE_FEATURE_CLIP", False)),
             "lower_q": float(getattr(cfg, "FEATURE_CLIP_LOWER_Q", 0.01)),
@@ -1564,22 +1543,16 @@ def main():
             experiment_snapshot["training"]["feature_clip_upper_q"] * 100,
         )
         logger.info(
-            "Candidate universe: kept %s rows after deterministic event filter, excluded %s rows",
-            int(dataset.attrs.get("candidate_rows", len(dataset))),
-            int(dataset.attrs.get("excluded_by_event_filter_rows", 0)),
-        )
-        logger.info(
-            "Directional baseline inside candidate universe: excluded %s non-directional rows with Target=0 before split",
+            "Directional dataset: excluded %s non-directional rows with Target=0 before split",
             int(dataset.attrs.get("excluded_non_directional_rows", 0)),
         )
         timeline_profile = dataset.attrs.get("all_timestamps_profile", {})
         logger.info(
-            "Dataset timeline | all_timestamps=%s [%s -> %s] | rows before filter=%s | candidates=%s | directional=%s",
+            "Dataset timeline | all_timestamps=%s [%s -> %s] | rows before label filter=%s | directional=%s",
             int(timeline_profile.get("count", 0)),
             timeline_profile.get("first"),
             timeline_profile.get("last"),
-            int(dataset.attrs.get("candidate_rows_before_filter", len(dataset))),
-            int(dataset.attrs.get("candidate_rows", len(dataset))),
+            int(dataset.attrs.get("required_non_null_rows", len(dataset))),
             len(dataset),
         )
         feature_rows_by_symbol = dataset.attrs.get("feature_table_row_counts_by_symbol", {})
@@ -1643,18 +1616,13 @@ def main():
             "monthly_test_months": args.monthly_test_months,
             "monthly_window_mode": args.monthly_window_mode,
             "excluded_non_directional_rows": int(dataset.attrs.get("excluded_non_directional_rows", 0)),
-            "candidate_rows": int(dataset.attrs.get("candidate_rows", len(dataset))),
-            "excluded_by_event_filter_rows": int(dataset.attrs.get("excluded_by_event_filter_rows", 0)),
             "all_timestamps_count": dataset_diagnostics["all_timestamps_count"],
             "first_all_timestamp": dataset_diagnostics["first_all_timestamp"],
             "last_all_timestamp": dataset_diagnostics["last_all_timestamp"],
-            "candidate_rows_before_filter": dataset_diagnostics["candidate_rows_before_filter"],
-            "candidate_rows_after_filter": dataset_diagnostics["candidate_rows_after_filter"],
             "directional_rows_after_filter": dataset_diagnostics["directional_rows_after_filter"],
             "fold_boundary_timestamps": dataset_diagnostics["fold_boundary_timestamps"],
             "feature_table_row_counts_by_symbol": dataset_diagnostics["feature_table_row_counts_by_symbol"],
             "dataset_diagnostics": dataset_diagnostics,
-            "event_filter": dataset.attrs.get("event_filter_config"),
             "experiment": experiment_snapshot,
             "dataset_period": build_period_payload(dataset),
         }

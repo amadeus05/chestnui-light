@@ -275,49 +275,9 @@ BARRIER_TP_TO_SL_RATIO = 2.0
 BARRIER_MIN_PCT = 0.0075
 BARRIER_MAX_PCT = 0.06
 
-# --- EVENT FILTER (binary side model candidate universe) ---
-ENABLE_EVENT_FILTER = False  # Временно отключаем для теста, потом включим с новыми порогами
 
-# Базовые пороги (используются при нормальном режиме)
-EVENT_FILTER_MIN_ABS_EMA_FAST_SLOW = 0.004  # Снижено для большего coverage
-EVENT_FILTER_MIN_ADX_HTF = 20.0  # Снижено для большего coverage
-EVENT_FILTER_MIN_REALIZED_VOL_MAIN = 0.005  # Снижен минимум
-EVENT_FILTER_MAX_REALIZED_VOL_MAIN = 0.040  # Увеличен максимум
 
-# ═══════════════════════════════════════════════════════════════════
-# ADAPTIVE EVENT FILTER - 2026-04-05
-# Автоматически подстраивает пороги под текущий режим волатильности
-# ═══════════════════════════════════════════════════════════════════
-ENABLE_ADAPTIVE_EVENT_FILTER = False  # Отключаем для теста
 
-# Пороги для разных режимов волатильности
-ADAPTIVE_FILTER_LOW_VOL = {
-    "min_abs_ema_fast_slow": 0.003,  # Меньше тренд нужен при низкой воле
-    "min_adx_4h": 18.0,
-    "min_realized_vol_1h": 0.004,
-    "max_realized_vol_1h": 0.015,
-}
-
-ADAPTIVE_FILTER_NORMAL_VOL = {
-    "min_abs_ema_fast_slow": 0.004,
-    "min_adx_4h": 20.0,
-    "min_realized_vol_1h": 0.005,
-    "max_realized_vol_1h": 0.040,
-}
-
-ADAPTIVE_FILTER_HIGH_VOL = {
-    "min_abs_ema_fast_slow": 0.006,  # Больше тренд нужен при высокой воле
-    "min_adx_4h": 24.0,
-    "min_realized_vol_1h": 0.020,
-    "max_realized_vol_1h": 0.080,
-}
-
-# Параметры определения режима (персентили волатильности)
-ADAPTIVE_VOL_PERCENTILE_LOW = 0.25   # 25-й персентиль = low vol
-ADAPTIVE_VOL_PERCENTILE_HIGH = 0.75  # 75-й персентиль = high vol
-ADAPTIVE_VOL_LOOKBACK_BARS = 96       # 4 дня для расчета персентилей
-
-# ═══════════════════════════════════════════════════════════════════
 # TEMPORAL SAMPLE WEIGHTING - 2026-04-05
 # Усиленное взвешивание для адаптации к смене режима
 # ═══════════════════════════════════════════════════════════════════

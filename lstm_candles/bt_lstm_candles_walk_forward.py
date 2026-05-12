@@ -92,7 +92,6 @@ def load_features_meta(path: str, predictions: pd.DataFrame) -> dict:
             "start": str(pd.to_datetime(predictions["timestamp"]).min()),
             "end": str(pd.to_datetime(predictions["timestamp"]).max()),
         },
-        "event_filter": train.resolve_event_filter_config(),
         "feature_clip": {
             "enabled": False,
             "bounds": {},

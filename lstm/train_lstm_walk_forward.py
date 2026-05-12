@@ -230,7 +230,6 @@ def train_fold_model(
 
 
 def build_features_meta(predictions: pd.DataFrame, feature_columns: list[str], symbols: list[str], args) -> dict:
-    event_filter_config = train.resolve_event_filter_config() if hasattr(train, "resolve_event_filter_config") else {}
     feature_formulas_path = cfg.MODELS_DIR / f"{args.model_name}_feature_formulas.json"
     return {
         "feature_columns": feature_columns,
@@ -249,7 +248,6 @@ def build_features_meta(predictions: pd.DataFrame, feature_columns: list[str], s
         "wfv_monthly_train_months": int(args.monthly_train_months),
         "wfv_monthly_test_months": int(args.monthly_test_months),
         "wfv_monthly_window_mode": str(args.monthly_window_mode),
-        "event_filter": event_filter_config,
         "feature_clip": {
             "enabled": False,
             "bounds": {},

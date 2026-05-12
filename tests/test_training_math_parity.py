@@ -8,7 +8,6 @@ import bt
 import bt_walk_forward
 import config as cfg
 import train
-from signal_filter import build_candidate_event_mask, resolve_event_filter_config
 
 
 def normalize_splits(splits):
@@ -181,13 +180,10 @@ def test_lightgbm_walk_forward_feature_meta_matches_replay_contract():
         monthly_test_months=1,
         monthly_window_mode="expanding",
     )
-    event_filter = resolve_event_filter_config({"enabled": False})
-
     meta = bt_walk_forward.build_features_meta(
         predictions=predictions,
         feature_columns=["feature_a", "feature_b"],
         symbols=["BTC/USDT", "ETH/USDT"],
-        event_filter_config=event_filter,
         args=args,
     )
 
@@ -196,7 +192,6 @@ def test_lightgbm_walk_forward_feature_meta_matches_replay_contract():
     assert meta["inverse_label_mapping"] == {"0": -1, "1": 1}
     assert meta["train_period"] == {"start": "2025-01-01 00:00:00", "end": "2025-01-02 00:00:00"}
     assert meta["wfv_split_mode"] == "monthly"
-    assert meta["event_filter"] == event_filter
 
 
 def test_prediction_lookup_deduplicates_by_last_symbol_timestamp():
@@ -212,27 +207,3 @@ def test_prediction_lookup_deduplicates_by_last_symbol_timestamp():
     lookup = bt.build_prediction_lookup(predictions)
 
     assert lookup == {(pd.Timestamp("2025-01-01 00:00:00"), "BTC/USDT"): (0.4, 0.6)}
-
-
-def test_event_filter_mask_uses_configured_thresholds(monkeypatch):
-    monkeypatch.setattr(cfg, "ENABLE_EVENT_FILTER", True)
-    monkeypatch.setattr(cfg, "ENABLE_ADAPTIVE_EVENT_FILTER", False)
-    config = resolve_event_filter_config(
-        {
-            "min_abs_ema_fast_slow": 0.01,
-            "min_adx_4h": 20.0,
-            "min_realized_vol_1h": 0.005,
-            "max_realized_vol_1h": 0.050,
-        }
-    )
-    frame = pd.DataFrame(
-        {
-            "ema_fast_slow": [0.02, 0.005, -0.03, 0.02],
-            "adx_4h": [25.0, 25.0, 19.0, 25.0],
-            "realized_vol_1h": [0.010, 0.010, 0.010, 0.100],
-        }
-    )
-
-    mask = build_candidate_event_mask(frame, config)
-
-    assert mask.tolist() == [True, False, False, False]

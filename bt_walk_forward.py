@@ -10,7 +10,6 @@ from sklearn.model_selection import TimeSeriesSplit
 import bt
 import config as cfg
 import train
-from signal_filter import build_candidate_event_mask, resolve_event_filter_config
 from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
 
 
@@ -88,9 +87,7 @@ def load_candidate_and_training_frames(db_path: str, symbols: list[str]):
     frame.replace([np.inf, -np.inf], np.nan, inplace=True)
     frame = apply_end_date_cutoff(frame)
 
-    event_filter_config = resolve_event_filter_config()
-    candidate_mask = build_candidate_event_mask(frame, event_filter_config)
-    candidate_frame = frame.loc[candidate_mask].copy()
+    candidate_frame = frame.copy()
 
     directional_frame = candidate_frame.loc[candidate_frame[train.TARGET_COLUMN].astype(int) != 0].copy()
     directional_frame[train.TARGET_COLUMN] = directional_frame[train.TARGET_COLUMN].astype(int).map(train.LABEL_TO_CLASS)
@@ -106,7 +103,7 @@ def load_candidate_and_training_frames(db_path: str, symbols: list[str]):
     )
 
     feature_columns = train.select_feature_columns(directional_frame)
-    return frame, candidate_frame, directional_frame, feature_columns, event_filter_config
+    return frame, candidate_frame, directional_frame, feature_columns
 
 
 def fit_fold_model(train_df: pd.DataFrame, feature_columns: list[str], seed: int):
@@ -343,7 +340,6 @@ def build_features_meta(
     predictions: pd.DataFrame,
     feature_columns: list[str],
     symbols: list[str],
-    event_filter_config: dict,
     args,
 ):
     return {
@@ -363,7 +359,6 @@ def build_features_meta(
         "wfv_monthly_train_months": int(args.monthly_train_months),
         "wfv_monthly_test_months": int(args.monthly_test_months),
         "wfv_monthly_window_mode": str(args.monthly_window_mode),
-        "event_filter": event_filter_config,
         "feature_clip": {
             "enabled": bool(getattr(cfg, "ENABLE_FEATURE_CLIP", False)),
             "lower_q": float(getattr(cfg, "FEATURE_CLIP_LOWER_Q", 0.01)),
@@ -403,7 +398,7 @@ def save_walk_forward_payload(predictions: pd.DataFrame, fold_details: list[dict
 
 def main():
     args = parse_args()
-    full_frame, candidate_frame, directional_frame, feature_columns, event_filter_config = load_candidate_and_training_frames(
+    full_frame, candidate_frame, directional_frame, feature_columns = load_candidate_and_training_frames(
         args.db_path,
         args.symbols,
     )
@@ -440,7 +435,6 @@ def main():
         predictions=predictions,
         feature_columns=feature_columns,
         symbols=args.symbols,
-        event_filter_config=event_filter_config,
         args=args,
     )
     chart_path = cfg.BACKTEST_CHARTS_DIR / "equity_curve_walk_forward.png"

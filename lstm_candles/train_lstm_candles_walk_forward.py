@@ -202,7 +202,6 @@ def build_features_meta(predictions: pd.DataFrame, feature_columns: list[str], s
         "wfv_monthly_train_months": int(args.monthly_train_months),
         "wfv_monthly_test_months": int(args.monthly_test_months),
         "wfv_monthly_window_mode": str(args.monthly_window_mode),
-        "event_filter": train.resolve_event_filter_config() if hasattr(train, "resolve_event_filter_config") else {},
         "feature_clip": {
             "enabled": False,
             "bounds": {},
@@ -424,4 +423,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
