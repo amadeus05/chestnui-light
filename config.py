@@ -58,7 +58,6 @@ BINANCE_RETRY_COUNT = 5
 BINANCE_RETRY_SLEEP = 0.25
 BINANCE_REQUEST_WEIGHT_LIMIT_PER_MINUTE = 2400
 BACKTEST_INITIAL_BALANCE = 100
-ENABLE_PROD_TRAINING = False
 
 ENABLE_FEATURE_CLIP = True
 FEATURE_CLIP_LOWER_Q = 0.01
@@ -291,7 +290,6 @@ ALLOW_REBUILD_RAW_FROM_FEATURE_ONLY = False
 
 # --- TRADING ---
 TAKER_COM = 0.0004
-MAKER_COM = 0.0002
 SLIPPAGE = 0.0003
 LEVERAGE = 1
 RISK_PER_TRADE = 0.01
@@ -328,24 +326,6 @@ SUPABASE_URL = _env_str("SUPABASE_URL", "https://jjuatlyxubeglxkrpaji.supabase.c
 # SUPABASE_KEY должен быть задан в переменных окружения:
 # PowerShell: $env:SUPABASE_KEY="your-anon-key-or-service-key"
 SUPABASE_KEY = _env_str("SUPABASE_KEY") or _env_str("SUPABASE_SERVICE_KEY")
-
-PAPER_CLOCK_SYMBOL = "BTC/USDT"
-PAPER_MODEL_NAME = "lstm_target_production"
-PAPER_MODEL_TYPE = str(_env_str("PAPER_MODEL_TYPE", "lstm")).lower()  # auto | lightgbm | lstm
-PAPER_LSTM_MODEL_NAME = "lstm_target_production"
-PAPER_INITIAL_BALANCE = BACKTEST_INITIAL_BALANCE
-PAPER_MAIN_BARS = 3000
-PAPER_HTF_BARS = 900
-PAPER_MIN_MAIN_ROWS = 400
-PAPER_MIN_HTF_ROWS = 120
-PAPER_DAEMON_POLL_SEC = 45.0
-
-# --- TELEGRAM NOTIFICATIONS (paper.py) ---
-TELEGRAM_NOTIFICATIONS_ENABLED = str(_env_str("TELEGRAM_NOTIFICATIONS_ENABLED", "false")).lower() in {"1", "true", "yes", "on"}
-TELEGRAM_BOT_TOKEN = _env_str("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = _env_str("TELEGRAM_CHAT_ID")
-TELEGRAM_NOTIFY_OPEN = str(_env_str("TELEGRAM_NOTIFY_OPEN", "true")).lower() in {"1", "true", "yes", "on"}
-TELEGRAM_NOTIFY_CLOSE = str(_env_str("TELEGRAM_NOTIFY_CLOSE", "true")).lower() in {"1", "true", "yes", "on"}
 
 # Regime-aware sample-weight tuning overrides.
 REGIME_WEIGHT_STRENGTH = 0.18
