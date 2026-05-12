@@ -4,6 +4,7 @@ import pytest
 
 import config as cfg
 import etl
+from src.features import indicators
 
 
 def make_label_frame(rows: int = 8) -> pd.DataFrame:
@@ -24,7 +25,13 @@ def make_label_frame(rows: int = 8) -> pd.DataFrame:
 
 
 @pytest.fixture()
+def fallback_atr(monkeypatch):
+    monkeypatch.setattr(indicators, "_load_pandas_ta", lambda: None)
+
+
+@pytest.fixture()
 def fixed_labeling_config(monkeypatch):
+    monkeypatch.setattr(indicators, "_load_pandas_ta", lambda: None)
     monkeypatch.setattr(cfg, "HORIZON", 3)
     monkeypatch.setattr(cfg, "ENABLE_ADAPTIVE_HORIZON", False)
     monkeypatch.setattr(cfg, "USE_DYNAMIC_BARRIERS", True)
@@ -102,7 +109,7 @@ def test_attach_barrier_columns_dynamic_mode_clips_and_derives_take_pct(fixed_la
     )
 
 
-def test_attach_barrier_columns_static_mode_uses_legacy_config(monkeypatch):
+def test_attach_barrier_columns_static_mode_uses_legacy_config(monkeypatch, fallback_atr):
     monkeypatch.setattr(cfg, "USE_DYNAMIC_BARRIERS", False)
     monkeypatch.setattr(cfg, "SL_PCT", 0.012)
     monkeypatch.setattr(cfg, "TP_PCT", 0.034)
@@ -114,7 +121,7 @@ def test_attach_barrier_columns_static_mode_uses_legacy_config(monkeypatch):
     assert result["barrier_take_pct"].tolist() == [0.034] * 5
 
 
-def test_attach_barrier_columns_dynamic_mode_requires_realized_vol(monkeypatch):
+def test_attach_barrier_columns_dynamic_mode_requires_realized_vol(monkeypatch, fallback_atr):
     monkeypatch.setattr(cfg, "USE_DYNAMIC_BARRIERS", True)
     frame = make_label_frame(rows=5).drop(
         columns=["realized_vol_1h", "barrier_stop_pct", "barrier_take_pct"]
