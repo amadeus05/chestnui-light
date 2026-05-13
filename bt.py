@@ -201,6 +201,19 @@ def resolve_trade_exit(
     return None, None
 
 
+def resolve_entry_candidate_exit(candidate: dict, market_batch: dict) -> tuple[float | None, str | None]:
+    candidate_ctx = market_batch[candidate["sym"]]
+    return resolve_trade_exit(
+        candidate["signal"],
+        candidate["entry_price"],
+        candidate_ctx["next_open"],
+        candidate_ctx["next_high"],
+        candidate_ctx["next_low"],
+        candidate["stop_pct"],
+        candidate["take_pct"],
+    )
+
+
 def compute_portfolio_equity(balance: float, positions: dict, mark_prices: dict[str, float]) -> float:
     equity = float(balance)
     for sym, position in positions.items():
@@ -952,15 +965,7 @@ def backtest(
 
             # Keep backtest execution aligned with ETL labeling:
             # a newly opened trade can be stopped/taken on the entry candle.
-            exit_price, reason = resolve_trade_exit(
-                candidate["signal"],
-                candidate["entry_price"],
-                ctx["next_open"],
-                ctx["next_high"],
-                ctx["next_low"],
-                candidate["stop_pct"],
-                candidate["take_pct"],
-            )
+            exit_price, reason = resolve_entry_candidate_exit(candidate, market_batch)
             if exit_price is None or reason is None:
                 continue
 

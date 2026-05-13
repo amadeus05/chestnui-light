@@ -86,6 +86,34 @@ def test_resolve_trade_exit_checks_stop_before_take_when_both_hit(execution_conf
     assert exit_price == pytest.approx(98.0 * 0.999)
 
 
+def test_entry_candidate_exit_uses_candidate_symbol_market_snapshot(execution_config):
+    candidate = {
+        "sym": "BTC/USDT",
+        "signal": 1,
+        "entry_price": 30_000.0,
+        "stop_pct": 0.01,
+        "take_pct": 0.02,
+    }
+    market_batch = {
+        "SOL/USDT": {
+            "next_open": 25.0,
+            "next_high": 26.0,
+            "next_low": 24.0,
+        },
+        "BTC/USDT": {
+            "next_open": 30_000.0,
+            "next_high": 30_100.0,
+            "next_low": 29_500.0,
+        },
+    }
+
+    exit_price, reason = bt.resolve_entry_candidate_exit(candidate, market_batch)
+
+    assert reason == "SL"
+    assert exit_price == pytest.approx(29_700.0 * 0.999)
+    assert bt.compute_net_pnl_pct(1, candidate["entry_price"], exit_price) > -0.02
+
+
 @pytest.mark.parametrize(
     ("direction", "entry", "exit_price", "expected_raw"),
     [
