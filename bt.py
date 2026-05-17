@@ -563,7 +563,12 @@ def backtest(
         print("Error: no raw data for backtest.")
         return
 
-    print("Feature mode: precomputed DB features (ETL)")
+    if using_external_predictions:
+        print("Feature mode: external predictions + DB barriers")
+        required_feature_columns = ["barrier_stop_pct", "barrier_take_pct"]
+    else:
+        print("Feature mode: precomputed DB features (ETL)")
+        required_feature_columns = feature_names + ["barrier_stop_pct", "barrier_take_pct"]
 
     all_features = {}
     all_main_index = {}
@@ -571,38 +576,39 @@ def backtest(
         feat_df = load_precomputed_features(
             sym,
             symbol_categories=symbol_categories,
-            required_columns=feature_names + ["barrier_stop_pct", "barrier_take_pct"],
+            required_columns=required_feature_columns,
         )
         if feat_df.empty:
-            print(f"Warning: {sym} has no precomputed features table.")
+            print(f"Warning: {sym} has no required precomputed feature/barrier rows.")
             continue
         all_features[sym] = feat_df
 
     all_raw = {sym: payload for sym, payload in all_raw.items() if sym in all_features}
     if not all_raw:
-        print("Error: no symbols with precomputed features available.")
+        print("Error: no symbols with required precomputed feature/barrier rows available.")
         return
 
     for sym, payload in all_raw.items():
         all_main_index[sym] = build_timestamp_index(payload["main"])
 
     all_features_prepared = {}
-    for sym, feat_df in all_features.items():
-        prepared = prepare_precomputed_feature_store(
-            feat_df,
-            feature_names,
-            symbol_categories=symbol_categories,
-            clip_bounds=clip_bounds,
-        )
-        if prepared.empty:
-            print(f"Warning: {sym} has no usable precomputed feature rows after preparation.")
-            continue
-        all_features_prepared[sym] = prepared
+    if not using_external_predictions:
+        for sym, feat_df in all_features.items():
+            prepared = prepare_precomputed_feature_store(
+                feat_df,
+                feature_names,
+                symbol_categories=symbol_categories,
+                clip_bounds=clip_bounds,
+            )
+            if prepared.empty:
+                print(f"Warning: {sym} has no usable precomputed feature rows after preparation.")
+                continue
+            all_features_prepared[sym] = prepared
 
-    all_raw = {sym: payload for sym, payload in all_raw.items() if sym in all_features_prepared}
-    if not all_raw:
-        print("Error: no symbols with prepared precomputed features available.")
-        return
+        all_raw = {sym: payload for sym, payload in all_raw.items() if sym in all_features_prepared}
+        if not all_raw:
+            print("Error: no symbols with prepared precomputed features available.")
+            return
 
     all_raw, dropped_symbols = filter_symbols_with_period_overlap(all_raw, test_start_ts, test_end_ts, min_candles=2)
     if dropped_symbols:
@@ -829,38 +835,52 @@ def backtest(
 
         snapshot_balance = balance
         entry_candidates = []
-        candidate_symbols = [
-            sym for sym in market_batch
-            if (
-                positions[sym] is None
-                and sym in all_features_prepared
-                and i >= stop_cooldown_until_index.get(sym, -1)
+        if using_external_predictions:
+            candidate_symbols = [
+                sym for sym in market_batch
+                if (
+                    positions[sym] is None
+                    and sym in all_features
+                    and i >= stop_cooldown_until_index.get(sym, -1)
+                )
+            ]
+            batch_symbols = []
+            batch_proba = []
+            for sym in candidate_symbols:
+                proba = prediction_lookup.get((current_ts, sym))
+                if proba is None:
+                    continue
+                batch_symbols.append(sym)
+                batch_proba.append(proba)
+            has_signal_batch = bool(batch_symbols)
+        else:
+            candidate_symbols = [
+                sym for sym in market_batch
+                if (
+                    positions[sym] is None
+                    and sym in all_features_prepared
+                    and i >= stop_cooldown_until_index.get(sym, -1)
+                )
+            ]
+            batch_symbols, batch_features = get_feature_batch_precomputed(
+                all_features_prepared,
+                candidate_symbols,
+                current_ts,
             )
-        ]
-        batch_symbols, batch_features = get_feature_batch_precomputed(
-            all_features_prepared,
-            candidate_symbols,
-            current_ts,
-        )
-        if not batch_features.empty:
-            if using_external_predictions:
-                batch_proba = []
-                resolved_symbols = []
-                for sym in batch_symbols:
-                    proba = prediction_lookup.get((current_ts, sym))
-                    if proba is None:
-                        continue
-                    batch_proba.append(proba)
-                    resolved_symbols.append(sym)
-                batch_symbols = resolved_symbols
-            else:
+            has_signal_batch = not batch_features.empty
+            if has_signal_batch:
                 batch_proba = model.predict_proba(batch_features[feature_names])
+
+        if has_signal_batch:
             for sym, proba in zip(batch_symbols, batch_proba):
                 ctx = market_batch[sym]
+                required_row_columns = ["barrier_stop_pct", "barrier_take_pct"]
+                if not using_external_predictions:
+                    required_row_columns = feature_names + required_row_columns
                 feature_row = get_feature_row_precomputed(
                     all_features[sym],
                     current_ts,
-                    feature_names + ["barrier_stop_pct", "barrier_take_pct"],
+                    required_row_columns,
                 )
                 stop_pct, take_pct = get_barrier_pcts(feature_row)
                 if stop_pct is None or take_pct is None:
