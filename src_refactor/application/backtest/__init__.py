@@ -4,6 +4,10 @@ from src_refactor.application.backtest.metrics import (
     BacktestMetricsCalculator,
     BacktestSummaryMetrics,
 )
+from src_refactor.application.backtest.report import (
+    BacktestEquityCurveRenderer,
+    BacktestTextReportRenderer,
+)
 from src_refactor.application.backtest.runner import (
     BacktestRunner,
     BacktestRunResult,
@@ -15,6 +19,8 @@ __all__ = [
     "BacktestMetrics",
     "BacktestMetricsCalculator",
     "BacktestSummaryMetrics",
+    "BacktestEquityCurveRenderer",
+    "BacktestTextReportRenderer",
     "BacktestRunner",
     "BacktestRunResult",
     "build_oos_backtest_runner",
