@@ -1,7 +1,15 @@
 import pandas as pd
 
 from src_refactor.core.contracts.broker_gateway import BrokerGateway, BrokerOrderResult
-from src_refactor.core.types import AccountSnapshot, Fill, MarketExecutionSnapshot, OrderRequest, PositionSnapshot, Prediction
+from src_refactor.core.types import (
+    AccountSnapshot,
+    Fill,
+    MarketExecutionSnapshot,
+    OrderRequest,
+    OrderSnapshot,
+    PositionSnapshot,
+    Prediction,
+)
 from src_refactor.domain.portfolio.portfolio_manager import PortfolioManager
 from src_refactor.domain.risk.risk_manager import RiskManager
 from src_refactor.domain.signals import SignalBatchProcessor
@@ -36,6 +44,17 @@ def _candidate(symbol: str = "BTC/USDT"):
     return SignalBatchProcessor().build_candidates([prediction])[0]
 
 
+def _order(symbol: str = "BTC/USDT") -> OrderRequest:
+    return OrderRequest(
+        order_id=f"{symbol}:order",
+        symbol=symbol,
+        side="buy",
+        order_type="market",
+        quantity=1.0,
+        created_at=pd.Timestamp("2025-01-01 00:00:00"),
+    )
+
+
 class StaticAccountBroker(BrokerGateway):
     def __init__(self, account: AccountSnapshot) -> None:
         self.account = account
@@ -43,7 +62,7 @@ class StaticAccountBroker(BrokerGateway):
 
     def place_order(self, order: OrderRequest) -> BrokerOrderResult:
         self.orders.append(order)
-        return BrokerOrderResult(accepted=True, order=order)
+        return BrokerOrderResult(accepted=True, order=OrderSnapshot.from_request(order))
 
     def cancel_order(self, order_id: str) -> BrokerOrderResult:
         return BrokerOrderResult(cancelled=False)
@@ -79,6 +98,40 @@ def test_exchange_simulator_account_snapshot_tracks_portfolio_provider():
     assert account.used_margin == 50.0
     assert account.equity > 250.0
     assert set(account.positions) == {"BTC/USDT"}
+
+
+def test_exchange_simulator_exposes_order_snapshots_not_strategy_requests():
+    broker = ExchangeSimulator()
+
+    result = broker.place_order(_order())
+    account = broker.get_account_snapshot()
+
+    assert result.accepted
+    assert isinstance(result.order, OrderSnapshot)
+    assert isinstance(account.open_orders["BTC/USDT:order"], OrderSnapshot)
+    assert account.open_orders["BTC/USDT:order"].status == "open"
+
+
+def test_exchange_simulator_returns_terminal_order_snapshots():
+    broker = ExchangeSimulator()
+    broker.place_order(_order())
+
+    cancelled = broker.cancel_order("BTC/USDT:order")
+    rejected = broker.place_order(
+        OrderRequest(
+            order_id="BTC/USDT:unsupported",
+            symbol="BTC/USDT",
+            side="buy",
+            order_type="limit",  # type: ignore[arg-type]
+            quantity=1.0,
+        )
+    )
+
+    assert cancelled.cancelled
+    assert cancelled.order is not None
+    assert cancelled.order.status == "cancelled"
+    assert rejected.order is not None
+    assert rejected.order.status == "rejected"
 
 
 def test_trading_engine_uses_broker_account_for_sizing():

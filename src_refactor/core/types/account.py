@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from src_refactor.core.types.orders import OrderRequest
+from src_refactor.core.types.orders import OrderSnapshot
 
 
 @dataclass(slots=True)
@@ -24,4 +24,4 @@ class AccountSnapshot:
     equity: float
     used_margin: float
     positions: dict[str, PositionSnapshot] = field(default_factory=dict)
-    open_orders: dict[str, OrderRequest] = field(default_factory=dict)
+    open_orders: dict[str, OrderSnapshot] = field(default_factory=dict)

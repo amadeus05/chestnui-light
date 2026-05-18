@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src_refactor.core.types import Fill, MarketExecutionSnapshot, OrderRequest, PositionSnapshot
+from src_refactor.core.types import Fill, MarketExecutionSnapshot, OrderRequest, OrderSnapshot, PositionSnapshot
 from src_refactor.domain.execution import ExecutionPricingConfig, apply_entry_slippage, resolve_trade_exit
 
 
@@ -13,7 +13,7 @@ class CandleFillModel:
     def entry_price(self, direction: int, snapshot: MarketExecutionSnapshot) -> float:
         return apply_entry_slippage(direction, snapshot.next_open, self.pricing)
 
-    def fill_market_order(self, order: OrderRequest, snapshot: MarketExecutionSnapshot) -> Fill:
+    def fill_market_order(self, order: OrderRequest | OrderSnapshot, snapshot: MarketExecutionSnapshot) -> Fill:
         price = self.entry_price(order.direction, snapshot)
         fee = abs(order.quantity * price) * self.pricing.taker_fee
         return Fill(

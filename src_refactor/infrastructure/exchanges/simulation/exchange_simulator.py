@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from src_refactor.core.contracts.broker_gateway import BrokerGateway, BrokerOrderResult
-from src_refactor.core.types import AccountSnapshot, Fill, MarketExecutionSnapshot, OrderRequest, PositionSnapshot
+from src_refactor.core.types import AccountSnapshot, Fill, MarketExecutionSnapshot, OrderRequest, OrderSnapshot, PositionSnapshot
 from src_refactor.domain.execution import ExecutionPricingConfig
 from src_refactor.infrastructure.exchanges.simulation.fill_model import CandleFillModel
 
@@ -14,7 +14,7 @@ class ExchangeSimulator:
     """Shared simulated exchange for backtest and paper modes."""
 
     pricing: ExecutionPricingConfig = field(default_factory=ExecutionPricingConfig)
-    open_orders: dict[str, OrderRequest] = field(init=False, default_factory=dict)
+    open_orders: dict[str, OrderSnapshot] = field(init=False, default_factory=dict)
     fills: list[Fill] = field(init=False, default_factory=list)
     fill_model: CandleFillModel = field(init=False)
     account_snapshot_provider: Callable[[], AccountSnapshot] | None = field(default=None, repr=False)
@@ -24,10 +24,11 @@ class ExchangeSimulator:
 
     def place_order(self, order: OrderRequest) -> BrokerOrderResult:
         if order.order_type != "market":
-            rejected = self._replace_order_status(order, "rejected")
+            rejected = OrderSnapshot.from_request(order, status="rejected")
             return BrokerOrderResult(accepted=False, order=rejected, reason="Only market orders are supported.")
-        self.open_orders[order.order_id] = order
-        return BrokerOrderResult(accepted=True, order=order)
+        snapshot = OrderSnapshot.from_request(order, status="open")
+        self.open_orders[order.order_id] = snapshot
+        return BrokerOrderResult(accepted=True, order=snapshot)
 
     def cancel_order(self, order_id: str) -> BrokerOrderResult:
         order = self.open_orders.pop(order_id, None)
@@ -77,8 +78,8 @@ class ExchangeSimulator:
         return fills
 
     @staticmethod
-    def _replace_order_status(order: OrderRequest, status: str) -> OrderRequest:
-        return OrderRequest(
+    def _replace_order_status(order: OrderSnapshot, status: str) -> OrderSnapshot:
+        return OrderSnapshot(
             order_id=order.order_id,
             symbol=order.symbol,
             side=order.side,
@@ -89,4 +90,6 @@ class ExchangeSimulator:
             take_pct=order.take_pct,
             created_at=order.created_at,
             status=status,  # type: ignore[arg-type]
+            filled_quantity=order.filled_quantity,
+            avg_fill_price=order.avg_fill_price,
         )

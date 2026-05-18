@@ -1,5 +1,5 @@
 from src_refactor.core.types.account import AccountSnapshot, PositionSnapshot
-from src_refactor.core.types.execution import Fill, MarketExecutionSnapshot
+from src_refactor.core.types.execution import Fill, FillEvent, MarketExecutionSnapshot
 from src_refactor.core.types.market import (
     Candle,
     MarketDataEvent,
@@ -18,7 +18,7 @@ from src_refactor.core.types.models import (
     ModelVariantId,
     Prediction,
 )
-from src_refactor.core.types.orders import OrderRequest, OrderSide, OrderStatus, OrderType
+from src_refactor.core.types.orders import OrderRequest, OrderSide, OrderSnapshot, OrderStatus, OrderType
 from src_refactor.core.types.walk_forward import SplitMode, WalkForwardFold
 
 __all__ = [
@@ -26,6 +26,7 @@ __all__ = [
     "MarketDataset",
     "Candle",
     "Fill",
+    "FillEvent",
     "MarketDataEvent",
     "MarketDataSubscription",
     "MarketExecutionSnapshot",
@@ -40,6 +41,7 @@ __all__ = [
     "Prediction",
     "OrderRequest",
     "OrderSide",
+    "OrderSnapshot",
     "OrderStatus",
     "OrderType",
     "PositionSnapshot",

@@ -20,6 +20,9 @@ class Fill:
     timestamp: pd.Timestamp
 
 
+FillEvent = Fill
+
+
 @dataclass(frozen=True, slots=True)
 class MarketExecutionSnapshot:
     symbol: str

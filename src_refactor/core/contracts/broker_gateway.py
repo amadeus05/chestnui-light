@@ -3,20 +3,21 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from src_refactor.core.types import AccountSnapshot, Fill, MarketExecutionSnapshot, OrderRequest, PositionSnapshot
+from src_refactor.core.types import AccountSnapshot, Fill, MarketExecutionSnapshot, OrderRequest, OrderSnapshot, PositionSnapshot
 
 
 @dataclass(frozen=True, slots=True)
 class BrokerOrderResult:
     accepted: bool = False
     cancelled: bool = False
-    order: OrderRequest | None = None
+    order: OrderSnapshot | None = None
     fills: tuple[Fill, ...] = ()
     reason: str | None = None
 
+
 class BrokerGateway(ABC):
-    """Сюда приходят ордера от стратегии и они обрабатываются в фоновом потоке
-       и результаты возвращаются обратно в стратегию"""
+    """Strategy-facing broker contract for simulated, paper, and live execution."""
+
     @abstractmethod
     def place_order(self, order: OrderRequest) -> BrokerOrderResult:
         raise NotImplementedError
