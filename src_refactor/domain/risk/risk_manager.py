@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import pandas as pd
+
+if TYPE_CHECKING:
+    from src_refactor.domain.portfolio.portfolio_manager import Trade
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +98,14 @@ class RiskManager:
             self.state.daily_sl_count += 1
             if self.config.sl_cooldown_bars > 0:
                 self.state.stop_cooldown_until_index[symbol] = bar_index + self.config.sl_cooldown_bars
+
+    def record_trade(self, trade: Trade, *, bar_index: int) -> None:
+        self.record_trade_close(
+            symbol=trade.symbol,
+            pnl_pct=trade.pnl_pct,
+            reason=trade.reason,
+            bar_index=bar_index,
+        )
 
     def reset_daily_limits(self) -> None:
         self.state.daily_sl_count = 0

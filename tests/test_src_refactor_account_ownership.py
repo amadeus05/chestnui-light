@@ -100,6 +100,39 @@ def test_exchange_simulator_account_snapshot_tracks_portfolio_provider():
     assert set(account.positions) == {"BTC/USDT"}
 
 
+def test_portfolio_closes_position_from_fill():
+    portfolio = PortfolioManager(initial_balance=250.0)
+    portfolio.open_position(
+        symbol="BTC/USDT",
+        direction=1,
+        entry_price=100.0,
+        position_notional=50.0,
+        required_margin=25.0,
+        stop_pct=0.02,
+        take_pct=0.04,
+        opened_at=pd.Timestamp("2025-01-01 01:00:00"),
+    )
+    fill = Fill(
+        fill_id="BTC/USDT:exit",
+        order_id="BTC/USDT:order",
+        symbol="BTC/USDT",
+        side="sell",
+        price=104.0,
+        quantity=0.5,
+        fee=0.0,
+        reason="TP",
+        timestamp=pd.Timestamp("2025-01-01 02:00:00"),
+    )
+
+    trade = portfolio.close_position_from_fill(fill)
+
+    assert trade is not None
+    assert trade.symbol == "BTC/USDT"
+    assert trade.reason == "TP"
+    assert trade.exit_price == 104.0
+    assert portfolio.position_snapshot("BTC/USDT") is None
+
+
 def test_exchange_simulator_exposes_order_snapshots_not_strategy_requests():
     broker = ExchangeSimulator()
 

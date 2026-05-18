@@ -173,19 +173,9 @@ class TradingEngine:
         )
 
     def _close_position_from_fill(self, fill: Fill, bar_index: int) -> Trade | None:
-        trade = self.portfolio.close_position(
-            symbol=fill.symbol,
-            exit_price=fill.price,
-            reason=fill.reason,
-            closed_at=fill.timestamp,
-        )
+        trade = self.portfolio.close_position_from_fill(fill)
         if trade is not None:
-            self.risk.record_trade_close(
-                symbol=fill.symbol,
-                pnl_pct=trade.pnl_pct,
-                reason=trade.reason,
-                bar_index=bar_index,
-            )
+            self.risk.record_trade(trade, bar_index=bar_index)
         return trade
 
     def close_all_positions(
@@ -221,12 +211,7 @@ class TradingEngine:
             )
             fills.append(fill)
             self._record_fill(fill)
-            trade = self.portfolio.close_position(
-                symbol=fill.symbol,
-                exit_price=fill.price,
-                reason=fill.reason,
-                closed_at=fill.timestamp,
-            )
+            trade = self.portfolio.close_position_from_fill(fill)
             if trade is not None:
                 closed_trades.append(trade)
                 self._record_trade_closed(trade)

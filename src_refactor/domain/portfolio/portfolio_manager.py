@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from src_refactor.core.types import AccountSnapshot, PositionSnapshot
+from src_refactor.core.types import AccountSnapshot, Fill, PositionSnapshot
 from src_refactor.domain.execution import ExecutionPricingConfig, compute_fee_quote, compute_net_pnl_pct
 
 
@@ -126,6 +126,14 @@ class PortfolioManager:
         self.state.trades.append(trade)
         del self.state.positions[symbol]
         return trade
+
+    def close_position_from_fill(self, fill: Fill) -> Trade | None:
+        return self.close_position(
+            symbol=fill.symbol,
+            exit_price=fill.price,
+            reason=fill.reason,
+            closed_at=fill.timestamp,
+        )
 
     def compute_equity(self, mark_prices: dict[str, float]) -> float:
         equity = float(self.state.balance)
