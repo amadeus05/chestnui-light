@@ -101,13 +101,10 @@ class TradingEngine:
                 continue
             if candidate.symbol in account.positions or candidate.symbol in self.portfolio.state.positions:
                 continue
-            stop_pct, take_pct = self._barrier_pcts(candidate)
-            if stop_pct is None or take_pct is None:
-                continue
             sizing = self.risk.size_position(
                 balance=account.balance,
                 available_balance=max(0.0, account.balance - account.used_margin),
-                stop_pct=stop_pct,
+                stop_pct=candidate.stop_pct,
             )
             if sizing is None:
                 continue
@@ -115,8 +112,6 @@ class TradingEngine:
             order = self.order_factory.from_signal_candidate(
                 candidate,
                 position_notional=sizing.position_notional,
-                stop_pct=stop_pct,
-                take_pct=take_pct,
                 snapshot=snapshot,
             )
             self._record_order_submitted(order)
@@ -144,8 +139,8 @@ class TradingEngine:
                     entry_price=fill.price,
                     position_notional=sizing.position_notional,
                     required_margin=sizing.required_margin,
-                    stop_pct=stop_pct,
-                    take_pct=take_pct,
+                    stop_pct=candidate.stop_pct,
+                    take_pct=candidate.take_pct,
                     opened_at=fill.timestamp,
                 )
                 opened_this_bar += 1
@@ -269,11 +264,3 @@ class TradingEngine:
     def _record_account_snapshot(self, account: AccountSnapshot, timestamp: pd.Timestamp | None) -> None:
         if self.execution_journal is not None:
             self.execution_journal.record_account_snapshot(account, timestamp=timestamp)
-
-    @staticmethod
-    def _barrier_pcts(candidate: SignalCandidate) -> tuple[float | None, float | None]:
-        stop_pct = candidate.prediction.raw.get("barrier_stop_pct")
-        take_pct = candidate.prediction.raw.get("barrier_take_pct")
-        if stop_pct is None or take_pct is None:
-            return None, None
-        return float(stop_pct), float(take_pct)

@@ -1,5 +1,5 @@
-import pytest
 import pandas as pd
+import pytest
 
 import bt
 
@@ -63,6 +63,21 @@ def test_signal_processor_candidate_sort_matches_legacy_key(signal_config):
     assert [candidate.symbol for candidate in candidates] == expected_symbols
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {},
+        {"barrier_stop_pct": 0.02},
+        {"barrier_stop_pct": float("nan"), "barrier_take_pct": 0.04},
+        {"barrier_stop_pct": 0.02, "barrier_take_pct": float("inf")},
+    ],
+)
+def test_signal_processor_rejects_candidates_without_valid_barriers(signal_config, raw):
+    prediction = _prediction("BTC/USDT", p_long=0.90, p_short=0.10, raw=raw)
+
+    assert SignalBatchProcessor(signal_config).build_candidates([prediction]) == []
+
+
 def test_order_factory_builds_legacy_market_order_shape(signal_config):
     candidate = SignalBatchProcessor(signal_config).build_candidates(
         [_prediction("BTC/USDT", p_long=0.90, p_short=0.10)]
@@ -80,8 +95,6 @@ def test_order_factory_builds_legacy_market_order_shape(signal_config):
     order = OrderFactory().from_signal_candidate(
         candidate,
         position_notional=250.0,
-        stop_pct=0.02,
-        take_pct=0.04,
         snapshot=snapshot,
     )
 
@@ -95,7 +108,13 @@ def test_order_factory_builds_legacy_market_order_shape(signal_config):
     assert order.created_at == snapshot.current_timestamp
 
 
-def _prediction(symbol: str, *, p_long: float, p_short: float) -> Prediction:
+def _prediction(
+    symbol: str,
+    *,
+    p_long: float,
+    p_short: float,
+    raw: dict[str, float] | None = None,
+) -> Prediction:
     return Prediction(
         timestamp=pd.Timestamp("2025-01-01 00:00:00"),
         symbol=symbol,
@@ -105,5 +124,5 @@ def _prediction(symbol: str, *, p_long: float, p_short: float) -> Prediction:
         confidence=max(p_long, p_short),
         proba_long=p_long,
         proba_short=p_short,
-        raw={"barrier_stop_pct": 0.02, "barrier_take_pct": 0.04},
+        raw=raw if raw is not None else {"barrier_stop_pct": 0.02, "barrier_take_pct": 0.04},
     )

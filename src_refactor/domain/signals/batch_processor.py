@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 from src_refactor.core.types import Prediction
 
@@ -20,6 +21,8 @@ class SignalCandidate:
     direction_prob: float
     signal_gap: float
     score: float
+    stop_pct: float
+    take_pct: float
     prediction: Prediction
 
 
@@ -51,6 +54,10 @@ class SignalBatchProcessor:
             return None
         if direction == -1 and not self.config.allow_shorts:
             return None
+        barriers = self._barrier_pcts(prediction)
+        if barriers is None:
+            return None
+        stop_pct, take_pct = barriers
 
         return SignalCandidate(
             symbol=prediction.symbol,
@@ -58,6 +65,8 @@ class SignalBatchProcessor:
             direction_prob=direction_prob,
             signal_gap=signal_gap,
             score=self.build_entry_score(direction_prob, signal_gap),
+            stop_pct=stop_pct,
+            take_pct=take_pct,
             prediction=prediction,
         )
 
@@ -78,3 +87,14 @@ class SignalBatchProcessor:
     def build_entry_score(self, direction_prob: float, signal_gap: float) -> float:
         edge = max(0.0, direction_prob - self.config.directional_proba_threshold)
         return edge * 10 + signal_gap
+
+    @staticmethod
+    def _barrier_pcts(prediction: Prediction) -> tuple[float, float] | None:
+        try:
+            stop_pct = float(prediction.raw["barrier_stop_pct"])
+            take_pct = float(prediction.raw["barrier_take_pct"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not math.isfinite(stop_pct) or not math.isfinite(take_pct):
+            return None
+        return stop_pct, take_pct

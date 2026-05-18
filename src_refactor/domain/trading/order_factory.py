@@ -13,8 +13,6 @@ class OrderFactory:
         candidate: SignalCandidate,
         *,
         position_notional: float,
-        stop_pct: float,
-        take_pct: float,
         snapshot: MarketExecutionSnapshot,
     ) -> OrderRequest:
         side = "buy" if candidate.direction == 1 else "sell"
@@ -25,7 +23,7 @@ class OrderFactory:
             side=side,
             order_type="market",
             quantity=quantity,
-            stop_pct=stop_pct,
-            take_pct=take_pct,
+            stop_pct=candidate.stop_pct,
+            take_pct=candidate.take_pct,
             created_at=snapshot.current_timestamp,
         )
