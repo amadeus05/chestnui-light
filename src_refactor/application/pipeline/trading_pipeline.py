@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from src_refactor.application.pipeline.idempotency_guard import IdempotencyGuard
 from src_refactor.application.pipeline.prediction_source import PredictionSource
-from src_refactor.core.types import Candle, MarketDataEvent
+from src_refactor.core.types import Candle, MarketDataBatch, MarketDataEvent
 from src_refactor.domain.signals import SignalBatchProcessor, SignalCandidate, build_signal_id
 from src_refactor.domain.trading import TradingEngine, TradingEngineStepResult
 from src_refactor.application.pipeline.runtime_market_cache import MarketContext, RuntimeMarketCache
@@ -27,6 +27,19 @@ class TradingPipeline:
 
     def on_event(self, event: MarketDataEvent) -> PipelineStepResult | None:
         return self.on_candle(event.candle)
+
+    def process_batch(self, batch: MarketDataBatch) -> PipelineStepResult | None:
+        contexts = self.contexts_from_batch(batch)
+        if not contexts:
+            return None
+        return self.on_contexts(contexts)
+
+    def contexts_from_batch(self, batch: MarketDataBatch) -> tuple[MarketContext, ...]:
+        return tuple(
+            context
+            for candle in batch.candles
+            if (context := self.market_cache.update(candle)) is not None
+        )
 
     def on_candle(self, candle: Candle) -> PipelineStepResult | None:
         context = self.market_cache.update(candle)

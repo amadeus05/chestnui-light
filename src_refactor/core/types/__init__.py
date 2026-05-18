@@ -2,6 +2,7 @@ from src_refactor.core.types.account import AccountSnapshot, PositionSnapshot
 from src_refactor.core.types.execution import Fill, FillEvent, MarketExecutionSnapshot
 from src_refactor.core.types.market import (
     Candle,
+    MarketDataBatch,
     MarketDataEvent,
     MarketDataSubscription,
     MarketDataset,
@@ -25,6 +26,7 @@ __all__ = [
     "AccountSnapshot",
     "MarketDataset",
     "Candle",
+    "MarketDataBatch",
     "Fill",
     "FillEvent",
     "MarketDataEvent",

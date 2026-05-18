@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from src_refactor.application.pipeline import PipelineStepResult, TradingPipeline
 from src_refactor.application.runtime_builder import RuntimeAdapters, RuntimeConfig, build_pipeline_from_runtime
 from src_refactor.core.contracts.stream_market_feed import LiveMarketDataFeed
-from src_refactor.core.types import MarketDataEvent, MarketDataSubscription
+from src_refactor.core.types import MarketDataBatch, MarketDataEvent, MarketDataSubscription
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +29,7 @@ class LiveRunner:
         return LiveRunResult(steps=tuple(self.steps))
 
     def on_event(self, event: MarketDataEvent) -> None:
-        result = self.pipeline.on_event(event)
+        result = self.pipeline.process_batch(MarketDataBatch.from_candles([event.candle]))
         if result is not None:
             self.steps.append(result)
 
