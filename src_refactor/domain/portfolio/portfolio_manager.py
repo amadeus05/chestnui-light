@@ -52,6 +52,7 @@ class PortfolioState:
 class PortfolioManager:
     def __init__(self, initial_balance: float = 100.0, pricing: ExecutionPricingConfig | None = None) -> None:
         self.pricing = pricing or ExecutionPricingConfig()
+        self.initial_balance = float(initial_balance)
         self.state = PortfolioState(balance=float(initial_balance), peak_equity=float(initial_balance))
 
     @property

@@ -228,6 +228,7 @@ class TradingEngine:
                 closed_trades.append(trade)
                 self._record_trade_closed(trade)
 
+        self.portfolio.record_equity(pd.to_datetime(timestamp), mark_prices)
         account = self.broker.get_account_snapshot()
         self._record_account_snapshot(account, pd.to_datetime(timestamp))
         return TradingEngineStepResult(

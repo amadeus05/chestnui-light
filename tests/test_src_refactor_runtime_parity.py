@@ -196,8 +196,11 @@ def test_backtest_runner_final_closes_open_positions_without_journal():
     result = runner.run(frame=frame)
 
     assert result.final_result is not None
+    assert result.metrics is not None
     assert len(result.final_result.closed_trades) == 1
     assert result.final_result.closed_trades[0].reason == "FINAL"
+    assert result.metrics.summary.total_trades == 1
+    assert result.metrics.summary.total_pnl_abs == result.final_result.closed_trades[0].pnl_abs
     assert portfolio.position_snapshot("BTC/USDT") is None
 
 

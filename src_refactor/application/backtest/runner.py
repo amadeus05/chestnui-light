@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from src_refactor.application.backtest.metrics import BacktestMetrics, BacktestMetricsCalculator
 from src_refactor.application.pipeline import PipelineStepResult, StoredPredictionSource, TradingPipeline
 from src_refactor.application.runtime_builder import RuntimeConfig, build_backtest_runtime, build_runtime
 from src_refactor.application.runtime_loop import RuntimeLoop
@@ -18,6 +19,7 @@ from src_refactor.infrastructure.feeds import HistoricalFrameMarketStream
 class BacktestRunResult:
     steps: tuple[PipelineStepResult, ...] = ()
     final_result: TradingEngineStepResult | None = None
+    metrics: BacktestMetrics | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +47,12 @@ class BacktestRunner:
             start=start,
             end=end,
         ).run()
-        return BacktestRunResult(steps=result.steps, final_result=result.final_result)
+        portfolio = self.pipeline.trading_engine.portfolio
+        metrics = BacktestMetricsCalculator.from_portfolio_state(
+            portfolio.state,
+            initial_balance=portfolio.initial_balance,
+        )
+        return BacktestRunResult(steps=result.steps, final_result=result.final_result, metrics=metrics)
 
 def build_oos_backtest_runner(
     *,
