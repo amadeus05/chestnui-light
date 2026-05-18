@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from src_refactor.core.contracts.broker_gateway import BrokerGateway
-from src_refactor.core.types import AccountSnapshot, Fill, MarketExecutionSnapshot, OrderRequest
+from src_refactor.core.types import AccountSnapshot, Fill, MarketExecutionSnapshot, OrderRequest, OrderSnapshot
+from src_refactor.domain.execution import ExecutionJournal
 from src_refactor.domain.portfolio.portfolio_manager import PortfolioManager, Trade
 from src_refactor.domain.risk.risk_manager import RiskManager
 from src_refactor.domain.signals import SignalCandidate
@@ -20,6 +21,8 @@ class TradingEngineConfig:
 class TradingEngineStepResult:
     fills: tuple[Fill, ...] = ()
     opened_orders: tuple[OrderRequest, ...] = ()
+    accepted_orders: tuple[OrderSnapshot, ...] = ()
+    rejected_orders: tuple[OrderSnapshot, ...] = ()
     closed_trades: tuple[Trade, ...] = ()
     equity: float | None = None
     account: AccountSnapshot | None = None
@@ -31,6 +34,7 @@ class TradingEngine:
     portfolio: PortfolioManager
     risk: RiskManager
     config: TradingEngineConfig = field(default_factory=TradingEngineConfig)
+    execution_journal: ExecutionJournal | None = None
     _last_mark_prices: dict[str, float] = field(init=False, default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -64,13 +68,17 @@ class TradingEngine:
             if fill is None:
                 continue
             fills.append(fill)
+            self._record_fill(fill)
             trade = self._close_position_from_fill(fill, bar_index)
             if trade is not None:
                 closed_trades.append(trade)
+                self._record_trade_closed(trade)
 
         account = self.broker.get_account_snapshot()
 
         opened_orders: list[OrderRequest] = []
+        accepted_orders: list[OrderSnapshot] = []
+        rejected_orders: list[OrderSnapshot] = []
         opened_this_bar = 0
         for candidate in candidates:
             if opened_this_bar >= self.config.max_new_positions_per_bar:
@@ -98,15 +106,23 @@ class TradingEngine:
                 continue
 
             order = self._order_from_candidate(candidate, sizing.position_notional, stop_pct, take_pct, snapshot)
+            self._record_order_submitted(order)
             result = self.broker.place_order(order)
             if not result.accepted:
+                if result.order is not None:
+                    rejected_orders.append(result.order)
+                    self._record_order_rejected(result.order)
                 continue
             opened_orders.append(order)
+            if result.order is not None:
+                accepted_orders.append(result.order)
+                self._record_order_accepted(result.order)
 
             order_fills = list(result.fills)
             order_fills.extend(self.broker.process_market_snapshot(snapshot))
             for fill in order_fills:
                 fills.append(fill)
+                self._record_fill(fill)
                 if fill.reason != "ENTRY":
                     continue
                 self.portfolio.open_position(
@@ -129,13 +145,20 @@ class TradingEngine:
                 if exit_fill is None:
                     continue
                 fills.append(exit_fill)
+                self._record_fill(exit_fill)
                 trade = self._close_position_from_fill(exit_fill, bar_index)
                 if trade is not None:
                     closed_trades.append(trade)
+                    self._record_trade_closed(trade)
+                    account = self.broker.get_account_snapshot()
+
+        self._record_account_snapshot(account, first_timestamp)
 
         return TradingEngineStepResult(
             fills=tuple(fills),
             opened_orders=tuple(opened_orders),
+            accepted_orders=tuple(accepted_orders),
+            rejected_orders=tuple(rejected_orders),
             closed_trades=tuple(closed_trades),
             equity=equity,
             account=account,
@@ -156,6 +179,30 @@ class TradingEngine:
                 bar_index=bar_index,
             )
         return trade
+
+    def _record_order_submitted(self, order: OrderRequest) -> None:
+        if self.execution_journal is not None:
+            self.execution_journal.record_order_submitted(order)
+
+    def _record_order_accepted(self, order: OrderSnapshot) -> None:
+        if self.execution_journal is not None:
+            self.execution_journal.record_order_accepted(order)
+
+    def _record_order_rejected(self, order: OrderSnapshot) -> None:
+        if self.execution_journal is not None:
+            self.execution_journal.record_order_rejected(order)
+
+    def _record_fill(self, fill: Fill) -> None:
+        if self.execution_journal is not None:
+            self.execution_journal.record_fill(fill)
+
+    def _record_trade_closed(self, trade: Trade) -> None:
+        if self.execution_journal is not None:
+            self.execution_journal.record_trade_closed(trade)
+
+    def _record_account_snapshot(self, account: AccountSnapshot, timestamp: pd.Timestamp | None) -> None:
+        if self.execution_journal is not None:
+            self.execution_journal.record_account_snapshot(account, timestamp=timestamp)
 
     @staticmethod
     def _barrier_pcts(candidate: SignalCandidate) -> tuple[float | None, float | None]:

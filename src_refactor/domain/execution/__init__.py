@@ -4,6 +4,11 @@ from src_refactor.domain.execution.exits import (
     apply_entry_slippage,
     resolve_trade_exit,
 )
+from src_refactor.domain.execution.journal import (
+    ExecutionJournal,
+    ExecutionJournalEvent,
+    ExecutionJournalEventType,
+)
 from src_refactor.domain.execution.pnl import (
     compute_fee_quote,
     compute_net_pnl_pct,
@@ -13,6 +18,9 @@ from src_refactor.domain.execution.pnl import (
 
 __all__ = [
     "ExecutionPricingConfig",
+    "ExecutionJournal",
+    "ExecutionJournalEvent",
+    "ExecutionJournalEventType",
     "TradeExit",
     "apply_entry_slippage",
     "compute_fee_quote",

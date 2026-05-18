@@ -16,7 +16,7 @@ from src_refactor.core.contracts.broker_gateway import BrokerGateway
 from src_refactor.core.contracts.historical_market_feed import HistoricalMarketFeed
 from src_refactor.core.contracts.stream_market_feed import LiveMarketDataFeed
 from src_refactor.core.types import ModelSpec
-from src_refactor.domain.execution import ExecutionPricingConfig
+from src_refactor.domain.execution import ExecutionJournal, ExecutionPricingConfig
 from src_refactor.domain.portfolio.portfolio_manager import PortfolioManager
 from src_refactor.domain.risk.risk_manager import RiskConfig, RiskManager
 from src_refactor.domain.signals import SignalBatchProcessor, SignalProcessingConfig
@@ -98,6 +98,7 @@ class RuntimeAdapters:
     signal_selector: SignalBatchProcessor
     idempotency_guard: IdempotencyGuard
     data_source: MarketDataSource | None = None
+    execution_journal: ExecutionJournal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +124,7 @@ def build_pipeline_from_runtime(config: RuntimeConfig, runtime: RuntimeAdapters)
             portfolio=PortfolioManager(initial_balance=config.initial_balance, pricing=config.pricing),
             risk=RiskManager(config.risk),
             config=config.trading,
+            execution_journal=runtime.execution_journal,
         ),
         prediction_source=runtime.prediction_source,
         signal_selector=runtime.signal_selector,
@@ -137,6 +139,7 @@ def build_backtest_runtime(
     data_source: HistoricalMarketFeed | None = None,
     broker: BrokerGateway | None = None,
     market_cache: RuntimeMarketCache | None = None,
+    execution_journal: ExecutionJournal | None = None,
 ) -> RuntimeAdapters:
     return RuntimeAdapters(
         market_cache=market_cache or RuntimeMarketCache(),
@@ -145,6 +148,7 @@ def build_backtest_runtime(
         signal_selector=SignalBatchProcessor(config.signals),
         idempotency_guard=InMemoryIdempotencyGuard(),
         data_source=data_source,
+        execution_journal=execution_journal,
     )
 
 
@@ -155,6 +159,7 @@ def build_paper_runtime(
     data_source: LiveMarketDataFeed,
     broker: BrokerGateway | None = None,
     market_cache: RuntimeMarketCache | None = None,
+    execution_journal: ExecutionJournal | None = None,
 ) -> RuntimeAdapters:
     bundle = registry.get(config.model)
     return RuntimeAdapters(
@@ -168,6 +173,7 @@ def build_paper_runtime(
         signal_selector=SignalBatchProcessor(config.signals),
         idempotency_guard=InMemoryIdempotencyGuard(),
         data_source=data_source,
+        execution_journal=execution_journal,
     )
 
 
@@ -178,6 +184,7 @@ def build_live_runtime(
     data_source: LiveMarketDataFeed,
     broker: BrokerGateway,
     market_cache: RuntimeMarketCache | None = None,
+    execution_journal: ExecutionJournal | None = None,
 ) -> RuntimeAdapters:
     bundle = registry.get(config.model)
     return RuntimeAdapters(
@@ -191,4 +198,5 @@ def build_live_runtime(
         signal_selector=SignalBatchProcessor(config.signals),
         idempotency_guard=InMemoryIdempotencyGuard(),
         data_source=data_source,
+        execution_journal=execution_journal,
     )
