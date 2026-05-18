@@ -139,7 +139,6 @@ def build_backtest_runtime(
     data_source: HistoricalMarketFeed | None = None,
     broker: BrokerGateway | None = None,
     market_cache: RuntimeMarketCache | None = None,
-    execution_journal: ExecutionJournal | None = None,
 ) -> RuntimeAdapters:
     return RuntimeAdapters(
         market_cache=market_cache or RuntimeMarketCache(),
@@ -148,7 +147,7 @@ def build_backtest_runtime(
         signal_selector=SignalBatchProcessor(config.signals),
         idempotency_guard=InMemoryIdempotencyGuard(),
         data_source=data_source,
-        execution_journal=execution_journal,
+        execution_journal=None,
     )
 
 

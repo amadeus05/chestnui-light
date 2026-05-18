@@ -134,6 +134,28 @@ def test_exchange_simulator_returns_terminal_order_snapshots():
     assert rejected.order.status == "rejected"
 
 
+def test_exchange_simulator_resolves_final_mark_close_with_legacy_slippage():
+    broker = ExchangeSimulator()
+    position = PositionSnapshot(
+        symbol="BTC/USDT",
+        direction=1,
+        quantity=2.0,
+        entry_price=100.0,
+        opened_at=pd.Timestamp("2025-01-01 00:00:00"),
+    )
+
+    fill = broker.resolve_position_mark_close(
+        position,
+        timestamp=pd.Timestamp("2025-01-02 00:00:00"),
+        mark_price=110.0,
+        reason="FINAL",
+    )
+
+    assert fill.reason == "FINAL"
+    assert fill.side == "sell"
+    assert fill.price == 110.0 * (1 - broker.pricing.slippage)
+
+
 def test_trading_engine_uses_broker_account_for_sizing():
     broker = ExchangeSimulator()
     portfolio = PortfolioManager(initial_balance=100.0)

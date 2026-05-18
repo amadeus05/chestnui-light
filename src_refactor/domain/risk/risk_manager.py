@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import pandas as pd
+
 
 @dataclass(frozen=True, slots=True)
 class RiskConfig:
@@ -26,6 +28,7 @@ class PositionSizing:
 class RiskState:
     consecutive_loss_count: int = 0
     daily_sl_count: int = 0
+    current_trade_day: pd.Timestamp | None = None
     stop_cooldown_until_index: dict[str, int] = field(default_factory=dict)
 
 
@@ -45,6 +48,12 @@ class RiskManager:
         ):
             return reduced
         return self.config.risk_per_trade
+
+    def on_bar(self, timestamp: pd.Timestamp) -> None:
+        trade_day = pd.to_datetime(timestamp).normalize()
+        if self.state.current_trade_day is None or trade_day != self.state.current_trade_day:
+            self.state.current_trade_day = trade_day
+            self.reset_daily_limits()
 
     def can_open_symbol(self, symbol: str, bar_index: int, open_positions_count: int) -> bool:
         if open_positions_count >= self.config.max_open_positions:

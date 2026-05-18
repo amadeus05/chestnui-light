@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
 import pandas as pd
 
 from src_refactor.core.contracts.broker_gateway import BrokerGateway
@@ -54,8 +55,12 @@ class TradingEngine:
 
         mark_prices = {symbol: snapshot.current_close for symbol, snapshot in snapshots.items()}
         self._last_mark_prices = dict(mark_prices)
-        account = self.broker.get_account_snapshot()
         first_timestamp = min((snapshot.current_timestamp for snapshot in snapshots.values()), default=None)
+        first_execution_timestamp = min((snapshot.next_timestamp for snapshot in snapshots.values()), default=None)
+        if first_execution_timestamp is not None:
+            self.risk.on_bar(first_execution_timestamp)
+
+        account = self.broker.get_account_snapshot()
         if first_timestamp is not None:
             self.portfolio.record_equity(first_timestamp, mark_prices)
         equity = account.equity
@@ -179,6 +184,58 @@ class TradingEngine:
                 bar_index=bar_index,
             )
         return trade
+
+    def close_all_positions(
+        self,
+        *,
+        timestamp: pd.Timestamp,
+        mark_prices: dict[str, float],
+        reason: str = "FINAL",
+    ) -> TradingEngineStepResult:
+        fills: list[Fill] = []
+        closed_trades: list[Trade] = []
+        self._last_mark_prices = dict(mark_prices)
+        account = self.broker.get_account_snapshot()
+        positions = dict(account.positions)
+        for symbol in self.portfolio.state.positions:
+            if symbol not in positions:
+                position = self.portfolio.position_snapshot(symbol)
+                if position is not None:
+                    positions[symbol] = position
+
+        for symbol, position in positions.items():
+            mark_price = mark_prices.get(symbol)
+            if mark_price is None or not np.isfinite(mark_price):
+                continue
+            resolve_mark_close = getattr(self.broker, "resolve_position_mark_close", None)
+            if not callable(resolve_mark_close):
+                continue
+            fill = resolve_mark_close(
+                position,
+                timestamp=pd.to_datetime(timestamp),
+                mark_price=float(mark_price),
+                reason=reason,
+            )
+            fills.append(fill)
+            self._record_fill(fill)
+            trade = self.portfolio.close_position(
+                symbol=fill.symbol,
+                exit_price=fill.price,
+                reason=fill.reason,
+                closed_at=fill.timestamp,
+            )
+            if trade is not None:
+                closed_trades.append(trade)
+                self._record_trade_closed(trade)
+
+        account = self.broker.get_account_snapshot()
+        self._record_account_snapshot(account, pd.to_datetime(timestamp))
+        return TradingEngineStepResult(
+            fills=tuple(fills),
+            closed_trades=tuple(closed_trades),
+            equity=account.equity,
+            account=account,
+        )
 
     def _record_order_submitted(self, order: OrderRequest) -> None:
         if self.execution_journal is not None:

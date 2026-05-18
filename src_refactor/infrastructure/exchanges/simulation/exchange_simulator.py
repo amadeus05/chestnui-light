@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+import pandas as pd
+
 from src_refactor.core.contracts.broker_gateway import BrokerGateway, BrokerOrderResult
 from src_refactor.core.types import AccountSnapshot, Fill, MarketExecutionSnapshot, OrderRequest, OrderSnapshot, PositionSnapshot
 from src_refactor.domain.execution import ExecutionPricingConfig
@@ -65,6 +67,24 @@ class ExchangeSimulator:
         )
         if fill is not None:
             self.fills.append(fill)
+        return fill
+
+    def resolve_position_mark_close(
+        self,
+        position: PositionSnapshot,
+        *,
+        timestamp: pd.Timestamp,
+        mark_price: float,
+        reason: str = "FINAL",
+    ) -> Fill:
+        fill = self.fill_model.resolve_position_mark_close(
+            order_id=f"position:{position.symbol}",
+            position=position,
+            timestamp=timestamp,
+            mark_price=mark_price,
+            reason=reason,
+        )
+        self.fills.append(fill)
         return fill
 
     def _fill_open_orders(self, snapshot: MarketExecutionSnapshot) -> list[Fill]:

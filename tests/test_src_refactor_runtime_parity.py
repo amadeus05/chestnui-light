@@ -1,5 +1,6 @@
 import pandas as pd
 
+from src_refactor.application.backtest import BacktestRunner
 from src_refactor.application.pipeline import StoredPredictionSource, TradingPipeline
 from src_refactor.application.pipeline.idempotency_guard import InMemoryIdempotencyGuard
 from src_refactor.application.pipeline.runtime_market_cache import RuntimeMarketCache
@@ -147,6 +148,56 @@ def test_new_position_can_exit_on_entry_candle():
     assert len(result.result.opened_orders) == 1
     assert len(result.result.closed_trades) == 1
     assert result.result.closed_trades[0].reason == "TP"
+    assert portfolio.position_snapshot("BTC/USDT") is None
+
+
+def test_backtest_runner_final_closes_open_positions_without_journal():
+    frame = pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp("2025-01-01 00:00:00"),
+                "symbol": "BTC/USDT",
+                "timeframe": "1h",
+                "open": 100.0,
+                "high": 100.5,
+                "low": 99.5,
+                "close": 100.0,
+                "volume": 1_000.0,
+            },
+            {
+                "timestamp": pd.Timestamp("2025-01-01 01:00:00"),
+                "symbol": "BTC/USDT",
+                "timeframe": "1h",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.5,
+                "close": 101.0,
+                "volume": 1_000.0,
+            },
+        ]
+    )
+    portfolio = PortfolioManager(initial_balance=100.0)
+    runner = BacktestRunner(
+        pipeline=TradingPipeline(
+            market_cache=RuntimeMarketCache(),
+            trading_engine=TradingEngine(
+                broker=ExchangeSimulator(),
+                portfolio=portfolio,
+                risk=RiskManager(),
+            ),
+            prediction_source=StoredPredictionSource.from_predictions(
+                [_prediction("BTC/USDT", 0.90, timestamp="2025-01-01 00:00:00")]
+            ),
+            signal_selector=SignalBatchProcessor(),
+            idempotency_guard=InMemoryIdempotencyGuard(),
+        )
+    )
+
+    result = runner.run(frame=frame)
+
+    assert result.final_result is not None
+    assert len(result.final_result.closed_trades) == 1
+    assert result.final_result.closed_trades[0].reason == "FINAL"
     assert portfolio.position_snapshot("BTC/USDT") is None
 
 

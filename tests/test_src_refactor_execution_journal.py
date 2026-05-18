@@ -87,7 +87,7 @@ def test_execution_journal_records_orders_fills_trades_and_account_snapshots():
     assert journal.events[-1].account == result.result.account
 
 
-def test_runtime_builder_wires_execution_journal_into_trading_engine():
+def test_backtest_runtime_does_not_wire_execution_journal():
     journal = ExecutionJournal()
     config = RuntimeConfig(
         mode=TradingMode.BACKTEST,
@@ -96,19 +96,11 @@ def test_runtime_builder_wires_execution_journal_into_trading_engine():
     adapters = build_backtest_runtime(
         config,
         prediction_source=StoredPredictionSource.from_predictions([_prediction()]),
-        execution_journal=journal,
     )
     runtime = build_runtime(config, adapters)
     contexts = runtime.pipeline.market_cache.update_from_frame(_market_frame())
 
     runtime.pipeline.on_contexts(contexts)
 
-    assert runtime.pipeline.trading_engine.execution_journal is journal
-    assert [event.event_type for event in journal.events] == [
-        "ORDER_SUBMITTED",
-        "ORDER_ACCEPTED",
-        "FILL",
-        "FILL",
-        "TRADE_CLOSED",
-        "ACCOUNT_SNAPSHOT",
-    ]
+    assert runtime.pipeline.trading_engine.execution_journal is None
+    assert journal.events == []

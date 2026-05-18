@@ -10,11 +10,13 @@ from src_refactor.application.runtime_builder import RuntimeConfig, build_backte
 from src_refactor.core.contracts import PredictionStore
 from src_refactor.core.contracts.broker_gateway import BrokerGateway
 from src_refactor.core.contracts.historical_market_feed import HistoricalMarketFeed
+from src_refactor.domain.trading import TradingEngineStepResult
 
 
 @dataclass(frozen=True, slots=True)
 class BacktestRunResult:
     steps: tuple[PipelineStepResult, ...] = ()
+    final_result: TradingEngineStepResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +31,7 @@ class BacktestRunner:
         frame: pd.DataFrame,
         start: pd.Timestamp | None = None,
         end: pd.Timestamp | None = None,
+        close_open_positions: bool = True,
     ) -> BacktestRunResult:
         steps = self.pipeline.market_cache.update_from_frame(
             frame,
@@ -43,7 +46,45 @@ class BacktestRunner:
                 continue
             results.append(self.pipeline.on_contexts(list(group)))
 
-        return BacktestRunResult(steps=tuple(results))
+        final_result = None
+        if close_open_positions:
+            final_mark_timestamp, final_mark_prices = self._final_mark_prices(frame, start=start, end=end)
+            if final_mark_timestamp is not None and final_mark_prices:
+                final_result = self.pipeline.trading_engine.close_all_positions(
+                    timestamp=final_mark_timestamp,
+                    mark_prices=final_mark_prices,
+                    reason="FINAL",
+                )
+
+        return BacktestRunResult(steps=tuple(results), final_result=final_result)
+
+    def _final_mark_prices(
+        self,
+        frame: pd.DataFrame,
+        *,
+        start: pd.Timestamp | None = None,
+        end: pd.Timestamp | None = None,
+    ) -> tuple[pd.Timestamp | None, dict[str, float]]:
+        if frame.empty:
+            return None, {}
+        filtered = frame.copy()
+        filtered[self.timestamp_column] = pd.to_datetime(filtered[self.timestamp_column])
+        if start is not None:
+            filtered = filtered.loc[filtered[self.timestamp_column] >= pd.to_datetime(start)]
+        if end is not None:
+            filtered = filtered.loc[filtered[self.timestamp_column] <= pd.to_datetime(end)]
+        if filtered.empty:
+            return None, {}
+        final_timestamp = filtered[self.timestamp_column].max()
+        latest_rows = (
+            filtered.loc[filtered[self.timestamp_column] == final_timestamp]
+            .dropna(subset=["close"])
+            .drop_duplicates(subset=[self.symbol_column], keep="last")
+        )
+        return pd.to_datetime(final_timestamp), {
+            str(row[self.symbol_column]): float(row["close"])
+            for _, row in latest_rows.iterrows()
+        }
 
 
 def build_oos_backtest_runner(

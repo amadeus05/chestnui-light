@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pandas as pd
+
 from src_refactor.core.types import Fill, MarketExecutionSnapshot, OrderRequest, OrderSnapshot, PositionSnapshot
 from src_refactor.domain.execution import ExecutionPricingConfig, apply_entry_slippage, resolve_trade_exit
 
@@ -61,4 +63,35 @@ class CandleFillModel:
             fee=fee,
             reason=exit_result.reason,
             timestamp=snapshot.next_timestamp,
+        )
+
+    def resolve_position_mark_close(
+        self,
+        *,
+        order_id: str,
+        position: PositionSnapshot,
+        timestamp: pd.Timestamp,
+        mark_price: float,
+        reason: str = "FINAL",
+    ) -> Fill:
+        if position.direction == 1:
+            price = mark_price * (1 - self.pricing.slippage)
+            side = "sell"
+        elif position.direction == -1:
+            price = mark_price * (1 + self.pricing.slippage)
+            side = "buy"
+        else:
+            raise ValueError(f"Unsupported position direction: {position.direction}")
+
+        fee = abs(position.quantity * price) * self.pricing.taker_fee
+        return Fill(
+            fill_id=f"{order_id}:mark_close:{pd.to_datetime(timestamp).value}",
+            order_id=order_id,
+            symbol=position.symbol,
+            side=side,
+            price=price,
+            quantity=position.quantity,
+            fee=fee,
+            reason=reason,
+            timestamp=pd.to_datetime(timestamp),
         )
