@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from src_refactor.core.contracts.broker_gateway import BrokerGateway, BrokerOrderResult
@@ -16,6 +17,7 @@ class ExchangeSimulator:
     open_orders: dict[str, OrderRequest] = field(init=False, default_factory=dict)
     fills: list[Fill] = field(init=False, default_factory=list)
     fill_model: CandleFillModel = field(init=False)
+    account_snapshot_provider: Callable[[], AccountSnapshot] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         self.fill_model = CandleFillModel(self.pricing)
@@ -34,7 +36,19 @@ class ExchangeSimulator:
         return BrokerOrderResult(cancelled=True, order=self._replace_order_status(order, "cancelled"))
 
     def get_account_snapshot(self) -> AccountSnapshot:
-        return AccountSnapshot(balance=0.0, equity=0.0, used_margin=0.0, open_orders=dict(self.open_orders))
+        if self.account_snapshot_provider is None:
+            return AccountSnapshot(balance=0.0, equity=0.0, used_margin=0.0, open_orders=dict(self.open_orders))
+        snapshot = self.account_snapshot_provider()
+        return AccountSnapshot(
+            balance=snapshot.balance,
+            equity=snapshot.equity,
+            used_margin=snapshot.used_margin,
+            positions=dict(snapshot.positions),
+            open_orders={**snapshot.open_orders, **self.open_orders},
+        )
+
+    def set_account_snapshot_provider(self, provider: Callable[[], AccountSnapshot]) -> None:
+        self.account_snapshot_provider = provider
 
     def process_market_snapshot(self, snapshot: MarketExecutionSnapshot) -> list[Fill]:
         fills: list[Fill] = []

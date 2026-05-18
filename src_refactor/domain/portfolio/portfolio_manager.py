@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from src_refactor.core.types import PositionSnapshot
+from src_refactor.core.types import AccountSnapshot, PositionSnapshot
 from src_refactor.domain.execution import ExecutionPricingConfig, compute_fee_quote, compute_net_pnl_pct
 
 
@@ -145,6 +145,18 @@ class PortfolioManager:
             current_dd = (self.state.peak_equity - equity) / self.state.peak_equity * 100
             self.state.max_drawdown_pct = max(self.state.max_drawdown_pct, current_dd)
         return equity
+
+    def account_snapshot(self, mark_prices: dict[str, float] | None = None) -> AccountSnapshot:
+        return AccountSnapshot(
+            balance=float(self.state.balance),
+            equity=self.compute_equity(mark_prices or {}),
+            used_margin=float(self.state.used_margin),
+            positions={
+                symbol: snapshot
+                for symbol in self.state.positions
+                if (snapshot := self.position_snapshot(symbol)) is not None
+            },
+        )
 
     def position_snapshot(self, symbol: str) -> PositionSnapshot | None:
         position = self.state.positions.get(symbol)

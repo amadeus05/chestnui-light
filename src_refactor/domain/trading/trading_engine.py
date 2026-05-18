@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from src_refactor.core.contracts.broker_gateway import BrokerGateway
-from src_refactor.core.types import Fill, MarketExecutionSnapshot, OrderRequest
+from src_refactor.core.types import AccountSnapshot, Fill, MarketExecutionSnapshot, OrderRequest
 from src_refactor.domain.portfolio.portfolio_manager import PortfolioManager, Trade
 from src_refactor.domain.risk.risk_manager import RiskManager
 from src_refactor.domain.signals import SignalCandidate
@@ -22,6 +22,7 @@ class TradingEngineStepResult:
     opened_orders: tuple[OrderRequest, ...] = ()
     closed_trades: tuple[Trade, ...] = ()
     equity: float | None = None
+    account: AccountSnapshot | None = None
 
 
 @dataclass(slots=True)
@@ -30,6 +31,12 @@ class TradingEngine:
     portfolio: PortfolioManager
     risk: RiskManager
     config: TradingEngineConfig = field(default_factory=TradingEngineConfig)
+    _last_mark_prices: dict[str, float] = field(init=False, default_factory=dict)
+
+    def __post_init__(self) -> None:
+        set_provider = getattr(self.broker, "set_account_snapshot_provider", None)
+        if callable(set_provider):
+            set_provider(lambda: self.portfolio.account_snapshot(self._last_mark_prices))
 
     def on_market_batch(
         self,
@@ -42,11 +49,15 @@ class TradingEngine:
         closed_trades: list[Trade] = []
 
         mark_prices = {symbol: snapshot.current_close for symbol, snapshot in snapshots.items()}
+        self._last_mark_prices = dict(mark_prices)
+        account = self.broker.get_account_snapshot()
         first_timestamp = min((snapshot.current_timestamp for snapshot in snapshots.values()), default=None)
-        equity = self.portfolio.record_equity(first_timestamp, mark_prices) if first_timestamp is not None else None
+        if first_timestamp is not None:
+            self.portfolio.record_equity(first_timestamp, mark_prices)
+        equity = account.equity
 
         for symbol, snapshot in snapshots.items():
-            position = self.portfolio.position_snapshot(symbol)
+            position = account.positions.get(symbol) or self.portfolio.position_snapshot(symbol)
             if position is None:
                 continue
             fill = self.broker.resolve_position_exit(position, snapshot)
@@ -56,6 +67,8 @@ class TradingEngine:
             trade = self._close_position_from_fill(fill, bar_index)
             if trade is not None:
                 closed_trades.append(trade)
+
+        account = self.broker.get_account_snapshot()
 
         opened_orders: list[OrderRequest] = []
         opened_this_bar = 0
@@ -68,17 +81,17 @@ class TradingEngine:
             if not self.risk.can_open_symbol(
                 candidate.symbol,
                 bar_index,
-                open_positions_count=len(self.portfolio.state.positions),
+                open_positions_count=len(account.positions),
             ):
                 continue
-            if candidate.symbol in self.portfolio.state.positions:
+            if candidate.symbol in account.positions or candidate.symbol in self.portfolio.state.positions:
                 continue
             stop_pct, take_pct = self._barrier_pcts(candidate)
             if stop_pct is None or take_pct is None:
                 continue
             sizing = self.risk.size_position(
-                balance=self.portfolio.balance,
-                available_balance=self.portfolio.available_balance,
+                balance=account.balance,
+                available_balance=max(0.0, account.balance - account.used_margin),
                 stop_pct=stop_pct,
             )
             if sizing is None:
@@ -107,6 +120,7 @@ class TradingEngine:
                     opened_at=fill.timestamp,
                 )
                 opened_this_bar += 1
+                account = self.broker.get_account_snapshot()
 
                 position = self.portfolio.position_snapshot(fill.symbol)
                 if position is None:
@@ -124,6 +138,7 @@ class TradingEngine:
             opened_orders=tuple(opened_orders),
             closed_trades=tuple(closed_trades),
             equity=equity,
+            account=account,
         )
 
     def _close_position_from_fill(self, fill: Fill, bar_index: int) -> Trade | None:
