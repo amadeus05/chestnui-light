@@ -69,7 +69,7 @@ def test_execution_journal_records_orders_fills_trades_and_account_snapshots():
         idempotency_guard=InMemoryIdempotencyGuard(),
     )
 
-    result = pipeline.on_contexts(contexts)
+    result = pipeline.process_contexts(contexts)
 
     event_types = [event.event_type for event in journal.events]
     assert event_types == [
@@ -100,7 +100,7 @@ def test_backtest_runtime_does_not_wire_execution_journal():
     runtime = build_runtime(config, adapters)
     contexts = runtime.pipeline.market_cache.update_from_frame(_market_frame())
 
-    runtime.pipeline.on_contexts(contexts)
+    runtime.pipeline.process_contexts(contexts)
 
     assert runtime.pipeline.trading_engine.execution_journal is None
     assert journal.events == []

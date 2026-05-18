@@ -94,7 +94,7 @@ def test_pipeline_batches_all_symbols_before_selecting_best_signal():
         idempotency_guard=InMemoryIdempotencyGuard(),
     )
 
-    result = pipeline.on_contexts(contexts)
+    result = pipeline.process_contexts(contexts)
 
     assert len(result.result.opened_orders) == 1
     assert result.result.opened_orders[0].symbol == "ETH/USDT"
@@ -143,7 +143,7 @@ def test_new_position_can_exit_on_entry_candle():
         idempotency_guard=InMemoryIdempotencyGuard(),
     )
 
-    result = pipeline.on_contexts(contexts)
+    result = pipeline.process_contexts(contexts)
 
     assert len(result.result.opened_orders) == 1
     assert len(result.result.closed_trades) == 1

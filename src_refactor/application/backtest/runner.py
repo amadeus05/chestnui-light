@@ -54,6 +54,7 @@ class BacktestRunner:
         )
         return BacktestRunResult(steps=result.steps, final_result=result.final_result, metrics=metrics)
 
+
 def build_oos_backtest_runner(
     *,
     config: RuntimeConfig,

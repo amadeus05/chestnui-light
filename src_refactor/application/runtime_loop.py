@@ -5,9 +5,9 @@ from dataclasses import dataclass
 import pandas as pd
 
 from src_refactor.application.pipeline import PipelineStepResult, TradingPipeline
+from src_refactor.application.pipeline.runtime_market_cache import MarketContext
 from src_refactor.core.contracts import MarketBatchStream
 from src_refactor.core.types import MarketDataBatch
-from src_refactor.application.pipeline.runtime_market_cache import MarketContext
 from src_refactor.domain.trading import TradingEngineStepResult
 
 
@@ -34,7 +34,7 @@ class RuntimeLoop:
             contexts = self.pipeline.contexts_from_batch(batch)
             if not contexts or not self._inside_window(contexts):
                 continue
-            steps.append(self.pipeline.on_contexts(contexts))
+            steps.append(self.pipeline.process_contexts(contexts))
 
         final_result = None
         if self.close_open_positions and last_mark_batch is not None:
