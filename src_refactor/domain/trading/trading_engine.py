@@ -75,11 +75,9 @@ class TradingEngine:
             if fill is None:
                 continue
             fills.append(fill)
-            self._record_fill(fill)
-            trade = self._close_position_from_fill(fill, bar_index)
+            trade = self._handle_exit_fill(fill, bar_index=bar_index)
             if trade is not None:
                 closed_trades.append(trade)
-                self._record_trade_closed(trade)
 
         account = self.broker.get_account_snapshot()
 
@@ -153,11 +151,9 @@ class TradingEngine:
                 if exit_fill is None:
                     continue
                 fills.append(exit_fill)
-                self._record_fill(exit_fill)
-                trade = self._close_position_from_fill(exit_fill, bar_index)
+                trade = self._handle_exit_fill(exit_fill, bar_index=bar_index)
                 if trade is not None:
                     closed_trades.append(trade)
-                    self._record_trade_closed(trade)
                     account = self.broker.get_account_snapshot()
 
         self._record_account_snapshot(account, first_timestamp)
@@ -172,10 +168,14 @@ class TradingEngine:
             account=account,
         )
 
-    def _close_position_from_fill(self, fill: Fill, bar_index: int) -> Trade | None:
+    def _handle_exit_fill(self, fill: Fill, *, bar_index: int | None = None) -> Trade | None:
+        self._record_fill(fill)
         trade = self.portfolio.close_position_from_fill(fill)
-        if trade is not None:
+        if trade is None:
+            return None
+        if bar_index is not None:
             self.risk.record_trade(trade, bar_index=bar_index)
+        self._record_trade_closed(trade)
         return trade
 
     def close_all_positions(
@@ -207,11 +207,9 @@ class TradingEngine:
                 reason=reason,
             )
             fills.append(fill)
-            self._record_fill(fill)
-            trade = self.portfolio.close_position_from_fill(fill)
+            trade = self._handle_exit_fill(fill)
             if trade is not None:
                 closed_trades.append(trade)
-                self._record_trade_closed(trade)
 
         self.portfolio.record_equity(pd.to_datetime(timestamp), mark_prices)
         account = self.broker.get_account_snapshot()
