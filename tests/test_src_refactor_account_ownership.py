@@ -100,6 +100,27 @@ def test_exchange_simulator_account_snapshot_tracks_portfolio_provider():
     assert set(account.positions) == {"BTC/USDT"}
 
 
+def test_portfolio_exposes_position_state_without_leaking_storage():
+    portfolio = PortfolioManager(initial_balance=250.0)
+    portfolio.open_position(
+        symbol="BTC/USDT",
+        direction=1,
+        entry_price=100.0,
+        position_notional=50.0,
+        required_margin=25.0,
+        stop_pct=0.02,
+        take_pct=0.04,
+        opened_at=pd.Timestamp("2025-01-01 01:00:00"),
+    )
+
+    snapshots = portfolio.position_snapshots()
+
+    assert portfolio.has_position("BTC/USDT")
+    assert not portfolio.has_position("ETH/USDT")
+    assert set(snapshots) == {"BTC/USDT"}
+    assert snapshots["BTC/USDT"].entry_price == 100.0
+
+
 def test_portfolio_closes_position_from_fill():
     portfolio = PortfolioManager(initial_balance=250.0)
     portfolio.open_position(

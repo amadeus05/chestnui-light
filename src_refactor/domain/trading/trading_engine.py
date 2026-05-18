@@ -99,7 +99,7 @@ class TradingEngine:
                 open_positions_count=len(account.positions),
             ):
                 continue
-            if candidate.symbol in account.positions or candidate.symbol in self.portfolio.state.positions:
+            if candidate.symbol in account.positions or self.portfolio.has_position(candidate.symbol):
                 continue
             sizing = self.risk.size_position(
                 balance=account.balance,
@@ -190,11 +190,8 @@ class TradingEngine:
         self._last_mark_prices = dict(mark_prices)
         account = self.broker.get_account_snapshot()
         positions = dict(account.positions)
-        for symbol in self.portfolio.state.positions:
-            if symbol not in positions:
-                position = self.portfolio.position_snapshot(symbol)
-                if position is not None:
-                    positions[symbol] = position
+        for symbol, position in self.portfolio.position_snapshots().items():
+            positions.setdefault(symbol, position)
 
         for symbol, position in positions.items():
             mark_price = mark_prices.get(symbol)

@@ -63,6 +63,16 @@ class PortfolioManager:
     def available_balance(self) -> float:
         return self.state.balance - self.state.used_margin
 
+    def has_position(self, symbol: str) -> bool:
+        return symbol in self.state.positions
+
+    def position_snapshots(self) -> dict[str, PositionSnapshot]:
+        return {
+            symbol: snapshot
+            for symbol in self.state.positions
+            if (snapshot := self.position_snapshot(symbol)) is not None
+        }
+
     def open_position(
         self,
         *,
@@ -160,11 +170,7 @@ class PortfolioManager:
             balance=float(self.state.balance),
             equity=self.compute_equity(mark_prices or {}),
             used_margin=float(self.state.used_margin),
-            positions={
-                symbol: snapshot
-                for symbol in self.state.positions
-                if (snapshot := self.position_snapshot(symbol)) is not None
-            },
+            positions=self.position_snapshots(),
         )
 
     def position_snapshot(self, symbol: str) -> PositionSnapshot | None:
