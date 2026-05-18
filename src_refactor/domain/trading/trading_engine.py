@@ -11,6 +11,7 @@ from src_refactor.domain.execution import ExecutionJournal
 from src_refactor.domain.portfolio.portfolio_manager import PortfolioManager, Trade
 from src_refactor.domain.risk.risk_manager import RiskManager
 from src_refactor.domain.signals import SignalCandidate
+from src_refactor.domain.trading.order_factory import OrderFactory
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +36,7 @@ class TradingEngine:
     portfolio: PortfolioManager
     risk: RiskManager
     config: TradingEngineConfig = field(default_factory=TradingEngineConfig)
+    order_factory: OrderFactory = field(default_factory=OrderFactory)
     execution_journal: ExecutionJournal | None = None
     _last_mark_prices: dict[str, float] = field(init=False, default_factory=dict)
 
@@ -110,7 +112,13 @@ class TradingEngine:
             if sizing is None:
                 continue
 
-            order = self._order_from_candidate(candidate, sizing.position_notional, stop_pct, take_pct, snapshot)
+            order = self.order_factory.from_signal_candidate(
+                candidate,
+                position_notional=sizing.position_notional,
+                stop_pct=stop_pct,
+                take_pct=take_pct,
+                snapshot=snapshot,
+            )
             self._record_order_submitted(order)
             result = self.broker.place_order(order)
             if not result.accepted:
@@ -269,24 +277,3 @@ class TradingEngine:
         if stop_pct is None or take_pct is None:
             return None, None
         return float(stop_pct), float(take_pct)
-
-    @staticmethod
-    def _order_from_candidate(
-        candidate: SignalCandidate,
-        position_notional: float,
-        stop_pct: float,
-        take_pct: float,
-        snapshot: MarketExecutionSnapshot,
-    ) -> OrderRequest:
-        side = "buy" if candidate.direction == 1 else "sell"
-        quantity = position_notional / snapshot.next_open
-        return OrderRequest(
-            order_id=f"{candidate.symbol}:{snapshot.next_timestamp.value}:{side}",
-            symbol=candidate.symbol,
-            side=side,
-            order_type="market",
-            quantity=quantity,
-            stop_pct=stop_pct,
-            take_pct=take_pct,
-            created_at=snapshot.current_timestamp,
-        )
