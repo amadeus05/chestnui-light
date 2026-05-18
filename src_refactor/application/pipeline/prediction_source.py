@@ -1,0 +1,67 @@
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import dataclass, field
+
+import pandas as pd
+
+from src_refactor.application.pipeline.runtime_market_cache import MarketContext, candles_to_frame
+from src_refactor.core.contracts.model_input_builder import ModelInputBuilder
+from src_refactor.core.contracts.model_predictor import ModelPredictor
+from src_refactor.core.types import ModelSpec, Prediction
+
+
+class PredictionSource:
+    def predictions_for(self, context: MarketContext) -> list[Prediction]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, slots=True)
+class ModelPredictionSource(PredictionSource):
+    input_builder: ModelInputBuilder
+    predictor: ModelPredictor
+    model_spec: ModelSpec
+
+    def predictions_for(self, context: MarketContext) -> list[Prediction]:
+        model_input = self.input_builder.build_predict_input(candles_to_frame(context.history), self.model_spec)
+        return [
+            normalize_prediction(
+                self.predictor.predict(model_input),
+                context=context,
+                model_id=self.model_spec.model_id,
+            )
+        ]
+
+
+@dataclass(frozen=True, slots=True)
+class StoredPredictionSource(PredictionSource):
+    predictions_by_timestamp: dict[pd.Timestamp, list[Prediction]] = field(default_factory=dict)
+
+    @classmethod
+    def from_predictions(cls, predictions: list[Prediction]) -> "StoredPredictionSource":
+        return cls(predictions_by_timestamp=group_predictions_by_timestamp(predictions))
+
+    def predictions_for(self, context: MarketContext) -> list[Prediction]:
+        return self.predictions_by_timestamp.get(pd.to_datetime(context.snapshot.current_timestamp), [])
+
+
+def group_predictions_by_timestamp(predictions: list[Prediction]) -> dict[pd.Timestamp, list[Prediction]]:
+    grouped: dict[pd.Timestamp, list[Prediction]] = defaultdict(list)
+    for prediction in predictions:
+        grouped[pd.to_datetime(prediction.timestamp)].append(prediction)
+    return dict(grouped)
+
+
+def normalize_prediction(prediction: Prediction, *, context: MarketContext, model_id: str) -> Prediction:
+    return Prediction(
+        timestamp=pd.to_datetime(context.snapshot.current_timestamp),
+        symbol=context.symbol,
+        timeframe=context.history[-1].timeframe,
+        model_id=model_id,
+        direction=prediction.direction,
+        confidence=prediction.confidence,
+        fold_id=prediction.fold_id,
+        proba_long=prediction.proba_long,
+        proba_short=prediction.proba_short,
+        raw=prediction.raw,
+    )
