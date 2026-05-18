@@ -14,16 +14,6 @@ def safe_ratio_series(numerator: pd.Series, denominator: pd.Series) -> pd.Series
 
 
 def compute_atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int) -> pd.Series:
-    try:
-        import pandas_ta as ta
-    except Exception:
-        ta = None
-
-    if ta is not None:
-        atr = ta.atr(high, low, close, length=length)
-        if atr is not None:
-            return atr
-
     prev_close = close.shift(1)
     true_range = pd.concat(
         [

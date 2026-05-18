@@ -6,9 +6,10 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from src_refactor.application.pipeline.runtime_market_cache import MarketContext, candles_to_frame
-from src_refactor.core.contracts.model_input_builder import ModelInputBuilder
+from src_refactor.core.contracts.model_input_builder import ModelInputBuilder, ModelInputRequest
 from src_refactor.core.contracts.model_predictor import ModelPredictor
 from src_refactor.core.types import ModelSpec, Prediction
+from src_refactor.domain.features import FeaturePipeline
 
 
 class PredictionSource:
@@ -21,9 +22,18 @@ class ModelPredictionSource(PredictionSource):
     input_builder: ModelInputBuilder
     predictor: ModelPredictor
     model_spec: ModelSpec
+    feature_pipeline: FeaturePipeline | None = None
 
     def predictions_for(self, context: MarketContext) -> list[Prediction]:
-        model_input = self.input_builder.build_predict_input(candles_to_frame(context.history), self.model_spec)
+        model_input = self.input_builder.build_predict_input(
+            ModelInputRequest(
+                symbol=context.symbol,
+                timeframe=self.model_spec.timeframe,
+                base_candles=candles_to_frame(context.history),
+                spec=self.model_spec,
+                feature_pipeline=self.feature_pipeline,
+            )
+        )
         return [
             normalize_prediction(
                 self.predictor.predict(model_input),

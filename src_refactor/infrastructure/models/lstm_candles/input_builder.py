@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from src_refactor.core.config import ExperimentConfig
-from src_refactor.core.contracts import ModelInputBuilder
+from src_refactor.core.contracts import ModelInputBuilder, ModelInputRequest
 from src_refactor.core.types import ModelSpec
 from src_refactor.core.types import LstmCandleWindowInput
 
@@ -53,8 +53,13 @@ class LstmCandleInputBuilder(ModelInputBuilder):
             metadata={"frame": frame.copy()},
         )
 
-    def build_predict_input(self, frame: pd.DataFrame, spec: ModelSpec) -> LstmCandleWindowInput:
-        window_size = int(spec.metadata.get("window_size", self.window_size))
+    def build_predict_input(
+        self,
+        request: ModelInputRequest | pd.DataFrame,
+        spec: ModelSpec | None = None,
+    ) -> LstmCandleWindowInput:
+        frame, effective_spec = self._resolve_predict_frame(request, spec)
+        window_size = int(effective_spec.metadata.get("window_size", self.window_size))
         candle_frame = self._candle_frame(frame).tail(window_size)
         sequence = np.nan_to_num(candle_frame.to_numpy(dtype=np.float32, copy=True), nan=0.0, posinf=0.0, neginf=0.0)
         if len(sequence) < window_size:
@@ -65,6 +70,17 @@ class LstmCandleInputBuilder(ModelInputBuilder):
             window_size=window_size,
             metadata={"frame": frame.copy()},
         )
+
+    @staticmethod
+    def _resolve_predict_frame(
+        request: ModelInputRequest | pd.DataFrame,
+        spec: ModelSpec | None,
+    ) -> tuple[pd.DataFrame, ModelSpec]:
+        if isinstance(request, ModelInputRequest):
+            return request.base_candles, request.spec
+        if spec is None:
+            raise ValueError("LSTM candle build_predict_input requires spec when passing a DataFrame.")
+        return request, spec
 
     def _candle_frame(self, frame: pd.DataFrame) -> pd.DataFrame:
         missing = [column for column in self.candle_columns if column not in frame.columns]

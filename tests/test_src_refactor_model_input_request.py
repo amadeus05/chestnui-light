@@ -1,0 +1,114 @@
+import numpy as np
+import pandas as pd
+
+from src_refactor.application.pipeline.prediction_source import ModelPredictionSource
+from src_refactor.application.pipeline.runtime_market_cache import RuntimeMarketCache
+from src_refactor.core.config import ExperimentConfig
+from src_refactor.core.contracts import ModelInputBuilder, ModelInputRequest, ModelPredictor
+from src_refactor.core.types import LightGbmInput, ModelInput, ModelSpec, Prediction
+from src_refactor.infrastructure.models.lightgbm.input_builder import LightGbmInputBuilder
+from src_refactor.infrastructure.models.lstm_features.input_builder import LstmFeatureInputBuilder
+
+
+def make_candles(rows: int = 72) -> pd.DataFrame:
+    timestamps = pd.date_range("2025-01-01", periods=rows, freq="h")
+    close = 100.0 + np.arange(rows, dtype=float) * 0.25
+    return pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "symbol": "BTC/USDT",
+            "timeframe": "1h",
+            "open": close - 0.1,
+            "high": close + 0.5,
+            "low": close - 0.5,
+            "close": close,
+            "volume": np.full(rows, 1_000.0),
+        }
+    )
+
+
+class CapturingInputBuilder(ModelInputBuilder):
+    def __init__(self) -> None:
+        self.request: ModelInputRequest | None = None
+
+    def build_train_input(self, frame: pd.DataFrame, config: ExperimentConfig) -> ModelInput:
+        raise NotImplementedError
+
+    def build_predict_input(self, request: ModelInputRequest | pd.DataFrame, spec: ModelSpec | None = None) -> ModelInput:
+        assert isinstance(request, ModelInputRequest)
+        self.request = request
+        return LightGbmInput(features=pd.DataFrame({"x": [1.0]}), feature_names=("x",))
+
+
+class StaticPredictor(ModelPredictor):
+    def predict(self, model_input: ModelInput) -> Prediction:
+        return Prediction(
+            timestamp=pd.Timestamp("2025-01-01"),
+            symbol="",
+            timeframe="1h",
+            model_id="raw",
+            direction=0,
+            confidence=0.8,
+            proba_long=0.8,
+            proba_short=0.2,
+        )
+
+
+def test_model_prediction_source_uses_model_input_request():
+    cache = RuntimeMarketCache()
+    contexts = cache.update_from_frame(make_candles(rows=3))
+    builder = CapturingInputBuilder()
+    source = ModelPredictionSource(
+        input_builder=builder,
+        predictor=StaticPredictor(),
+        model_spec=ModelSpec(model_type="lightgbm", timeframe="1h"),
+    )
+
+    predictions = source.predictions_for(contexts[-1])
+
+    assert len(predictions) == 1
+    assert builder.request is not None
+    assert builder.request.symbol == "BTC/USDT"
+    assert builder.request.timeframe == "1h"
+    assert builder.request.base_candles["close"].tolist() == [100.0, 100.25]
+
+
+def test_lightgbm_builder_builds_runtime_features_from_raw_candles():
+    spec = ModelSpec(
+        model_type="lightgbm",
+        timeframe="1h",
+        metadata={"feature_columns": ["ema_fast_slow"]},
+    )
+
+    model_input = LightGbmInputBuilder().build_predict_input(
+        ModelInputRequest(
+            symbol="BTC/USDT",
+            timeframe="1h",
+            base_candles=make_candles(),
+            spec=spec,
+        )
+    )
+
+    assert model_input.feature_names == ("ema_fast_slow",)
+    assert list(model_input.features.columns) == ["ema_fast_slow"]
+    assert len(model_input.features) == 72
+
+
+def test_lstm_feature_builder_builds_runtime_feature_window_from_raw_candles():
+    spec = ModelSpec(
+        model_type="lstm_features",
+        timeframe="1h",
+        metadata={"feature_columns": ["ema_fast_slow"], "window_size": 8},
+    )
+
+    model_input = LstmFeatureInputBuilder().build_predict_input(
+        ModelInputRequest(
+            symbol="BTC/USDT",
+            timeframe="1h",
+            base_candles=make_candles(),
+            spec=spec,
+        )
+    )
+
+    assert model_input.feature_names == ("ema_fast_slow",)
+    assert model_input.sequence.shape == (1, 8, 1)

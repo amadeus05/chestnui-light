@@ -5,9 +5,10 @@ from dataclasses import dataclass
 import pandas as pd
 
 from src_refactor.core.config import ExperimentConfig
-from src_refactor.core.contracts import ModelInputBuilder
+from src_refactor.core.contracts import ModelInputBuilder, ModelInputRequest
 from src_refactor.core.types import ModelSpec
 from src_refactor.core.types import LightGbmInput
+from src_refactor.domain.features import FeaturePipeline, FeaturePipelineConfig
 from src_refactor.infrastructure.models.lightgbm.config import LightGbmTrainingConfig
 
 RESERVED_COLUMNS = {"Target", "timestamp", "barrier_stop_pct", "barrier_take_pct"}
@@ -33,12 +34,13 @@ class LightGbmInputBuilder(ModelInputBuilder):
             },
         )
 
-    def build_predict_input(self, frame: pd.DataFrame, spec: ModelSpec) -> LightGbmInput:
-        feature_names = tuple(spec.metadata.get("feature_columns", ()))
-        clip_bounds = dict(spec.metadata.get("feature_clip", {}).get("bounds", {}))
+    def build_predict_input(self, request: ModelInputRequest | pd.DataFrame, spec: ModelSpec | None = None) -> LightGbmInput:
+        frame, effective_spec = self._resolve_predict_frame(request, spec)
+        feature_names = tuple(effective_spec.metadata.get("feature_columns", ()))
+        clip_bounds = dict(effective_spec.metadata.get("feature_clip", {}).get("bounds", {}))
         prepared = self.apply_feature_clip_bounds(frame, clip_bounds)
         if not feature_names:
-            lightgbm_config = LightGbmTrainingConfig.from_metadata(spec.metadata)
+            lightgbm_config = LightGbmTrainingConfig.from_metadata(effective_spec.metadata)
             feature_names = tuple(self.select_feature_columns(prepared, lightgbm_config))
         missing = [column for column in feature_names if column not in prepared.columns]
         if missing:
@@ -48,6 +50,27 @@ class LightGbmInputBuilder(ModelInputBuilder):
             feature_names=tuple(feature_names),
             metadata={"frame": prepared},
         )
+
+    def _resolve_predict_frame(
+        self,
+        request: ModelInputRequest | pd.DataFrame,
+        spec: ModelSpec | None,
+    ) -> tuple[pd.DataFrame, ModelSpec]:
+        if isinstance(request, ModelInputRequest):
+            frame = request.base_candles
+            feature_names = tuple(request.spec.metadata.get("feature_columns", ()))
+            if feature_names and not set(feature_names).issubset(frame.columns):
+                pipeline = request.feature_pipeline or _feature_pipeline_for(feature_names)
+                frame = pipeline.build_for_symbol(
+                    request.symbol,
+                    request.base_candles,
+                    request.htf_candles,
+                )
+            return frame, request.spec
+
+        if spec is None:
+            raise ValueError("LightGBM build_predict_input requires spec when passing a DataFrame.")
+        return request, spec
 
     @staticmethod
     def select_feature_columns(dataset: pd.DataFrame, config: LightGbmTrainingConfig) -> list[str]:
@@ -107,3 +130,14 @@ class LightGbmInputBuilder(ModelInputBuilder):
                 continue
             clipped[column] = clipped[column].clip(lower=bounds["lower"], upper=bounds["upper"])
         return clipped
+
+
+def _feature_pipeline_for(feature_names: tuple[str, ...]) -> FeaturePipeline:
+    return FeaturePipeline(
+        FeaturePipelineConfig(
+            raw_request={
+                "profile": "empty",
+                "include_features": list(feature_names),
+            }
+        )
+    )
