@@ -10,6 +10,7 @@ from src_refactor.core.contracts.stream_market_feed import LiveMarketDataFeed
 from src_refactor.core.types import Candle, MarketDataEvent, MarketDataSubscription, ModelSpec
 from src_refactor.domain.signals import SignalBatchProcessor
 from src_refactor.infrastructure.exchanges.simulation import ExchangeSimulator
+from src_refactor.infrastructure.feeds import LiveFeedMarketStream
 
 
 class FakeLiveFeed(LiveMarketDataFeed):
@@ -29,10 +30,10 @@ class FakeLiveFeed(LiveMarketDataFeed):
         self.closed = True
 
 
-def _event(timestamp: str) -> MarketDataEvent:
+def _event(timestamp: str, symbol: str = "BTC/USDT") -> MarketDataEvent:
     return MarketDataEvent(
         candle=Candle(
-            symbol="BTC/USDT",
+            symbol=symbol,
             timeframe="1h",
             timestamp=pd.Timestamp(timestamp),
             open=100.0,
@@ -70,3 +71,31 @@ def test_live_runner_uses_same_pipeline_path_as_streaming_runtime():
     assert feed.closed is True
     assert len(result.steps) == 1
     assert result.steps[0].result.opened_orders == ()
+
+
+def test_live_feed_market_stream_batches_subscribed_symbols_by_timestamp():
+    feed = FakeLiveFeed(
+        [
+            _event("2025-01-01 00:00:00", "ETH/USDT"),
+            _event("2025-01-01 00:00:00", "BTC/USDT"),
+            _event("2025-01-01 01:00:00", "BTC/USDT"),
+            _event("2025-01-01 01:00:00", "ETH/USDT"),
+        ]
+    )
+    subscriptions = [
+        MarketDataSubscription(symbol="BTC/USDT", timeframe="1h"),
+        MarketDataSubscription(symbol="ETH/USDT", timeframe="1h"),
+    ]
+
+    batches = list(LiveFeedMarketStream(feed, subscriptions).stream())
+
+    assert feed.subscriptions == subscriptions
+    assert feed.closed is True
+    assert [batch.timestamp for batch in batches] == [
+        pd.Timestamp("2025-01-01 00:00:00"),
+        pd.Timestamp("2025-01-01 01:00:00"),
+    ]
+    assert [set(batch.by_symbol) for batch in batches] == [
+        {"BTC/USDT", "ETH/USDT"},
+        {"BTC/USDT", "ETH/USDT"},
+    ]

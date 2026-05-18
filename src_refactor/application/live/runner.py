@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 
 from src_refactor.application.pipeline import PipelineStepResult, TradingPipeline
 from src_refactor.application.runtime_builder import RuntimeAdapters, RuntimeConfig, build_pipeline_from_runtime
+from src_refactor.application.runtime_loop import RuntimeLoop
 from src_refactor.core.contracts.stream_market_feed import LiveMarketDataFeed
-from src_refactor.core.types import MarketDataBatch, MarketDataEvent, MarketDataSubscription
+from src_refactor.core.types import MarketDataSubscription
+from src_refactor.infrastructure.feeds import LiveFeedMarketStream
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,17 +24,14 @@ class LiveRunner:
     steps: list[PipelineStepResult] = field(default_factory=list)
 
     async def run(self) -> LiveRunResult:
-        await self.feed.subscribe(self.subscriptions)
-        try:
-            await self.feed.run(self.on_event)
-        finally:
-            await self.feed.close()
+        result = await asyncio.to_thread(
+            RuntimeLoop(
+                stream=LiveFeedMarketStream(self.feed, self.subscriptions),
+                pipeline=self.pipeline,
+            ).run
+        )
+        self.steps.extend(result.steps)
         return LiveRunResult(steps=tuple(self.steps))
-
-    def on_event(self, event: MarketDataEvent) -> None:
-        result = self.pipeline.process_batch(MarketDataBatch.from_candles([event.candle]))
-        if result is not None:
-            self.steps.append(result)
 
 
 def build_live_runner(
