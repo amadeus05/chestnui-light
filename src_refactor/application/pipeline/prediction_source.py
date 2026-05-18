@@ -5,7 +5,11 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from src_refactor.application.pipeline.runtime_market_cache import MarketContext, candles_to_frame
+from src_refactor.application.pipeline.runtime_market_cache import (
+    MarketContext,
+    candle_map_to_frame_map,
+    candles_to_frame,
+)
 from src_refactor.core.contracts.model_input_builder import ModelInputBuilder, ModelInputRequest
 from src_refactor.core.contracts.model_predictor import ModelPredictor
 from src_refactor.core.types import ModelSpec, Prediction
@@ -23,14 +27,26 @@ class ModelPredictionSource(PredictionSource):
     predictor: ModelPredictor
     model_spec: ModelSpec
     feature_pipeline: FeaturePipeline | None = None
+    htf_candle_map: dict[str, pd.DataFrame] = field(default_factory=dict)
 
     def predictions_for(self, context: MarketContext) -> list[Prediction]:
+        base_candle_map = candle_map_to_frame_map(context.base_history_map)
+        if context.symbol not in base_candle_map:
+            base_candle_map[context.symbol] = candles_to_frame(context.history)
+
+        htf_candle_map = {
+            **self.htf_candle_map,
+            **candle_map_to_frame_map(context.htf_history_map),
+        }
         model_input = self.input_builder.build_predict_input(
             ModelInputRequest(
                 symbol=context.symbol,
                 timeframe=self.model_spec.timeframe,
-                base_candles=candles_to_frame(context.history),
+                base_candles=base_candle_map[context.symbol],
                 spec=self.model_spec,
+                htf_candles=htf_candle_map.get(context.symbol),
+                base_candle_map=base_candle_map,
+                htf_candle_map=htf_candle_map,
                 feature_pipeline=self.feature_pipeline,
             )
         )

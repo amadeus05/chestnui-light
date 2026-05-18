@@ -13,6 +13,8 @@ class MarketContext:
     symbol: str
     history: tuple[Candle, ...]
     snapshot: MarketExecutionSnapshot
+    base_history_map: dict[str, tuple[Candle, ...]] = field(default_factory=dict)
+    htf_history_map: dict[str, tuple[Candle, ...]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -31,6 +33,7 @@ class RuntimeMarketCache:
             symbol=candle.symbol,
             history=tuple(history[:-1]),
             snapshot=build_execution_snapshot(previous, current),
+            base_history_map=self.history_map_until(previous.timestamp, timeframe=previous.timeframe),
         )
 
     def update_from_frame(
@@ -63,6 +66,25 @@ class RuntimeMarketCache:
                 contexts.append(context)
         return contexts
 
+    def history_map_until(
+        self,
+        timestamp: pd.Timestamp,
+        *,
+        timeframe: str | None = None,
+    ) -> dict[str, tuple[Candle, ...]]:
+        cutoff = pd.to_datetime(timestamp)
+        output: dict[str, tuple[Candle, ...]] = {}
+        for symbol, candles in self.candles.items():
+            filtered = tuple(
+                candle
+                for candle in candles
+                if pd.to_datetime(candle.timestamp) <= cutoff
+                and (timeframe is None or candle.timeframe == timeframe)
+            )
+            if filtered:
+                output[symbol] = filtered
+        return output
+
 
 def build_execution_snapshot(previous: Candle, current: Candle) -> MarketExecutionSnapshot:
     if previous.symbol != current.symbol:
@@ -94,3 +116,11 @@ def candles_to_frame(candles: tuple[Candle, ...] | list[Candle]) -> pd.DataFrame
             for candle in candles
         ]
     )
+
+
+def candle_map_to_frame_map(candle_map: dict[str, tuple[Candle, ...] | list[Candle]]) -> dict[str, pd.DataFrame]:
+    return {
+        symbol: candles_to_frame(list(candles))
+        for symbol, candles in candle_map.items()
+        if candles
+    }

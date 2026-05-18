@@ -10,6 +10,7 @@ from src_refactor.core.contracts import ModelInputBuilder, ModelInputRequest
 from src_refactor.core.types import ModelSpec
 from src_refactor.core.types import LstmFeatureSequenceInput
 from src_refactor.domain.features import FeaturePipeline, FeaturePipelineConfig
+from src_refactor.domain.features.builders.cross_symbol.btc_relative import BTC_RELATIVE_FEATURE_COLUMNS
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,11 +64,11 @@ class LstmFeatureInputBuilder(ModelInputBuilder):
             feature_names = tuple(request.spec.metadata.get("feature_columns", ()))
             if feature_names and not set(feature_names).issubset(frame.columns):
                 pipeline = request.feature_pipeline or _feature_pipeline_for(feature_names)
-                frame = pipeline.build_for_symbol(
-                    request.symbol,
-                    request.base_candles,
-                    request.htf_candles,
+                base_map = request.base_candle_map or {request.symbol: request.base_candles}
+                htf_map = request.htf_candle_map or (
+                    {request.symbol: request.htf_candles} if request.htf_candles is not None else None
                 )
+                frame = pipeline.build(base_map, htf_map).feature_map[request.symbol]
             return frame, request.spec
 
         if spec is None:
@@ -148,11 +149,14 @@ def left_pad_sequence(sequence: np.ndarray, window_size: int) -> np.ndarray:
 
 
 def _feature_pipeline_for(feature_names: tuple[str, ...]) -> FeaturePipeline:
+    include_features = set(feature_names)
+    if include_features.intersection(BTC_RELATIVE_FEATURE_COLUMNS):
+        include_features.add("return_1h_24")
     return FeaturePipeline(
         FeaturePipelineConfig(
             raw_request={
                 "profile": "empty",
-                "include_features": list(feature_names),
+                "include_features": sorted(include_features),
             }
         )
     )
