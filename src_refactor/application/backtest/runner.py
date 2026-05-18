@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import groupby
 
 import pandas as pd
 
@@ -35,13 +36,12 @@ class BacktestRunner:
             symbol_column=self.symbol_column,
         )
         results: list[PipelineStepResult] = []
-        for context in steps:
-            timestamp = context.snapshot.current_timestamp
+        for timestamp, group in groupby(steps, key=lambda item: item.snapshot.current_timestamp):
             if start is not None and timestamp < start:
                 continue
             if end is not None and timestamp > end:
                 continue
-            results.append(self.pipeline.on_context(context))
+            results.append(self.pipeline.on_contexts(list(group)))
 
         return BacktestRunResult(steps=tuple(results))
 

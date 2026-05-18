@@ -13,10 +13,11 @@ class ExchangeSimulator:
     """Shared simulated exchange for backtest and paper modes."""
 
     pricing: ExecutionPricingConfig = field(default_factory=ExecutionPricingConfig)
+    open_orders: dict[str, OrderRequest] = field(init=False, default_factory=dict)
+    fills: list[Fill] = field(init=False, default_factory=list)
+    fill_model: CandleFillModel = field(init=False)
 
     def __post_init__(self) -> None:
-        self.open_orders: dict[str, OrderRequest] = {}
-        self.fills: list[Fill] = []
         self.fill_model = CandleFillModel(self.pricing)
 
     def place_order(self, order: OrderRequest) -> BrokerOrderResult:
@@ -75,4 +76,3 @@ class ExchangeSimulator:
             created_at=order.created_at,
             status=status,  # type: ignore[arg-type]
         )
-

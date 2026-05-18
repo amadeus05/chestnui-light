@@ -53,20 +53,9 @@ class TradingEngine:
             if fill is None:
                 continue
             fills.append(fill)
-            trade = self.portfolio.close_position(
-                symbol=symbol,
-                exit_price=fill.price,
-                reason=fill.reason,
-                closed_at=fill.timestamp,
-            )
+            trade = self._close_position_from_fill(fill, bar_index)
             if trade is not None:
                 closed_trades.append(trade)
-                self.risk.record_trade_close(
-                    symbol=symbol,
-                    pnl_pct=trade.pnl_pct,
-                    reason=trade.reason,
-                    bar_index=bar_index,
-                )
 
         opened_orders: list[OrderRequest] = []
         opened_this_bar = 0
@@ -119,12 +108,39 @@ class TradingEngine:
                 )
                 opened_this_bar += 1
 
+                position = self.portfolio.position_snapshot(fill.symbol)
+                if position is None:
+                    continue
+                exit_fill = self.broker.resolve_position_exit(position, snapshot)
+                if exit_fill is None:
+                    continue
+                fills.append(exit_fill)
+                trade = self._close_position_from_fill(exit_fill, bar_index)
+                if trade is not None:
+                    closed_trades.append(trade)
+
         return TradingEngineStepResult(
             fills=tuple(fills),
             opened_orders=tuple(opened_orders),
             closed_trades=tuple(closed_trades),
             equity=equity,
         )
+
+    def _close_position_from_fill(self, fill: Fill, bar_index: int) -> Trade | None:
+        trade = self.portfolio.close_position(
+            symbol=fill.symbol,
+            exit_price=fill.price,
+            reason=fill.reason,
+            closed_at=fill.timestamp,
+        )
+        if trade is not None:
+            self.risk.record_trade_close(
+                symbol=fill.symbol,
+                pnl_pct=trade.pnl_pct,
+                reason=trade.reason,
+                bar_index=bar_index,
+            )
+        return trade
 
     @staticmethod
     def _barrier_pcts(candidate: SignalCandidate) -> tuple[float | None, float | None]:
