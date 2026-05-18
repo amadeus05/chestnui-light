@@ -10,6 +10,7 @@ import pandas as pd
 
 from src_refactor.core.contracts import PredictionStore
 from src_refactor.core.types import Prediction
+from src_refactor.infrastructure.predictions.timestamps import canonical_prediction_timestamp
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,14 +50,14 @@ class ParquetPredictionStore(PredictionStore):
         if frame.empty:
             return []
 
-        frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True).dt.tz_convert(None)
         mask = frame["model_id"] == model_id
         if symbols:
             mask &= frame["symbol"].isin(symbols)
         if start is not None:
-            mask &= frame["timestamp"] >= pd.to_datetime(start, utc=True)
+            mask &= frame["timestamp"] >= canonical_prediction_timestamp(start)
         if end is not None:
-            mask &= frame["timestamp"] <= pd.to_datetime(end, utc=True)
+            mask &= frame["timestamp"] <= canonical_prediction_timestamp(end)
 
         filtered = frame.loc[mask].sort_values(["timestamp", "symbol"]).reset_index(drop=True)
         return [_row_to_prediction(row) for _, row in filtered.iterrows()]
@@ -64,7 +65,7 @@ class ParquetPredictionStore(PredictionStore):
 
 def _prediction_to_row(prediction: Prediction) -> dict[str, Any]:
     return {
-        "timestamp": pd.to_datetime(prediction.timestamp, utc=True),
+        "timestamp": canonical_prediction_timestamp(prediction.timestamp),
         "symbol": prediction.symbol,
         "timeframe": prediction.timeframe,
         "model_id": prediction.model_id,
@@ -80,7 +81,7 @@ def _prediction_to_row(prediction: Prediction) -> dict[str, Any]:
 def _row_to_prediction(row: pd.Series) -> Prediction:
     fold_id = row.get("fold_id")
     return Prediction(
-        timestamp=pd.to_datetime(row["timestamp"], utc=True),
+        timestamp=canonical_prediction_timestamp(row["timestamp"]),
         symbol=str(row["symbol"]),
         timeframe=str(row["timeframe"]),
         model_id=str(row["model_id"]),

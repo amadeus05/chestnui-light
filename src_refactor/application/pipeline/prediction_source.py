@@ -14,6 +14,7 @@ from src_refactor.core.contracts.model_input_builder import ModelInputBuilder, M
 from src_refactor.core.contracts.model_predictor import ModelPredictor
 from src_refactor.core.types import ModelSpec, Prediction
 from src_refactor.domain.features import FeaturePipeline
+from src_refactor.infrastructure.predictions.timestamps import canonical_prediction_timestamp
 
 
 class PredictionSource:
@@ -68,19 +69,19 @@ class StoredPredictionSource(PredictionSource):
         return cls(predictions_by_timestamp=group_predictions_by_timestamp(predictions))
 
     def predictions_for(self, context: MarketContext) -> list[Prediction]:
-        return self.predictions_by_timestamp.get(pd.to_datetime(context.snapshot.current_timestamp), [])
+        return self.predictions_by_timestamp.get(canonical_prediction_timestamp(context.snapshot.current_timestamp), [])
 
 
 def group_predictions_by_timestamp(predictions: list[Prediction]) -> dict[pd.Timestamp, list[Prediction]]:
     grouped: dict[pd.Timestamp, list[Prediction]] = defaultdict(list)
     for prediction in predictions:
-        grouped[pd.to_datetime(prediction.timestamp)].append(prediction)
+        grouped[canonical_prediction_timestamp(prediction.timestamp)].append(prediction)
     return dict(grouped)
 
 
 def normalize_prediction(prediction: Prediction, *, context: MarketContext, model_id: str) -> Prediction:
     return Prediction(
-        timestamp=pd.to_datetime(context.snapshot.current_timestamp),
+        timestamp=canonical_prediction_timestamp(context.snapshot.current_timestamp),
         symbol=context.symbol,
         timeframe=context.history[-1].timeframe,
         model_id=model_id,

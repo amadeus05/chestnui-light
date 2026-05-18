@@ -7,6 +7,7 @@ import pandas as pd
 
 from src_refactor.core.contracts import PredictionStore
 from src_refactor.core.types import Prediction
+from src_refactor.infrastructure.predictions.timestamps import canonical_prediction_timestamp
 
 
 @dataclass(slots=True)
@@ -28,14 +29,17 @@ class InMemoryPredictionStore(PredictionStore):
     ) -> list[Prediction]:
         output: list[Prediction] = []
         symbol_set = set(symbols or ())
+        start_key = canonical_prediction_timestamp(start) if start is not None else None
+        end_key = canonical_prediction_timestamp(end) if end is not None else None
         for prediction in self._predictions:
             if prediction.model_id != model_id:
                 continue
             if symbol_set and prediction.symbol not in symbol_set:
                 continue
-            if start is not None and prediction.timestamp < start:
+            prediction_key = canonical_prediction_timestamp(prediction.timestamp)
+            if start_key is not None and prediction_key < start_key:
                 continue
-            if end is not None and prediction.timestamp > end:
+            if end_key is not None and prediction_key > end_key:
                 continue
             output.append(prediction)
-        return sorted(output, key=lambda prediction: (prediction.timestamp, prediction.symbol))
+        return sorted(output, key=lambda prediction: (canonical_prediction_timestamp(prediction.timestamp), prediction.symbol))
