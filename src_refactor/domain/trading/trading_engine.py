@@ -131,15 +131,13 @@ class TradingEngine:
                 self._record_fill(fill)
                 if fill.reason != "ENTRY":
                     continue
-                self.portfolio.open_position(
-                    symbol=fill.symbol,
+                self.portfolio.open_position_from_fill(
+                    fill,
                     direction=candidate.direction,
-                    entry_price=fill.price,
                     position_notional=sizing.position_notional,
                     required_margin=sizing.required_margin,
                     stop_pct=candidate.stop_pct,
                     take_pct=candidate.take_pct,
-                    opened_at=fill.timestamp,
                 )
                 opened_this_bar += 1
                 account = self.broker.get_account_snapshot()

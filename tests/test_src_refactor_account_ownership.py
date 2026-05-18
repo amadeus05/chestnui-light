@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from src_refactor.core.contracts.broker_gateway import BrokerGateway, BrokerOrderResult
 from src_refactor.core.types import (
@@ -119,6 +120,60 @@ def test_portfolio_exposes_position_state_without_leaking_storage():
     assert not portfolio.has_position("ETH/USDT")
     assert set(snapshots) == {"BTC/USDT"}
     assert snapshots["BTC/USDT"].entry_price == 100.0
+
+
+def test_portfolio_opens_position_from_entry_fill():
+    portfolio = PortfolioManager(initial_balance=250.0)
+    fill = Fill(
+        fill_id="BTC/USDT:entry",
+        order_id="BTC/USDT:order",
+        symbol="BTC/USDT",
+        side="buy",
+        price=101.0,
+        quantity=0.5,
+        fee=0.0,
+        reason="ENTRY",
+        timestamp=pd.Timestamp("2025-01-01 01:00:00"),
+    )
+
+    position = portfolio.open_position_from_fill(
+        fill,
+        direction=1,
+        position_notional=50.0,
+        required_margin=25.0,
+        stop_pct=0.02,
+        take_pct=0.04,
+    )
+
+    assert position.symbol == "BTC/USDT"
+    assert position.entry_price == 101.0
+    assert position.opened_at == fill.timestamp
+    assert portfolio.position_snapshot("BTC/USDT") is not None
+
+
+def test_portfolio_rejects_non_entry_fill_for_opening_position():
+    portfolio = PortfolioManager(initial_balance=250.0)
+    fill = Fill(
+        fill_id="BTC/USDT:exit",
+        order_id="BTC/USDT:order",
+        symbol="BTC/USDT",
+        side="sell",
+        price=99.0,
+        quantity=0.5,
+        fee=0.0,
+        reason="SL",
+        timestamp=pd.Timestamp("2025-01-01 01:00:00"),
+    )
+
+    with pytest.raises(ValueError):
+        portfolio.open_position_from_fill(
+            fill,
+            direction=1,
+            position_notional=50.0,
+            required_margin=25.0,
+            stop_pct=0.02,
+            take_pct=0.04,
+        )
 
 
 def test_portfolio_closes_position_from_fill():

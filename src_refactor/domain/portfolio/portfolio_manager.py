@@ -102,6 +102,29 @@ class PortfolioManager:
         self.state.positions[symbol] = position
         return position
 
+    def open_position_from_fill(
+        self,
+        fill: Fill,
+        *,
+        direction: int,
+        position_notional: float,
+        required_margin: float,
+        stop_pct: float,
+        take_pct: float,
+    ) -> Position:
+        if fill.reason != "ENTRY":
+            raise ValueError(f"Cannot open position from {fill.reason} fill")
+        return self.open_position(
+            symbol=fill.symbol,
+            direction=direction,
+            entry_price=fill.price,
+            position_notional=position_notional,
+            required_margin=required_margin,
+            stop_pct=stop_pct,
+            take_pct=take_pct,
+            opened_at=fill.timestamp,
+        )
+
     def close_position(
         self,
         *,
