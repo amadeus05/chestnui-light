@@ -3,13 +3,27 @@ from collections.abc import Callable
 
 import pandas as pd
 
-from src_refactor.application.live import build_live_runner
+from src_refactor.application.live import LiveRunner
 from src_refactor.application.pipeline import InMemoryIdempotencyGuard, RuntimeMarketCache, StoredPredictionSource
-from src_refactor.application.runtime_builder import RuntimeAdapters, RuntimeConfig, TradingMode, build_paper_runtime
+from src_refactor.application.runtime_builder import (
+    RuntimeAdapters,
+    RuntimeConfig,
+    TradingMode,
+    build_paper_runtime,
+    build_runtime,
+)
 from src_refactor.core.config import ExperimentConfig
 from src_refactor.core.contracts import ModelInputBuilder, ModelPredictor
 from src_refactor.core.contracts.stream_market_feed import LiveMarketDataFeed
-from src_refactor.core.types import Candle, LightGbmInput, MarketDataEvent, MarketDataSubscription, ModelInput, ModelSpec, Prediction
+from src_refactor.core.types import (
+    Candle,
+    LightGbmInput,
+    MarketDataEvent,
+    MarketDataSubscription,
+    ModelInput,
+    ModelSpec,
+    Prediction,
+)
 from src_refactor.domain.signals import SignalBatchProcessor
 from src_refactor.infrastructure.exchanges.simulation import ExchangeSimulator
 from src_refactor.infrastructure.feeds import LiveFeedMarketStream
@@ -58,13 +72,13 @@ def test_live_runner_uses_same_pipeline_path_as_streaming_runtime():
         idempotency_guard=InMemoryIdempotencyGuard(),
         data_source=feed,
     )
-    runner = build_live_runner(
-        config=RuntimeConfig(
-            mode=TradingMode.LIVE,
-            model=ModelSpec(model_type="lightgbm", timeframe="1h"),
-        ),
-        runtime=runtime,
-        subscriptions=subscriptions,
+    config = RuntimeConfig(
+        mode=TradingMode.LIVE,
+        model=ModelSpec(model_type="lightgbm", timeframe="1h"),
+    )
+    runner = LiveRunner(
+        stream=LiveFeedMarketStream(feed, subscriptions),
+        pipeline=build_runtime(config, runtime).pipeline,
     )
 
     result = asyncio.run(runner.run())
