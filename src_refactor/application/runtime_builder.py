@@ -12,8 +12,8 @@ from src_refactor.application.pipeline import (
     RuntimeMarketCache,
     TradingPipeline,
 )
+from src_refactor.core.contracts import MarketBatchStream
 from src_refactor.core.contracts.broker_gateway import BrokerGateway
-from src_refactor.core.contracts.historical_market_feed import HistoricalMarketFeed
 from src_refactor.core.contracts.stream_market_feed import LiveMarketDataFeed
 from src_refactor.core.types import ModelSpec
 from src_refactor.domain.execution import ExecutionJournal, ExecutionPricingConfig
@@ -24,7 +24,7 @@ from src_refactor.domain.trading import TradingEngine, TradingEngineConfig
 from src_refactor.infrastructure.exchanges.simulation import ExchangeSimulator
 from src_refactor.infrastructure.models import ModelRegistry
 
-MarketDataSource = HistoricalMarketFeed | LiveMarketDataFeed
+MarketDataSource = MarketBatchStream | LiveMarketDataFeed
 
 
 class TradingMode(StrEnum):
