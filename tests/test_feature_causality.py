@@ -1,11 +1,39 @@
 import numpy as np
 import pandas as pd
 
-from src.features import indicators
-from src.features.builders.regime_feature_builder import RegimeFeatureBuilder
-from src.features.master_feature_builder import MasterFeatureBuilder
-from src.features.models.feature_context import FeatureContext
+from src_refactor.domain.features import FeaturePipeline, FeaturePipelineConfig
 from src_refactor.domain.labels import LabelingConfig, attach_barrier_columns
+
+REGIME_FEATURES = ["realized_vol_1h", "volatility_regime_stability"]
+
+CAUSAL_FEATURES = [
+    "ema_fast_slow",
+    "trend_efficiency_24h",
+    "realized_vol_1h",
+    "volatility_regime_change_1h",
+    "volume_ratio_1h",
+    "volatility_regime_stability",
+    "vol_regime_classification",
+    "funding_rate_8h",
+    "premium_index_1h",
+    "open_interest_change_pct_8h",
+    "realized_vol_4h_returns_20",
+    "ema_slope_4h",
+    "breakout_quality_4h",
+    "market_breadth_ema_fast_slow_1h",
+    "trend_alignment_1h_4h",
+]
+
+
+def feature_pipeline(feature_columns: list[str]) -> FeaturePipeline:
+    return FeaturePipeline(
+        FeaturePipelineConfig(
+            raw_request={
+                "profile": "empty",
+                "include_features": feature_columns,
+            }
+        )
+    )
 
 
 def make_candles(rows: int = 260, freq: str = "h", symbol_offset: float = 0.0) -> pd.DataFrame:
@@ -48,11 +76,7 @@ def perturb_future(frame: pd.DataFrame, cutoff_idx: int) -> pd.DataFrame:
 
 
 def build_regime_features(frame: pd.DataFrame) -> pd.DataFrame:
-    context = FeatureContext(frame=frame, symbol="TEST/USDT")
-    return RegimeFeatureBuilder().build(
-        context,
-        {"realized_vol_1h", "volatility_regime_stability"},
-    )
+    return feature_pipeline(REGIME_FEATURES).build_for_symbol("TEST/USDT", frame)
 
 
 def test_realized_vol_and_regime_stability_do_not_change_when_future_changes():
@@ -71,8 +95,7 @@ def test_realized_vol_and_regime_stability_do_not_change_when_future_changes():
     )
 
 
-def test_dynamic_barriers_do_not_change_when_future_changes(monkeypatch):
-    monkeypatch.setattr(indicators, "_load_pandas_ta", lambda: None)
+def test_dynamic_barriers_do_not_change_when_future_changes():
     labeling_config = LabelingConfig(
         horizon=16,
         use_dynamic_barriers=True,
@@ -84,8 +107,8 @@ def test_dynamic_barriers_do_not_change_when_future_changes(monkeypatch):
     base = make_candles()
     altered = perturb_future(base, cutoff_idx)
 
-    base_with_features = base.merge(build_regime_features(base), on="timestamp", how="left")
-    altered_with_features = altered.merge(build_regime_features(altered), on="timestamp", how="left")
+    base_with_features = build_regime_features(base)
+    altered_with_features = build_regime_features(altered)
 
     base_barriers = attach_barrier_columns(base_with_features, labeling_config)
     altered_barriers = attach_barrier_columns(altered_with_features, labeling_config)
@@ -123,16 +146,15 @@ def perturb_symbol_maps(base_map, htf_map, base_cutoff_idx: int, htf_cutoff_idx:
     return altered_base, altered_htf
 
 
-def test_master_feature_builder_is_causal_for_all_requested_features(monkeypatch):
-    monkeypatch.setattr(indicators, "_load_pandas_ta", lambda: None)
+def test_feature_pipeline_is_causal_for_requested_features():
     base_cutoff_idx = 180
     htf_cutoff_idx = 45
     base_map, htf_map = make_symbol_maps()
     altered_base_map, altered_htf_map = perturb_symbol_maps(base_map, htf_map, base_cutoff_idx, htf_cutoff_idx)
 
-    builder = MasterFeatureBuilder()
-    base_result = builder.build(base_map, htf_map)
-    altered_result = builder.build(altered_base_map, altered_htf_map)
+    pipeline = feature_pipeline(CAUSAL_FEATURES)
+    base_result = pipeline.build(base_map, htf_map)
+    altered_result = pipeline.build(altered_base_map, altered_htf_map)
 
     cutoff_ts = base_map["BTC/USDT"].loc[base_cutoff_idx, "timestamp"]
     for symbol in base_result.feature_map:
@@ -155,17 +177,15 @@ def test_master_feature_builder_is_causal_for_all_requested_features(monkeypatch
         )
 
 
-def test_feature_specs_cover_all_builder_features():
-    builder = MasterFeatureBuilder()
-    all_features = set().union(*(feature_builder.provides() for feature_builder in builder._all_builders()))
-    all_specs = builder.collect_feature_specs()
-    assert set(all_specs) == all_features
+def test_feature_pipeline_resolves_requested_feature_blocks():
+    request = feature_pipeline(CAUSAL_FEATURES).resolve_request()
 
-
-def test_feature_specs_resolve_requested_feature_formulas():
-    feature_columns = ["ema_fast_slow", "trend_alignment_1h_4h"]
-    specs_by_name = MasterFeatureBuilder().collect_feature_specs(set(feature_columns))
-
-    assert set(specs_by_name) == set(feature_columns)
-    assert specs_by_name["ema_fast_slow"].resolved_formula(config_source=object())
-    assert "ema_fast_slow" in specs_by_name["trend_alignment_1h_4h"].dependencies
+    assert set(request.active_features) == set(CAUSAL_FEATURES)
+    assert "momentum" in request.active_blocks
+    assert "regime" in request.active_blocks
+    assert "funding" in request.active_blocks
+    assert "premium_index" in request.active_blocks
+    assert "open_interest" in request.active_blocks
+    assert "htf" in request.active_blocks
+    assert "market_context" in request.active_blocks
+    assert "interactions" in request.active_blocks
