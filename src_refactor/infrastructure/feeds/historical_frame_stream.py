@@ -15,6 +15,11 @@ class CandleRepository(Protocol):
         ...
 
 
+class FeatureRepository(Protocol):
+    def load_features(self, symbol: str) -> pd.DataFrame:
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class HistoricalFrameMarketStream(MarketBatchStream):
     frame: pd.DataFrame
@@ -79,6 +84,55 @@ class HistoricalCandleFrameLoader:
         ).reset_index(drop=True)
 
 
+@dataclass(frozen=True, slots=True)
+class HistoricalFeatureFrameLoader:
+    repository: FeatureRepository
+    timestamp_column: str = "timestamp"
+    symbol_column: str = "symbol"
+
+    def load_symbol(
+        self,
+        symbol: str,
+        *,
+        required_columns: tuple[str, ...] | list[str] = (),
+    ) -> pd.DataFrame:
+        frame = self.repository.load_features(symbol)
+        return normalize_feature_frame(
+            frame,
+            symbol=symbol,
+            required_columns=required_columns,
+            timestamp_column=self.timestamp_column,
+            symbol_column=self.symbol_column,
+        )
+
+    def load_symbols(
+        self,
+        symbols: tuple[str, ...] | list[str],
+        *,
+        required_columns: tuple[str, ...] | list[str] = (),
+    ) -> pd.DataFrame:
+        frames = [
+            self.load_symbol(symbol, required_columns=required_columns)
+            for symbol in symbols
+        ]
+        frames = [frame for frame in frames if not frame.empty]
+        if not frames:
+            return empty_feature_frame(
+                required_columns=required_columns,
+                timestamp_column=self.timestamp_column,
+                symbol_column=self.symbol_column,
+            )
+        return pd.concat(frames, ignore_index=True).sort_values(
+            [self.timestamp_column, self.symbol_column]
+        ).reset_index(drop=True)
+
+    def load_barriers(self, symbols: tuple[str, ...] | list[str]) -> pd.DataFrame:
+        return self.load_symbols(
+            symbols,
+            required_columns=("barrier_stop_pct", "barrier_take_pct"),
+        )
+
+
 def normalize_candle_frame(
     frame: pd.DataFrame,
     *,
@@ -122,6 +176,49 @@ def normalize_candle_frame(
     return output.loc[:, columns].sort_values(timestamp_column).reset_index(drop=True)
 
 
+def normalize_feature_frame(
+    frame: pd.DataFrame,
+    *,
+    symbol: str,
+    required_columns: tuple[str, ...] | list[str] = (),
+    timestamp_column: str = "timestamp",
+    symbol_column: str = "symbol",
+) -> pd.DataFrame:
+    required = tuple(dict.fromkeys(required_columns))
+    columns = (timestamp_column, symbol_column, *required)
+    if frame is None or frame.empty:
+        return empty_feature_frame(
+            required_columns=required,
+            timestamp_column=timestamp_column,
+            symbol_column=symbol_column,
+        )
+
+    missing = sorted({timestamp_column, *required}.difference(frame.columns))
+    if missing:
+        return empty_feature_frame(
+            required_columns=required,
+            timestamp_column=timestamp_column,
+            symbol_column=symbol_column,
+        )
+
+    output = frame.copy()
+    output[timestamp_column] = pd.to_datetime(output[timestamp_column], errors="coerce")
+    output[symbol_column] = symbol
+    output = output.dropna(subset=[timestamp_column])
+    if required:
+        output = output.dropna(subset=list(required))
+        return output.loc[:, list(columns)].sort_values(timestamp_column).reset_index(drop=True)
+
+    remaining = [
+        column
+        for column in output.columns
+        if column not in {timestamp_column, symbol_column}
+    ]
+    return output.loc[:, [timestamp_column, symbol_column, *remaining]].sort_values(
+        timestamp_column
+    ).reset_index(drop=True)
+
+
 def empty_candle_frame(
     *,
     timestamp_column: str = "timestamp",
@@ -141,6 +238,16 @@ def empty_candle_frame(
             "close_time",
         ]
     )
+
+
+def empty_feature_frame(
+    *,
+    required_columns: tuple[str, ...] | list[str] = (),
+    timestamp_column: str = "timestamp",
+    symbol_column: str = "symbol",
+) -> pd.DataFrame:
+    columns = [timestamp_column, symbol_column, *tuple(dict.fromkeys(required_columns))]
+    return pd.DataFrame(columns=columns)
 
 
 def _normalize_timestamp(series: pd.Series) -> pd.Series:

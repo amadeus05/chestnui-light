@@ -8,7 +8,11 @@ from src_refactor.domain.risk.risk_manager import RiskManager
 from src_refactor.domain.signals import SignalBatchProcessor
 from src_refactor.domain.trading import TradingEngine
 from src_refactor.infrastructure.exchanges.simulation import ExchangeSimulator
-from src_refactor.infrastructure.feeds import HistoricalCandleFrameLoader, HistoricalFrameMarketStream
+from src_refactor.infrastructure.feeds import (
+    HistoricalCandleFrameLoader,
+    HistoricalFeatureFrameLoader,
+    HistoricalFrameMarketStream,
+)
 
 
 def _frame() -> pd.DataFrame:
@@ -111,6 +115,22 @@ def test_historical_candle_frame_loader_normalizes_repository_candles():
     assert frame["open"].tolist() == [100.0, 200.0]
 
 
+def test_historical_feature_frame_loader_loads_barrier_frame():
+    loader = HistoricalFeatureFrameLoader(FakeFeatureRepository())
+
+    frame = loader.load_barriers(["ETH/USDT", "BTC/USDT", "SOL/USDT"])
+
+    assert frame.columns.tolist() == [
+        "timestamp",
+        "symbol",
+        "barrier_stop_pct",
+        "barrier_take_pct",
+    ]
+    assert frame["symbol"].tolist() == ["BTC/USDT", "ETH/USDT"]
+    assert frame["barrier_stop_pct"].tolist() == [0.02, 0.03]
+    assert frame["barrier_take_pct"].tolist() == [0.04, 0.06]
+
+
 def test_runtime_loop_processes_historical_stream_as_symbol_batches():
     pipeline = TradingPipeline(
         market_cache=RuntimeMarketCache(),
@@ -148,6 +168,34 @@ class FakeCandleRepository:
                     "low": prices[symbol] - 1,
                     "close": prices[symbol],
                     "volume": "1000",
+                }
+            ]
+        )
+
+
+class FakeFeatureRepository:
+    def load_features(self, symbol: str) -> pd.DataFrame:
+        if symbol == "SOL/USDT":
+            return pd.DataFrame(
+                [
+                    {
+                        "timestamp": "2025-01-01 00:00:00",
+                        "barrier_stop_pct": 0.01,
+                    }
+                ]
+            )
+        barriers = {
+            "BTC/USDT": (0.02, 0.04),
+            "ETH/USDT": (0.03, 0.06),
+        }
+        stop_pct, take_pct = barriers[symbol]
+        return pd.DataFrame(
+            [
+                {
+                    "timestamp": "2025-01-01 00:00:00",
+                    "barrier_stop_pct": stop_pct,
+                    "barrier_take_pct": take_pct,
+                    "unused_feature": 1.0,
                 }
             ]
         )
