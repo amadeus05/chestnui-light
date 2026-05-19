@@ -12,6 +12,7 @@ from src_refactor.core.contracts import PredictionStore
 from src_refactor.core.contracts.broker_gateway import BrokerGateway
 from src_refactor.core.types import Prediction
 from src_refactor.infrastructure.feeds import HistoricalCandleFrameLoader
+from src_refactor.infrastructure.predictions import ParquetPredictionStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +75,28 @@ class StoredPredictionBacktestFlow:
     broker: BrokerGateway | None = None
     timestamp_column: str = "timestamp"
     symbol_column: str = "symbol"
+
+    @classmethod
+    def from_training_result(
+        cls,
+        *,
+        config: RuntimeConfig,
+        candle_loader: HistoricalCandleFrameLoader,
+        result: WalkForwardTrainingResult,
+        broker: BrokerGateway | None = None,
+        timestamp_column: str = "timestamp",
+        symbol_column: str = "symbol",
+    ) -> "StoredPredictionBacktestFlow":
+        if result.prediction_store_path is None:
+            raise ValueError("WalkForwardTrainingResult does not include prediction_store_path.")
+        return cls(
+            config=config,
+            candle_loader=candle_loader,
+            prediction_store=ParquetPredictionStore(result.prediction_store_path),
+            broker=broker,
+            timestamp_column=timestamp_column,
+            symbol_column=symbol_column,
+        )
 
     def run(self, request: StoredPredictionBacktestRequest | None = None) -> BacktestRunResult:
         request = request or StoredPredictionBacktestRequest()

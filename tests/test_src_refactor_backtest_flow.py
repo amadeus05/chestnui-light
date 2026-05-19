@@ -10,7 +10,7 @@ from src_refactor.core.config import ExperimentConfig
 from src_refactor.application.runtime_builder import RuntimeConfig, TradingMode
 from src_refactor.core.types import ModelArtifact, ModelSpec, Prediction, WalkForwardFold
 from src_refactor.infrastructure.feeds import HistoricalCandleFrameLoader
-from src_refactor.infrastructure.predictions import InMemoryPredictionStore
+from src_refactor.infrastructure.predictions import InMemoryPredictionStore, ParquetPredictionStore
 
 
 def test_stored_prediction_backtest_flow_loads_data_and_runs_runtime():
@@ -191,6 +191,39 @@ def test_stored_prediction_backtest_request_uses_training_result_window():
     assert request.start == pd.Timestamp("2025-01-01 00:00:00")
     assert request.end == pd.Timestamp("2025-01-01 01:00:00")
     assert training_result.prediction_store_path == Path("models/predictions/oos.parquet")
+
+
+def test_stored_prediction_backtest_flow_builds_from_training_result_store_path():
+    model = ModelSpec(model_type="lightgbm", timeframe="1h", symbols=("BTC/USDT",))
+    training_result = WalkForwardTrainingResult(
+        config=ExperimentConfig(model=model, symbols=("BTC/USDT",)),
+        prediction_store_path=Path("models/predictions/oos.parquet"),
+        folds=[],
+    )
+
+    flow = StoredPredictionBacktestFlow.from_training_result(
+        config=RuntimeConfig(mode=TradingMode.BACKTEST, model=model, symbols=("BTC/USDT",)),
+        candle_loader=HistoricalCandleFrameLoader(FakeCandleRepository()),
+        result=training_result,
+    )
+
+    assert isinstance(flow.prediction_store, ParquetPredictionStore)
+    assert flow.prediction_store.path == Path("models/predictions/oos.parquet")
+
+
+def test_stored_prediction_backtest_flow_requires_training_prediction_store_path():
+    model = ModelSpec(model_type="lightgbm", timeframe="1h", symbols=("BTC/USDT",))
+    training_result = WalkForwardTrainingResult(
+        config=ExperimentConfig(model=model, symbols=("BTC/USDT",)),
+        folds=[],
+    )
+
+    with pytest.raises(ValueError, match="prediction_store_path"):
+        StoredPredictionBacktestFlow.from_training_result(
+            config=RuntimeConfig(mode=TradingMode.BACKTEST, model=model, symbols=("BTC/USDT",)),
+            candle_loader=HistoricalCandleFrameLoader(FakeCandleRepository()),
+            result=training_result,
+        )
 
 
 class FakeCandleRepository:
