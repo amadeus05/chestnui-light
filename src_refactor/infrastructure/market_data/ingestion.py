@@ -34,8 +34,8 @@ class MarketDataIngestionService:
         include_open_interest: bool = True,
     ) -> IngestionSummary:
         written: dict[str, int] = {}
-        start_ts = pd.to_datetime(start)
-        end_ts = pd.to_datetime(end)
+        start_ts = _normalize_timestamp(start)
+        end_ts = _normalize_timestamp(end)
 
         for symbol in symbols:
             if include_funding:
@@ -111,4 +111,12 @@ class MarketDataIngestionService:
         latest = pd.to_datetime(frame["timestamp"], errors="coerce").max()
         if pd.isna(latest):
             return requested_start
-        return max(requested_start, pd.to_datetime(latest) + pd.to_timedelta(step_ms, unit="ms"))
+        latest = _normalize_timestamp(latest)
+        return max(requested_start, latest + pd.to_timedelta(step_ms, unit="ms"))
+
+
+def _normalize_timestamp(value: str | pd.Timestamp) -> pd.Timestamp:
+    timestamp = pd.to_datetime(value)
+    if timestamp.tzinfo is None:
+        return timestamp
+    return timestamp.tz_convert("UTC").tz_localize(None)

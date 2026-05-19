@@ -43,7 +43,7 @@ def run_backfill(args: argparse.Namespace) -> None:
         symbols=tuple(args.symbols),
         timeframes=tuple(args.timeframes),
         start=pd.to_datetime(args.start),
-        end=pd.to_datetime(args.end) if args.end else pd.Timestamp.utcnow(),
+        end=pd.to_datetime(args.end) if args.end else pd.Timestamp.now(tz="UTC"),
         include_premium_index=args.include_premium_index,
         include_funding=args.include_funding,
         include_open_interest=args.include_open_interest,

@@ -146,6 +146,25 @@ def test_market_data_ingestion_writes_incremental_parquet(local_tmp_path):
     ]
 
 
+def test_market_data_ingestion_accepts_mixed_timezone_bounds(local_tmp_path):
+    client = FakeExchangeClient()
+    store = ParquetMarketDataStore(root=local_tmp_path, exchange_code="bybit")
+    service = MarketDataIngestionService(client=client, store=store)
+
+    summary = service.backfill_raw(
+        symbols=("BTC/USDT",),
+        timeframes=("1h",),
+        start="2024-01-01",
+        end=pd.Timestamp.now(tz="UTC"),
+        include_premium_index=False,
+        include_funding=False,
+        include_open_interest=False,
+    )
+
+    assert summary.written_rows["candles:1h:BTC/USDT"] == 2
+    assert client.candle_starts == [pd.Timestamp("2024-01-01 00:00:00")]
+
+
 def test_parquet_market_data_store_is_candle_repository(local_tmp_path):
     store = ParquetMarketDataStore(root=local_tmp_path, exchange_code="bybit")
     store.save_candles(
