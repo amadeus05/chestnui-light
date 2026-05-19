@@ -8,6 +8,7 @@ import bt
 import bt_walk_forward
 import config as cfg
 import train
+from src_refactor.application.pipeline import StoredPredictionSource, predictions_from_frame
 
 
 def normalize_splits(splits):
@@ -207,3 +208,42 @@ def test_prediction_lookup_deduplicates_by_last_symbol_timestamp():
     lookup = bt.build_prediction_lookup(predictions)
 
     assert lookup == {(pd.Timestamp("2025-01-01 00:00:00"), "BTC/USDT"): (0.4, 0.6)}
+
+
+def test_stored_prediction_source_builds_oos_predictions_from_legacy_frame():
+    predictions = pd.DataFrame(
+        {
+            "timestamp": ["2025-01-01 00:00:00", "2025-01-01 00:00:00"],
+            "symbol": ["BTC/USDT", "BTC/USDT"],
+            "p_short": [0.6, 0.4],
+            "p_long": [0.4, 0.6],
+        }
+    )
+    barriers = pd.DataFrame(
+        {
+            "timestamp": ["2025-01-01 00:00:00"],
+            "symbol": ["BTC/USDT"],
+            "barrier_stop_pct": [0.02],
+            "barrier_take_pct": [0.04],
+        }
+    )
+
+    converted = predictions_from_frame(
+        predictions,
+        model_id="walk_forward_oos",
+        timeframe="1h",
+        barrier_frame=barriers,
+    )
+    source = StoredPredictionSource.from_frame(
+        predictions,
+        model_id="walk_forward_oos",
+        timeframe="1h",
+        barrier_frame=barriers,
+    )
+
+    assert len(converted) == 1
+    assert converted[0].proba_short == pytest.approx(0.4)
+    assert converted[0].proba_long == pytest.approx(0.6)
+    assert converted[0].raw["barrier_stop_pct"] == pytest.approx(0.02)
+    assert converted[0].raw["barrier_take_pct"] == pytest.approx(0.04)
+    assert pd.Timestamp("2025-01-01 00:00:00") in source.predictions_by_timestamp

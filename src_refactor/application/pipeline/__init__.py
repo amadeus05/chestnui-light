@@ -13,6 +13,7 @@ from src_refactor.application.pipeline.prediction_source import (
     PredictionSource,
     StoredPredictionSource,
     group_predictions_by_timestamp,
+    predictions_from_frame,
 )
 from src_refactor.application.pipeline.idempotency_guard import (
     IdempotencyGuard,
@@ -32,4 +33,5 @@ __all__ = [
     "build_execution_snapshot",
     "candles_to_frame",
     "group_predictions_by_timestamp",
+    "predictions_from_frame",
 ]

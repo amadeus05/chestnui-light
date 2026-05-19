@@ -68,6 +68,28 @@ class StoredPredictionSource(PredictionSource):
     def from_predictions(cls, predictions: list[Prediction]) -> "StoredPredictionSource":
         return cls(predictions_by_timestamp=group_predictions_by_timestamp(predictions))
 
+    @classmethod
+    def from_frame(
+        cls,
+        frame: pd.DataFrame,
+        *,
+        model_id: str,
+        timeframe: str,
+        barrier_frame: pd.DataFrame | None = None,
+        timestamp_column: str = "timestamp",
+        symbol_column: str = "symbol",
+    ) -> "StoredPredictionSource":
+        return cls.from_predictions(
+            predictions_from_frame(
+                frame,
+                model_id=model_id,
+                timeframe=timeframe,
+                barrier_frame=barrier_frame,
+                timestamp_column=timestamp_column,
+                symbol_column=symbol_column,
+            )
+        )
+
     def predictions_for(self, context: MarketContext) -> list[Prediction]:
         return self.predictions_by_timestamp.get(canonical_prediction_timestamp(context.snapshot.current_timestamp), [])
 
@@ -77,6 +99,68 @@ def group_predictions_by_timestamp(predictions: list[Prediction]) -> dict[pd.Tim
     for prediction in predictions:
         grouped[canonical_prediction_timestamp(prediction.timestamp)].append(prediction)
     return dict(grouped)
+
+
+def predictions_from_frame(
+    frame: pd.DataFrame,
+    *,
+    model_id: str,
+    timeframe: str,
+    barrier_frame: pd.DataFrame | None = None,
+    timestamp_column: str = "timestamp",
+    symbol_column: str = "symbol",
+) -> list[Prediction]:
+    prepared = frame.copy()
+    _require_columns(prepared, {timestamp_column, symbol_column}, "Prediction frame")
+    prepared[timestamp_column] = pd.to_datetime(prepared[timestamp_column])
+
+    if barrier_frame is not None and not {"barrier_stop_pct", "barrier_take_pct"}.issubset(prepared.columns):
+        barriers = barrier_frame.copy()
+        _require_columns(
+            barriers,
+            {timestamp_column, symbol_column, "barrier_stop_pct", "barrier_take_pct"},
+            "Barrier frame",
+        )
+        barriers[timestamp_column] = pd.to_datetime(barriers[timestamp_column])
+        prepared = prepared.merge(
+            barriers[[timestamp_column, symbol_column, "barrier_stop_pct", "barrier_take_pct"]],
+            on=[timestamp_column, symbol_column],
+            how="left",
+        )
+
+    p_long_column = "p_long" if "p_long" in prepared.columns else "proba_long"
+    p_short_column = "p_short" if "p_short" in prepared.columns else "proba_short"
+    _require_columns(
+        prepared,
+        {p_long_column, p_short_column, "barrier_stop_pct", "barrier_take_pct"},
+        "Prediction frame",
+    )
+    prepared = prepared.drop_duplicates(subset=[timestamp_column, symbol_column], keep="last")
+    prepared = prepared.sort_values([timestamp_column, symbol_column]).reset_index(drop=True)
+
+    predictions: list[Prediction] = []
+    for row in prepared.to_dict("records"):
+        p_long = float(row[p_long_column])
+        p_short = float(row[p_short_column])
+        predictions.append(
+            Prediction(
+                timestamp=canonical_prediction_timestamp(row[timestamp_column]),
+                symbol=str(row[symbol_column]),
+                timeframe=str(row.get("timeframe", timeframe)),
+                model_id=str(row.get("model_id", model_id)),
+                direction=int(row.get("direction", 0)),
+                confidence=float(row.get("confidence", max(p_long, p_short))),
+                fold_id=_optional_int(row.get("fold_id")),
+                proba_long=p_long,
+                proba_short=p_short,
+                raw={
+                    "signal_gap": abs(p_long - p_short),
+                    "barrier_stop_pct": row["barrier_stop_pct"],
+                    "barrier_take_pct": row["barrier_take_pct"],
+                },
+            )
+        )
+    return predictions
 
 
 def normalize_prediction(prediction: Prediction, *, context: MarketContext, model_id: str) -> Prediction:
@@ -92,3 +176,15 @@ def normalize_prediction(prediction: Prediction, *, context: MarketContext, mode
         proba_short=prediction.proba_short,
         raw=prediction.raw,
     )
+
+
+def _require_columns(frame: pd.DataFrame, columns: set[str], label: str) -> None:
+    missing = sorted(columns.difference(frame.columns))
+    if missing:
+        raise ValueError(f"{label} is missing required columns: {missing}")
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or pd.isna(value):
+        return None
+    return int(value)
