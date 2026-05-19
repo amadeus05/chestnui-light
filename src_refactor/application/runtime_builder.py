@@ -132,58 +132,27 @@ def build_pipeline_from_runtime(config: RuntimeConfig, runtime: RuntimeAdapters)
     )
 
 
-def build_backtest_runtime(
+def build_runtime_adapters(
     config: RuntimeConfig,
     *,
-    prediction_source: PredictionSource,
-    data_source: HistoricalMarketFeed | None = None,
-    broker: BrokerGateway | None = None,
-    market_cache: RuntimeMarketCache | None = None,
-) -> RuntimeAdapters:
-    return RuntimeAdapters(
-        market_cache=market_cache or RuntimeMarketCache(),
-        broker=broker or ExchangeSimulator(pricing=config.pricing),
-        prediction_source=prediction_source,
-        signal_selector=SignalBatchProcessor(config.signals),
-        idempotency_guard=InMemoryIdempotencyGuard(),
-        data_source=data_source,
-        execution_journal=None,
-    )
-
-
-def build_paper_runtime(
-    config: RuntimeConfig,
-    *,
-    registry: ModelRegistry,
-    data_source: LiveMarketDataFeed,
+    prediction_source: PredictionSource | None = None,
+    registry: ModelRegistry | None = None,
+    data_source: MarketDataSource | None = None,
     broker: BrokerGateway | None = None,
     market_cache: RuntimeMarketCache | None = None,
     execution_journal: ExecutionJournal | None = None,
 ) -> RuntimeAdapters:
-    bundle = registry.get(config.model)
-    prediction_source = build_model_prediction_source(config, bundle)
-    return RuntimeAdapters(
-        market_cache=market_cache or RuntimeMarketCache(),
-        broker=broker or ExchangeSimulator(pricing=config.pricing),
-        prediction_source=prediction_source,
-        signal_selector=SignalBatchProcessor(config.signals),
-        idempotency_guard=InMemoryIdempotencyGuard(),
-        data_source=data_source,
-        execution_journal=execution_journal,
-    )
+    if prediction_source is None:
+        if registry is None:
+            raise ValueError("Runtime adapters require either prediction_source or registry.")
+        bundle = registry.get(config.model)
+        prediction_source = build_model_prediction_source(config, bundle)
 
+    if broker is None:
+        if config.mode == TradingMode.LIVE:
+            raise ValueError("Live runtime requires an explicit broker.")
+        broker = ExchangeSimulator(pricing=config.pricing)
 
-def build_live_runtime(
-    config: RuntimeConfig,
-    *,
-    registry: ModelRegistry,
-    data_source: LiveMarketDataFeed,
-    broker: BrokerGateway,
-    market_cache: RuntimeMarketCache | None = None,
-    execution_journal: ExecutionJournal | None = None,
-) -> RuntimeAdapters:
-    bundle = registry.get(config.model)
-    prediction_source = build_model_prediction_source(config, bundle)
     return RuntimeAdapters(
         market_cache=market_cache or RuntimeMarketCache(),
         broker=broker,
@@ -191,7 +160,7 @@ def build_live_runtime(
         signal_selector=SignalBatchProcessor(config.signals),
         idempotency_guard=InMemoryIdempotencyGuard(),
         data_source=data_source,
-        execution_journal=execution_journal,
+        execution_journal=None if config.mode == TradingMode.BACKTEST else execution_journal,
     )
 
 

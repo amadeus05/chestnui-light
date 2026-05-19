@@ -9,8 +9,8 @@ from src_refactor.application.runtime_builder import (
     RuntimeAdapters,
     RuntimeConfig,
     TradingMode,
-    build_paper_runtime,
     build_runtime,
+    build_runtime_adapters,
 )
 from src_refactor.core.config import ExperimentConfig
 from src_refactor.core.contracts import ModelInputBuilder, ModelPredictor
@@ -103,7 +103,7 @@ def test_paper_runtime_uses_effective_predictor_model_spec_metadata():
         },
     )
 
-    adapters = build_paper_runtime(
+    adapters = build_runtime_adapters(
         config,
         registry=FakeRegistry(predictor_spec),  # type: ignore[arg-type]
         data_source=FakeLiveFeed([]),

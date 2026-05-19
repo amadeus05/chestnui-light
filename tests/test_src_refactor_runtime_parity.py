@@ -4,7 +4,7 @@ from src_refactor.application.backtest import BacktestRunner
 from src_refactor.application.pipeline import StoredPredictionSource, TradingPipeline
 from src_refactor.application.pipeline.idempotency_guard import InMemoryIdempotencyGuard
 from src_refactor.application.pipeline.runtime_market_cache import RuntimeMarketCache
-from src_refactor.application.runtime_builder import RuntimeConfig, TradingMode, build_backtest_runtime
+from src_refactor.application.runtime_builder import RuntimeConfig, TradingMode, build_runtime_adapters
 from src_refactor.core.types import ModelSpec, Prediction
 from src_refactor.domain.portfolio.portfolio_manager import PortfolioManager
 from src_refactor.domain.risk.risk_manager import RiskManager
@@ -228,7 +228,7 @@ def test_runtime_config_can_use_legacy_trading_parameters_as_single_source():
         model=ModelSpec(model_type="lightgbm", timeframe="1h"),
         config=LegacyConfig,
     )
-    adapters = build_backtest_runtime(
+    adapters = build_runtime_adapters(
         runtime_config,
         prediction_source=StoredPredictionSource.from_predictions([]),
     )

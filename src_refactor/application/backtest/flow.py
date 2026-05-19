@@ -6,7 +6,7 @@ import pandas as pd
 
 from src_refactor.application.backtest.runner import BacktestRunner, BacktestRunResult
 from src_refactor.application.pipeline import StoredPredictionSource
-from src_refactor.application.runtime_builder import RuntimeConfig, build_backtest_runtime, build_runtime
+from src_refactor.application.runtime_builder import RuntimeConfig, build_runtime, build_runtime_adapters
 from src_refactor.application.training.training_runner import WalkForwardTrainingResult
 from src_refactor.core.contracts import PredictionStore
 from src_refactor.core.contracts.broker_gateway import BrokerGateway
@@ -114,7 +114,7 @@ class StoredPredictionBacktestFlow:
             start=request.start,
             end=request.end,
         )
-        runtime_adapters = build_backtest_runtime(
+        runtime_adapters = build_runtime_adapters(
             self.config,
             prediction_source=prediction_source,
             broker=self.broker,

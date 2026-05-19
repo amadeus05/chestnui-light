@@ -1,7 +1,7 @@
 import pandas as pd
 
 from src_refactor.application.pipeline import InMemoryIdempotencyGuard, RuntimeMarketCache, StoredPredictionSource, TradingPipeline
-from src_refactor.application.runtime_builder import RuntimeConfig, TradingMode, build_backtest_runtime, build_runtime
+from src_refactor.application.runtime_builder import RuntimeConfig, TradingMode, build_runtime, build_runtime_adapters
 from src_refactor.core.types import ModelSpec, Prediction
 from src_refactor.domain.execution import ExecutionJournal
 from src_refactor.domain.portfolio.portfolio_manager import PortfolioManager
@@ -94,7 +94,7 @@ def test_backtest_runtime_does_not_wire_execution_journal():
         mode=TradingMode.BACKTEST,
         model=ModelSpec(model_type="lightgbm", timeframe="1h"),
     )
-    adapters = build_backtest_runtime(
+    adapters = build_runtime_adapters(
         config,
         prediction_source=StoredPredictionSource.from_predictions([_prediction()]),
     )
