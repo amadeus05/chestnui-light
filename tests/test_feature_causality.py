@@ -2,11 +2,11 @@ import numpy as np
 import pandas as pd
 
 import train
-from etl import attach_barrier_columns
 from src.features import indicators
 from src.features.builders.regime_feature_builder import RegimeFeatureBuilder
 from src.features.master_feature_builder import MasterFeatureBuilder
 from src.features.models.feature_context import FeatureContext
+from src_refactor.domain.labels import LabelingConfig, attach_barrier_columns
 
 
 def make_candles(rows: int = 260, freq: str = "h", symbol_offset: float = 0.0) -> pd.DataFrame:
@@ -74,6 +74,12 @@ def test_realized_vol_and_regime_stability_do_not_change_when_future_changes():
 
 def test_dynamic_barriers_do_not_change_when_future_changes(monkeypatch):
     monkeypatch.setattr(indicators, "_load_pandas_ta", lambda: None)
+    labeling_config = LabelingConfig(
+        horizon=16,
+        use_dynamic_barriers=True,
+        barrier_min_pct=0.01,
+        barrier_max_pct=0.05,
+    )
 
     cutoff_idx = 130
     base = make_candles()
@@ -82,8 +88,8 @@ def test_dynamic_barriers_do_not_change_when_future_changes(monkeypatch):
     base_with_features = base.merge(build_regime_features(base), on="timestamp", how="left")
     altered_with_features = altered.merge(build_regime_features(altered), on="timestamp", how="left")
 
-    base_barriers = attach_barrier_columns(base_with_features)
-    altered_barriers = attach_barrier_columns(altered_with_features)
+    base_barriers = attach_barrier_columns(base_with_features, labeling_config)
+    altered_barriers = attach_barrier_columns(altered_with_features, labeling_config)
 
     columns = ["barrier_stop_pct", "barrier_take_pct"]
     pd.testing.assert_frame_equal(

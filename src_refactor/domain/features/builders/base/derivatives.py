@@ -80,6 +80,48 @@ def build_funding_frame(frame: pd.DataFrame, config: DerivativesFeatureConfig | 
     ]
 
 
+def attach_funding_context(
+    base_frame: pd.DataFrame,
+    funding_frame: pd.DataFrame | None,
+    *,
+    timestamp_column: str = "timestamp",
+) -> pd.DataFrame:
+    return _attach_asof_context(
+        base_frame,
+        funding_frame,
+        value_column="funding_rate",
+        timestamp_column=timestamp_column,
+    )
+
+
+def attach_premium_index_context(
+    base_frame: pd.DataFrame,
+    premium_index_frame: pd.DataFrame | None,
+    *,
+    timestamp_column: str = "timestamp",
+) -> pd.DataFrame:
+    return _attach_asof_context(
+        base_frame,
+        premium_index_frame,
+        value_column="premium_index_close",
+        timestamp_column=timestamp_column,
+    )
+
+
+def attach_open_interest_context(
+    base_frame: pd.DataFrame,
+    open_interest_frame: pd.DataFrame | None,
+    *,
+    timestamp_column: str = "timestamp",
+) -> pd.DataFrame:
+    return _attach_asof_context(
+        base_frame,
+        open_interest_frame,
+        value_column="open_interest",
+        timestamp_column=timestamp_column,
+    )
+
+
 def build_premium_frame(frame: pd.DataFrame, config: DerivativesFeatureConfig | None = None) -> pd.DataFrame:
     output = frame[["timestamp_ms"]].copy()
     if frame.empty:
@@ -96,6 +138,32 @@ def build_open_interest_frame(frame: pd.DataFrame, config: DerivativesFeatureCon
     return output.join(_build_open_interest_features(frame, config or DerivativesFeatureConfig()))[
         ["timestamp_ms", *OPEN_INTEREST_FEATURE_COLUMNS]
     ]
+
+
+def _attach_asof_context(
+    base_frame: pd.DataFrame,
+    context_frame: pd.DataFrame | None,
+    *,
+    value_column: str,
+    timestamp_column: str,
+) -> pd.DataFrame:
+    output = base_frame.copy().sort_values(timestamp_column).reset_index(drop=True)
+    if context_frame is None or context_frame.empty:
+        output[value_column] = np.nan
+        return output
+
+    context = (
+        context_frame[[timestamp_column, value_column]]
+        .copy()
+        .sort_values(timestamp_column)
+        .reset_index(drop=True)
+    )
+    return pd.merge_asof(
+        output,
+        context,
+        on=timestamp_column,
+        direction="backward",
+    )
 
 
 def _build_funding_features(frame: pd.DataFrame, config: DerivativesFeatureConfig) -> pd.DataFrame:

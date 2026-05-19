@@ -1,7 +1,11 @@
 import numpy as np
 import pandas as pd
 
-import etl
+from src_refactor.domain.features.builders.base.derivatives import (
+    attach_funding_context,
+    attach_open_interest_context,
+    attach_premium_index_context,
+)
 
 
 def make_base_frame() -> pd.DataFrame:
@@ -32,7 +36,7 @@ def test_attach_funding_context_uses_latest_past_value_only():
         }
     )
 
-    result = etl.attach_funding_context(base.sample(frac=1.0, random_state=7), funding)
+    result = attach_funding_context(base.sample(frac=1.0, random_state=7), funding)
 
     assert result["timestamp"].is_monotonic_increasing
     assert result["funding_rate"].tolist() == [0.001, 0.001, 0.002, 0.002, 0.003]
@@ -52,7 +56,7 @@ def test_attach_premium_index_context_uses_latest_past_value_only():
         }
     )
 
-    result = etl.attach_premium_index_context(base, premium)
+    result = attach_premium_index_context(base, premium)
 
     assert result["premium_index_close"].tolist() == [1.001, 1.001, 1.001, 1.004, 1.004]
 
@@ -72,7 +76,7 @@ def test_attach_open_interest_context_uses_latest_past_value_only():
         }
     )
 
-    result = etl.attach_open_interest_context(base, open_interest)
+    result = attach_open_interest_context(base, open_interest)
 
     pd.testing.assert_series_equal(
         result["open_interest"],
@@ -83,9 +87,9 @@ def test_attach_open_interest_context_uses_latest_past_value_only():
 def test_context_attachers_create_nan_columns_when_context_is_empty():
     base = make_base_frame()
 
-    with_funding = etl.attach_funding_context(base, pd.DataFrame())
-    with_premium = etl.attach_premium_index_context(base, pd.DataFrame())
-    with_open_interest = etl.attach_open_interest_context(base, pd.DataFrame())
+    with_funding = attach_funding_context(base, pd.DataFrame())
+    with_premium = attach_premium_index_context(base, pd.DataFrame())
+    with_open_interest = attach_open_interest_context(base, pd.DataFrame())
 
     assert with_funding["funding_rate"].isna().all()
     assert with_premium["premium_index_close"].isna().all()
@@ -103,7 +107,7 @@ def test_context_attachers_do_not_mutate_inputs():
     base_before = base.copy(deep=True)
     funding_before = funding.copy(deep=True)
 
-    _ = etl.attach_funding_context(base, funding)
+    _ = attach_funding_context(base, funding)
 
     pd.testing.assert_frame_equal(base, base_before)
     pd.testing.assert_frame_equal(funding, funding_before)

@@ -2,9 +2,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import config as cfg
-import etl
-from src.features import indicators
+from src_refactor.domain.labels import (
+    LabelingConfig,
+    attach_barrier_columns,
+    compute_effective_horizons,
+    triple_barrier_labeling,
+)
 
 
 def make_label_frame(rows: int = 8) -> pd.DataFrame:
@@ -25,44 +28,41 @@ def make_label_frame(rows: int = 8) -> pd.DataFrame:
 
 
 @pytest.fixture()
-def fallback_atr(monkeypatch):
-    monkeypatch.setattr(indicators, "_load_pandas_ta", lambda: None)
+def fixed_labeling_config() -> LabelingConfig:
+    return LabelingConfig(
+        horizon=3,
+        enable_adaptive_horizon=False,
+        use_dynamic_barriers=True,
+        barrier_atr_multiplier=1.25,
+        barrier_rvol_multiplier=0.75,
+        barrier_tp_to_sl_ratio=2.0,
+        barrier_min_pct=0.01,
+        barrier_max_pct=0.05,
+        sl_pct=0.015,
+        tp_pct=0.03,
+        slippage=0.0,
+        taker_fee=0.0,
+    )
 
 
-@pytest.fixture()
-def fixed_labeling_config(monkeypatch):
-    monkeypatch.setattr(indicators, "_load_pandas_ta", lambda: None)
-    monkeypatch.setattr(cfg, "HORIZON", 3)
-    monkeypatch.setattr(cfg, "ENABLE_ADAPTIVE_HORIZON", False)
-    monkeypatch.setattr(cfg, "USE_DYNAMIC_BARRIERS", True)
-    monkeypatch.setattr(cfg, "BARRIER_ATR_MULTIPLIER", 1.25)
-    monkeypatch.setattr(cfg, "BARRIER_RVOL_MULTIPLIER", 0.75)
-    monkeypatch.setattr(cfg, "BARRIER_TP_TO_SL_RATIO", 2.0)
-    monkeypatch.setattr(cfg, "BARRIER_MIN_PCT", 0.01)
-    monkeypatch.setattr(cfg, "BARRIER_MAX_PCT", 0.05)
-    monkeypatch.setattr(cfg, "SL_PCT", 0.015)
-    monkeypatch.setattr(cfg, "TP_PCT", 0.03)
-    monkeypatch.setattr(cfg, "SLIPPAGE", 0.0)
-    monkeypatch.setattr(cfg, "TAKER_COM", 0.0)
+def test_effective_horizons_fixed_mode():
+    config = LabelingConfig(horizon=5, enable_adaptive_horizon=False)
 
-
-def test_effective_horizons_fixed_mode(monkeypatch):
-    monkeypatch.setattr(cfg, "HORIZON", 5)
-    monkeypatch.setattr(cfg, "ENABLE_ADAPTIVE_HORIZON", False)
-
-    horizons = etl.compute_effective_horizons(pd.DataFrame(index=range(4)))
+    horizons = compute_effective_horizons(pd.DataFrame(index=range(4)), config)
 
     assert horizons.dtype == np.int32
     assert horizons.tolist() == [5, 5, 5, 5]
 
 
-def test_effective_horizons_adaptive_mode(monkeypatch):
-    monkeypatch.setattr(cfg, "HORIZON", 12)
-    monkeypatch.setattr(cfg, "ENABLE_ADAPTIVE_HORIZON", True)
-    monkeypatch.setattr(cfg, "ADAPTIVE_HORIZON_MIN", 8)
-    monkeypatch.setattr(cfg, "ADAPTIVE_HORIZON_MAX", 20)
-    monkeypatch.setattr(cfg, "ADAPTIVE_HORIZON_VOL_LOW", 0.005)
-    monkeypatch.setattr(cfg, "ADAPTIVE_HORIZON_VOL_HIGH", 0.025)
+def test_effective_horizons_adaptive_mode():
+    config = LabelingConfig(
+        horizon=12,
+        enable_adaptive_horizon=True,
+        adaptive_horizon_min=8,
+        adaptive_horizon_max=20,
+        adaptive_horizon_vol_low=0.005,
+        adaptive_horizon_vol_high=0.025,
+    )
     frame = pd.DataFrame(
         {
             "realized_vol_1h": [
@@ -76,19 +76,21 @@ def test_effective_horizons_adaptive_mode(monkeypatch):
         }
     )
 
-    horizons = etl.compute_effective_horizons(frame)
+    horizons = compute_effective_horizons(frame, config)
 
     assert horizons.tolist() == [20, 20, 14, 8, 8, 12]
 
 
-def test_effective_horizons_falls_back_on_invalid_adaptive_bounds(monkeypatch):
-    monkeypatch.setattr(cfg, "HORIZON", 7)
-    monkeypatch.setattr(cfg, "ENABLE_ADAPTIVE_HORIZON", True)
-    monkeypatch.setattr(cfg, "ADAPTIVE_HORIZON_VOL_LOW", 0.02)
-    monkeypatch.setattr(cfg, "ADAPTIVE_HORIZON_VOL_HIGH", 0.02)
+def test_effective_horizons_falls_back_on_invalid_adaptive_bounds():
+    config = LabelingConfig(
+        horizon=7,
+        enable_adaptive_horizon=True,
+        adaptive_horizon_vol_low=0.02,
+        adaptive_horizon_vol_high=0.02,
+    )
     frame = pd.DataFrame({"realized_vol_1h": [0.01, 0.02, 0.03]})
 
-    horizons = etl.compute_effective_horizons(frame)
+    horizons = compute_effective_horizons(frame, config)
 
     assert horizons.tolist() == [7, 7, 7]
 
@@ -97,7 +99,7 @@ def test_attach_barrier_columns_dynamic_mode_clips_and_derives_take_pct(fixed_la
     frame = make_label_frame(rows=30).drop(columns=["barrier_stop_pct", "barrier_take_pct"])
     frame["realized_vol_1h"] = np.linspace(0.001, 0.20, len(frame))
 
-    result = etl.attach_barrier_columns(frame)
+    result = attach_barrier_columns(frame, fixed_labeling_config)
 
     assert "barrier_stop_pct" not in frame.columns
     assert "barrier_take_pct" not in frame.columns
@@ -109,26 +111,23 @@ def test_attach_barrier_columns_dynamic_mode_clips_and_derives_take_pct(fixed_la
     )
 
 
-def test_attach_barrier_columns_static_mode_uses_legacy_config(monkeypatch, fallback_atr):
-    monkeypatch.setattr(cfg, "USE_DYNAMIC_BARRIERS", False)
-    monkeypatch.setattr(cfg, "SL_PCT", 0.012)
-    monkeypatch.setattr(cfg, "TP_PCT", 0.034)
+def test_attach_barrier_columns_static_mode_uses_typed_config():
+    config = LabelingConfig(use_dynamic_barriers=False, sl_pct=0.012, tp_pct=0.034)
     frame = make_label_frame(rows=5).drop(columns=["barrier_stop_pct", "barrier_take_pct"])
 
-    result = etl.attach_barrier_columns(frame)
+    result = attach_barrier_columns(frame, config)
 
     assert result["barrier_stop_pct"].tolist() == [0.012] * 5
     assert result["barrier_take_pct"].tolist() == [0.034] * 5
 
 
-def test_attach_barrier_columns_dynamic_mode_requires_realized_vol(monkeypatch, fallback_atr):
-    monkeypatch.setattr(cfg, "USE_DYNAMIC_BARRIERS", True)
+def test_attach_barrier_columns_dynamic_mode_requires_realized_vol(fixed_labeling_config):
     frame = make_label_frame(rows=5).drop(
         columns=["realized_vol_1h", "barrier_stop_pct", "barrier_take_pct"]
     )
 
     with pytest.raises(ValueError, match="realized_vol_1h"):
-        etl.attach_barrier_columns(frame)
+        attach_barrier_columns(frame, fixed_labeling_config)
 
 
 @pytest.mark.parametrize(
@@ -149,7 +148,7 @@ def test_triple_barrier_labeling_manual_first_row_scenarios(
     frame["high"] = highs
     frame["low"] = lows
 
-    labeled = etl.triple_barrier_labeling(frame)
+    labeled = triple_barrier_labeling(frame, fixed_labeling_config)
 
     assert labeled.loc[0, "Target"] == expected_label
     assert labeled["Target"].tail(3).tolist() == [0, 0, 0]
@@ -160,7 +159,7 @@ def test_triple_barrier_labeling_prefers_neutral_when_both_sides_win(fixed_label
     frame.loc[1, "high"] = 103.5
     frame.loc[1, "low"] = 96.5
 
-    labeled = etl.triple_barrier_labeling(frame)
+    labeled = triple_barrier_labeling(frame, fixed_labeling_config)
 
     assert labeled.loc[0, "Target"] == 0
 
@@ -170,6 +169,6 @@ def test_triple_barrier_labeling_uses_row_specific_barriers(fixed_labeling_confi
     frame.loc[0, "barrier_take_pct"] = 0.05
     frame.loc[1, "high"] = 103.5
 
-    labeled = etl.triple_barrier_labeling(frame)
+    labeled = triple_barrier_labeling(frame, fixed_labeling_config)
 
     assert labeled.loc[0, "Target"] == 0
