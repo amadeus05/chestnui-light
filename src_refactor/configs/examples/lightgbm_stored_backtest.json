@@ -1,6 +1,6 @@
 {
   "market": {
-    "db_path": "./data/market_data.db",
+    "data_root": "_data",
     "exchange_code": "bybit",
     "symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
     "timeframe": "1h"

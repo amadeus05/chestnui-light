@@ -9,9 +9,7 @@ from src_refactor.configs.loader import load_config_mapping
 
 @dataclass(frozen=True, slots=True)
 class MarketDataConfig:
-    source: str = "sqlite"
     data_root: str = "_data"
-    db_path: str = "./data/market_data.db"
     exchange_code: str = "bybit"
     symbols: tuple[str, ...] = ()
     timeframe: str = "1h"
@@ -24,9 +22,7 @@ class MarketDataConfig:
         payload = payload or {}
         defaults = cls()
         return cls(
-            source=str(payload.get("source", defaults.source)),
             data_root=str(payload.get("data_root", defaults.data_root)),
-            db_path=str(payload.get("db_path", defaults.db_path)),
             exchange_code=str(payload.get("exchange_code", defaults.exchange_code)),
             symbols=tuple(str(symbol) for symbol in payload.get("symbols", ())),
             timeframe=str(payload.get("timeframe", defaults.timeframe)),

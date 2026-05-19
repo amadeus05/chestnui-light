@@ -15,7 +15,6 @@ from src_refactor.domain.risk.risk_manager import RiskConfig
 from src_refactor.domain.signals import SignalProcessingConfig
 from src_refactor.domain.trading import TradingEngineConfig
 from src_refactor.infrastructure.market_data import ParquetMarketDataStore
-from src_refactor.infrastructure.persistence import SqliteMarketRepository
 
 
 MODEL_TYPE_CHOICES = ("lightgbm", "lstm_features", "lstm_candles")
@@ -27,9 +26,7 @@ def add_config_args(parser: argparse.ArgumentParser) -> None:
 
 
 def add_market_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--market-source", choices=("sqlite", "parquet"), default=None)
     parser.add_argument("--data-root", default=None)
-    parser.add_argument("--db-path", default=None)
     parser.add_argument("--exchange-code", default=None)
     parser.add_argument("--symbols", nargs="+", default=None)
     parser.add_argument("--timeframe", default=None)
@@ -124,19 +121,10 @@ def optional_timestamp(value: str | None) -> pd.Timestamp | None:
     return None if pd.isna(timestamp) else timestamp
 
 
-def repository(args: argparse.Namespace, config: BacktestCliConfig) -> SqliteMarketRepository | ParquetMarketDataStore:
-    source = str(arg(args, "market_source", config.market.source)).lower()
-    exchange_code = arg(args, "exchange_code", config.market.exchange_code)
-    if source == "parquet":
-        return ParquetMarketDataStore(
-            root=arg(args, "data_root", config.market.data_root),
-            exchange_code=exchange_code,
-        )
-    if source != "sqlite":
-        raise ValueError(f"Unsupported market source: {source}")
-    return SqliteMarketRepository(
-        db_path=arg(args, "db_path", config.market.db_path),
-        exchange_code=exchange_code,
+def repository(args: argparse.Namespace, config: BacktestCliConfig) -> ParquetMarketDataStore:
+    return ParquetMarketDataStore(
+        root=arg(args, "data_root", config.market.data_root),
+        exchange_code=arg(args, "exchange_code", config.market.exchange_code),
     )
 
 
