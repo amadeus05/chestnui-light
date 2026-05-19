@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from src_refactor.application.pipeline.prediction_source import ModelPredictionSource
 from src_refactor.application.pipeline.runtime_market_cache import RuntimeMarketCache
@@ -40,6 +41,22 @@ class CapturingInputBuilder(ModelInputBuilder):
         return LightGbmInput(features=pd.DataFrame({"x": [1.0]}), feature_names=("x",))
 
 
+class FrameInputBuilder(ModelInputBuilder):
+    def __init__(self, frame: pd.DataFrame) -> None:
+        self.frame = frame
+
+    def build_train_input(self, frame: pd.DataFrame, config: ExperimentConfig) -> ModelInput:
+        raise NotImplementedError
+
+    def build_predict_input(self, request: ModelInputRequest | pd.DataFrame, spec: ModelSpec | None = None) -> ModelInput:
+        assert isinstance(request, ModelInputRequest)
+        return LightGbmInput(
+            features=pd.DataFrame({"x": [1.0]}),
+            feature_names=("x",),
+            metadata={"frame": self.frame.copy()},
+        )
+
+
 class StaticPredictor(ModelPredictor):
     def predict(self, model_input: ModelInput) -> Prediction:
         return Prediction(
@@ -71,6 +88,50 @@ def test_model_prediction_source_uses_model_input_request():
     assert builder.request.symbol == "BTC/USDT"
     assert builder.request.timeframe == "1h"
     assert builder.request.base_candles["close"].tolist() == [100.0, 100.25]
+
+
+def test_model_prediction_source_attaches_barriers_from_model_frame():
+    cache = RuntimeMarketCache()
+    contexts = cache.update_from_frame(make_candles(rows=3))
+    frame = make_candles(rows=3)
+    frame["barrier_stop_pct"] = [0.01, 0.02, 0.03]
+    frame["barrier_take_pct"] = [0.02, 0.04, 0.06]
+    source = ModelPredictionSource(
+        input_builder=FrameInputBuilder(frame),
+        predictor=StaticPredictor(),
+        model_spec=ModelSpec(model_type="lightgbm", timeframe="1h"),
+    )
+
+    prediction = source.predictions_for(contexts[-1])[0]
+
+    assert prediction.signal_gap == pytest.approx(0.6)
+    assert prediction.stop_pct == pytest.approx(0.03)
+    assert prediction.take_pct == pytest.approx(0.06)
+
+
+def test_model_prediction_source_attaches_runtime_barriers_from_labeling_metadata():
+    cache = RuntimeMarketCache()
+    contexts = cache.update_from_frame(make_candles(rows=3))
+    source = ModelPredictionSource(
+        input_builder=FrameInputBuilder(make_candles(rows=3)),
+        predictor=StaticPredictor(),
+        model_spec=ModelSpec(
+            model_type="lightgbm",
+            timeframe="1h",
+            metadata={
+                "labeling": {
+                    "use_dynamic_barriers": False,
+                    "sl_pct": 0.025,
+                    "tp_pct": 0.05,
+                }
+            },
+        ),
+    )
+
+    prediction = source.predictions_for(contexts[-1])[0]
+
+    assert prediction.stop_pct == pytest.approx(0.025)
+    assert prediction.take_pct == pytest.approx(0.05)
 
 
 def test_model_prediction_source_passes_causal_cross_symbol_maps():

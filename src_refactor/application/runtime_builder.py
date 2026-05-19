@@ -161,14 +161,11 @@ def build_paper_runtime(
     execution_journal: ExecutionJournal | None = None,
 ) -> RuntimeAdapters:
     bundle = registry.get(config.model)
+    prediction_source = build_model_prediction_source(config, bundle)
     return RuntimeAdapters(
         market_cache=market_cache or RuntimeMarketCache(),
         broker=broker or ExchangeSimulator(pricing=config.pricing),
-        prediction_source=ModelPredictionSource(
-            input_builder=bundle.input_builder,
-            predictor=bundle.load_predictor(fold_id=config.fold_id),
-            model_spec=config.model,
-        ),
+        prediction_source=prediction_source,
         signal_selector=SignalBatchProcessor(config.signals),
         idempotency_guard=InMemoryIdempotencyGuard(),
         data_source=data_source,
@@ -186,16 +183,27 @@ def build_live_runtime(
     execution_journal: ExecutionJournal | None = None,
 ) -> RuntimeAdapters:
     bundle = registry.get(config.model)
+    prediction_source = build_model_prediction_source(config, bundle)
     return RuntimeAdapters(
         market_cache=market_cache or RuntimeMarketCache(),
         broker=broker,
-        prediction_source=ModelPredictionSource(
-            input_builder=bundle.input_builder,
-            predictor=bundle.load_predictor(fold_id=config.fold_id),
-            model_spec=config.model,
-        ),
+        prediction_source=prediction_source,
         signal_selector=SignalBatchProcessor(config.signals),
         idempotency_guard=InMemoryIdempotencyGuard(),
         data_source=data_source,
         execution_journal=execution_journal,
     )
+
+
+def build_model_prediction_source(config: RuntimeConfig, bundle: Any) -> ModelPredictionSource:
+    predictor = bundle.load_predictor(fold_id=config.fold_id)
+    return ModelPredictionSource(
+        input_builder=bundle.input_builder,
+        predictor=predictor,
+        model_spec=_effective_model_spec(config.model, predictor),
+    )
+
+
+def _effective_model_spec(default: ModelSpec, predictor: Any) -> ModelSpec:
+    predictor_spec = getattr(predictor, "spec", None)
+    return predictor_spec if isinstance(predictor_spec, ModelSpec) else default

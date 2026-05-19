@@ -11,6 +11,7 @@ from src_refactor.application.training.training_runner import WalkForwardTrainin
 from src_refactor.core.config import ExperimentConfig
 from src_refactor.core.types import ModelSpec
 from src_refactor.domain.features import FeaturePipelineConfig
+from src_refactor.domain.labels import ensure_labeling_config
 from src_refactor.infrastructure.models.default_registry import create_default_model_registry
 from src_refactor.infrastructure.predictions import ParquetPredictionStore
 
@@ -39,13 +40,14 @@ def run_wvf_oos(
     htf_candle_map: dict[str, pd.DataFrame] | None = None,
     config: WvfOosRunConfig,
 ) -> WalkForwardTrainingResult:
+    labeling_config = ensure_labeling_config(config.labeling_config or {})
     feature_config = FeaturePipelineConfig(
         raw_request=config.feature_request,
         profile_map=config.feature_profiles,
     )
     dataset_result = TrainingDatasetBuilder.from_configs(
         feature_config=feature_config,
-        labeling_config=config.labeling_config or {},
+        labeling_config=labeling_config,
     ).build(base_candle_map, htf_candle_map)
 
     model_spec = ModelSpec(
@@ -53,7 +55,10 @@ def run_wvf_oos(
         timeframe=config.timeframe,
         profile=config.profile,
         symbols=config.symbols,
-        metadata=dict(config.model_metadata or {}),
+        metadata={
+            **dict(config.model_metadata or {}),
+            "labeling": labeling_config.to_mapping(),
+        },
     )
     experiment_config = ExperimentConfig(
         model=model_spec,

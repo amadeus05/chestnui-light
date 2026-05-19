@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+import math
+from typing import Any
 
 import pandas as pd
 
@@ -15,6 +17,7 @@ from src_refactor.core.contracts.model_predictor import ModelPredictor
 from src_refactor.core.contracts.prediction_store import PredictionStore
 from src_refactor.core.types import ModelSpec, Prediction
 from src_refactor.domain.features import FeaturePipeline
+from src_refactor.domain.labels import LabelingService
 from src_refactor.infrastructure.predictions.timestamps import canonical_prediction_timestamp
 
 
@@ -29,6 +32,7 @@ class ModelPredictionSource(PredictionSource):
     predictor: ModelPredictor
     model_spec: ModelSpec
     feature_pipeline: FeaturePipeline | None = None
+    labeling_service: LabelingService | None = None
     htf_candle_map: dict[str, pd.DataFrame] = field(default_factory=dict)
 
     def predictions_for(self, context: MarketContext) -> list[Prediction]:
@@ -57,8 +61,18 @@ class ModelPredictionSource(PredictionSource):
                 self.predictor.predict(model_input),
                 context=context,
                 model_id=self.model_spec.model_id,
+                model_input=model_input,
+                labeling_service=self._labeling_service(),
             )
         ]
+
+    def _labeling_service(self) -> LabelingService | None:
+        if self.labeling_service is not None:
+            return self.labeling_service
+        labeling_payload = self.model_spec.metadata.get("labeling")
+        if labeling_payload is None:
+            return None
+        return LabelingService.from_config(labeling_payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,7 +195,19 @@ def predictions_from_frame(
     return predictions
 
 
-def normalize_prediction(prediction: Prediction, *, context: MarketContext, model_id: str) -> Prediction:
+def normalize_prediction(
+    prediction: Prediction,
+    *,
+    context: MarketContext,
+    model_id: str,
+    model_input: Any | None = None,
+    labeling_service: LabelingService | None = None,
+) -> Prediction:
+    stop_pct, take_pct = _resolve_prediction_barriers(
+        prediction,
+        model_input=model_input,
+        labeling_service=labeling_service,
+    )
     return Prediction(
         timestamp=canonical_prediction_timestamp(context.snapshot.current_timestamp),
         symbol=context.symbol,
@@ -192,9 +218,9 @@ def normalize_prediction(prediction: Prediction, *, context: MarketContext, mode
         fold_id=prediction.fold_id,
         proba_long=prediction.proba_long,
         proba_short=prediction.proba_short,
-        signal_gap=prediction.signal_gap,
-        stop_pct=prediction.stop_pct,
-        take_pct=prediction.take_pct,
+        signal_gap=prediction.signal_gap or _prediction_signal_gap(prediction),
+        stop_pct=stop_pct,
+        take_pct=take_pct,
         raw=prediction.raw,
     )
 
@@ -209,3 +235,63 @@ def _optional_int(value: object) -> int | None:
     if value is None or pd.isna(value):
         return None
     return int(value)
+
+
+def _prediction_signal_gap(prediction: Prediction) -> float | None:
+    if prediction.proba_long is None or prediction.proba_short is None:
+        return None
+    return abs(float(prediction.proba_long) - float(prediction.proba_short))
+
+
+def _resolve_prediction_barriers(
+    prediction: Prediction,
+    *,
+    model_input: Any | None,
+    labeling_service: LabelingService | None,
+) -> tuple[float | None, float | None]:
+    direct = _valid_barrier_pair(prediction.stop_pct, prediction.take_pct)
+    if direct is not None:
+        return direct
+
+    frame = _model_input_frame(model_input)
+    if frame is None or frame.empty:
+        return prediction.stop_pct, prediction.take_pct
+
+    from_frame = _barrier_pair_from_frame(frame)
+    if from_frame is not None:
+        return from_frame
+
+    if labeling_service is None:
+        return prediction.stop_pct, prediction.take_pct
+
+    with_barriers = labeling_service.attach_barriers(frame)
+    from_labeling = _barrier_pair_from_frame(with_barriers)
+    if from_labeling is not None:
+        return from_labeling
+    return prediction.stop_pct, prediction.take_pct
+
+
+def _model_input_frame(model_input: Any | None) -> pd.DataFrame | None:
+    metadata = getattr(model_input, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    frame = metadata.get("frame")
+    return frame if isinstance(frame, pd.DataFrame) else None
+
+
+def _barrier_pair_from_frame(frame: pd.DataFrame) -> tuple[float, float] | None:
+    if not {"barrier_stop_pct", "barrier_take_pct"}.issubset(frame.columns):
+        return None
+    latest = frame.iloc[-1]
+    return _valid_barrier_pair(latest["barrier_stop_pct"], latest["barrier_take_pct"])
+
+
+def _valid_barrier_pair(stop_pct: object, take_pct: object) -> tuple[float, float] | None:
+    try:
+        stop = float(stop_pct)
+        take = float(take_pct)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(stop) or not math.isfinite(take):
+        return None
+    return stop, take

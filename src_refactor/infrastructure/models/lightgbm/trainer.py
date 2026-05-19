@@ -69,6 +69,7 @@ class LightGbmTrainer(ModelTrainer):
             "directional_proba_threshold": lightgbm_config.directional_proba_threshold,
             "min_signal_gap": lightgbm_config.min_signal_gap,
             "training": lightgbm_config.metadata,
+            **_runtime_metadata(config.model.metadata),
         }
         return ModelArtifact(
             spec=config.model,
@@ -142,3 +143,7 @@ def _artifact_dir(spec: ModelSpec, fold: WalkForwardFold | int | None) -> Path:
     base = Path(spec.model_type) / spec.timeframe / spec.profile
     fold_id = fold.fold_id if isinstance(fold, WalkForwardFold) else fold
     return base / f"fold_{fold_id}" if fold_id is not None else base
+
+
+def _runtime_metadata(model_metadata: dict) -> dict[str, object]:
+    return {"labeling": model_metadata["labeling"]} if "labeling" in model_metadata else {}

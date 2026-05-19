@@ -74,6 +74,7 @@ class LstmCandleTrainer(ModelTrainer):
                 "inverse_label_mapping": {"0": -1, "1": 1},
                 "symbols": list(config.symbols or config.model.symbols),
                 "rows": int(len(train_input.candles)),
+                **_runtime_metadata(config.model.metadata),
             },
         )
 
@@ -123,3 +124,7 @@ def _artifact_dir(spec: ModelSpec, fold: WalkForwardFold | int | None) -> Path:
     base = Path(spec.model_type) / spec.timeframe / spec.profile
     fold_id = fold.fold_id if isinstance(fold, WalkForwardFold) else fold
     return base / f"fold_{fold_id}" if fold_id is not None else base
+
+
+def _runtime_metadata(model_metadata: dict) -> dict[str, object]:
+    return {"labeling": model_metadata["labeling"]} if "labeling" in model_metadata else {}
