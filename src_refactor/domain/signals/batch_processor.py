@@ -46,7 +46,7 @@ class SignalBatchProcessor:
             direction, direction_prob, signal_gap = self.resolve_directional_signal(p_long, p_short)
         else:
             direction_prob = prediction.confidence
-            signal_gap = float(prediction.raw.get("signal_gap", 0.0))
+            signal_gap = float(prediction.signal_gap or 0.0)
 
         if direction == 0:
             return None
@@ -91,9 +91,9 @@ class SignalBatchProcessor:
     @staticmethod
     def _barrier_pcts(prediction: Prediction) -> tuple[float, float] | None:
         try:
-            stop_pct = float(prediction.raw["barrier_stop_pct"])
-            take_pct = float(prediction.raw["barrier_take_pct"])
-        except (KeyError, TypeError, ValueError):
+            stop_pct = float(prediction.stop_pct)
+            take_pct = float(prediction.take_pct)
+        except (TypeError, ValueError):
             return None
         if not math.isfinite(stop_pct) or not math.isfinite(take_pct):
             return None

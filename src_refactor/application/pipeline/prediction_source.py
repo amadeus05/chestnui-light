@@ -173,11 +173,9 @@ def predictions_from_frame(
                 fold_id=_optional_int(row.get("fold_id")),
                 proba_long=p_long,
                 proba_short=p_short,
-                raw={
-                    "signal_gap": abs(p_long - p_short),
-                    "barrier_stop_pct": row["barrier_stop_pct"],
-                    "barrier_take_pct": row["barrier_take_pct"],
-                },
+                signal_gap=abs(p_long - p_short),
+                stop_pct=float(row["barrier_stop_pct"]),
+                take_pct=float(row["barrier_take_pct"]),
             )
         )
     return predictions
@@ -194,6 +192,9 @@ def normalize_prediction(prediction: Prediction, *, context: MarketContext, mode
         fold_id=prediction.fold_id,
         proba_long=prediction.proba_long,
         proba_short=prediction.proba_short,
+        signal_gap=prediction.signal_gap,
+        stop_pct=prediction.stop_pct,
+        take_pct=prediction.take_pct,
         raw=prediction.raw,
     )
 

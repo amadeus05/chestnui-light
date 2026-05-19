@@ -40,7 +40,8 @@ def _candidate(symbol: str = "BTC/USDT"):
         confidence=0.9,
         proba_long=0.9,
         proba_short=0.1,
-        raw={"barrier_stop_pct": 0.02, "barrier_take_pct": 0.04},
+        stop_pct=0.02,
+        take_pct=0.04,
     )
     return SignalBatchProcessor().build_candidates([prediction])[0]
 

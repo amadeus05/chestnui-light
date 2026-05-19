@@ -244,6 +244,7 @@ def test_stored_prediction_source_builds_oos_predictions_from_legacy_frame():
     assert len(converted) == 1
     assert converted[0].proba_short == pytest.approx(0.4)
     assert converted[0].proba_long == pytest.approx(0.6)
-    assert converted[0].raw["barrier_stop_pct"] == pytest.approx(0.02)
-    assert converted[0].raw["barrier_take_pct"] == pytest.approx(0.04)
+    assert converted[0].signal_gap == pytest.approx(0.2)
+    assert converted[0].stop_pct == pytest.approx(0.02)
+    assert converted[0].take_pct == pytest.approx(0.04)
     assert pd.Timestamp("2025-01-01 00:00:00") in source.predictions_by_timestamp

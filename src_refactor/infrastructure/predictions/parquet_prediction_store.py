@@ -74,12 +74,16 @@ def _prediction_to_row(prediction: Prediction) -> dict[str, Any]:
         "fold_id": prediction.fold_id,
         "proba_long": prediction.proba_long,
         "proba_short": prediction.proba_short,
+        "signal_gap": prediction.signal_gap,
+        "stop_pct": prediction.stop_pct,
+        "take_pct": prediction.take_pct,
         "raw_json": json.dumps(prediction.raw, ensure_ascii=True, default=str),
     }
 
 
 def _row_to_prediction(row: pd.Series) -> Prediction:
     fold_id = row.get("fold_id")
+    raw = _raw_from_row(row)
     return Prediction(
         timestamp=canonical_prediction_timestamp(row["timestamp"]),
         symbol=str(row["symbol"]),
@@ -90,11 +94,28 @@ def _row_to_prediction(row: pd.Series) -> Prediction:
         fold_id=None if pd.isna(fold_id) else int(fold_id),
         proba_long=_optional_float(row.get("proba_long")),
         proba_short=_optional_float(row.get("proba_short")),
-        raw=json.loads(row.get("raw_json") or "{}"),
+        signal_gap=_optional_float_with_fallback(row.get("signal_gap"), raw.get("signal_gap")),
+        stop_pct=_optional_float_with_fallback(row.get("stop_pct"), raw.get("barrier_stop_pct")),
+        take_pct=_optional_float_with_fallback(row.get("take_pct"), raw.get("barrier_take_pct")),
+        raw=raw,
     )
+
+
+def _raw_from_row(row: pd.Series) -> dict[str, Any]:
+    raw_json = row.get("raw_json")
+    if raw_json is None or pd.isna(raw_json):
+        return {}
+    return json.loads(raw_json)
 
 
 def _optional_float(value: object) -> float | None:
     if value is None or pd.isna(value):
         return None
     return float(value)
+
+
+def _optional_float_with_fallback(value: object, fallback: object) -> float | None:
+    converted = _optional_float(value)
+    if converted is not None:
+        return converted
+    return _optional_float(fallback)

@@ -72,7 +72,8 @@ def _prediction(symbol: str, p_long: float) -> Prediction:
         confidence=p_long,
         proba_long=p_long,
         proba_short=1.0 - p_long,
-        raw={"barrier_stop_pct": 0.02, "barrier_take_pct": 0.04},
+        stop_pct=0.02,
+        take_pct=0.04,
     )
 
 

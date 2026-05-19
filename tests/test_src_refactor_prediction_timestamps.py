@@ -1,6 +1,9 @@
-import pandas as pd
+import json
 from pathlib import Path
 from uuid import uuid4
+
+import pandas as pd
+import pytest
 
 from src_refactor.application.pipeline import StoredPredictionSource
 from src_refactor.application.pipeline.runtime_market_cache import RuntimeMarketCache
@@ -19,6 +22,9 @@ def _prediction(timestamp: object, symbol: str = "BTC/USDT") -> Prediction:
         confidence=0.7,
         proba_long=0.7,
         proba_short=0.3,
+        signal_gap=0.4,
+        stop_pct=0.02,
+        take_pct=0.04,
     )
 
 
@@ -132,5 +138,45 @@ def test_parquet_prediction_store_round_trips_canonical_timestamps():
         assert len(predictions) == 1
         assert predictions[0].timestamp == pd.Timestamp("2025-01-01 00:00:00")
         assert predictions[0].timestamp.tzinfo is None
+        assert predictions[0].signal_gap == pytest.approx(0.4)
+        assert predictions[0].stop_pct == pytest.approx(0.02)
+        assert predictions[0].take_pct == pytest.approx(0.04)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_parquet_prediction_store_reads_legacy_raw_barriers():
+    path = Path("src_refactor/.tmp_tests") / f"legacy_predictions_{uuid4().hex}.parquet"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(
+            [
+                {
+                    "timestamp": pd.Timestamp("2025-01-01 00:00:00"),
+                    "symbol": "BTC/USDT",
+                    "timeframe": "1h",
+                    "model_id": "model",
+                    "direction": 0,
+                    "confidence": 0.7,
+                    "fold_id": None,
+                    "proba_long": 0.7,
+                    "proba_short": 0.3,
+                    "raw_json": json.dumps(
+                        {
+                            "signal_gap": 0.4,
+                            "barrier_stop_pct": 0.02,
+                            "barrier_take_pct": 0.04,
+                        }
+                    ),
+                }
+            ]
+        ).to_parquet(path, index=False)
+
+        predictions = ParquetPredictionStore(path).read(model_id="model")
+
+        assert len(predictions) == 1
+        assert predictions[0].signal_gap == pytest.approx(0.4)
+        assert predictions[0].stop_pct == pytest.approx(0.02)
+        assert predictions[0].take_pct == pytest.approx(0.04)
     finally:
         path.unlink(missing_ok=True)

@@ -36,11 +36,16 @@ class OosPredictionService:
                     fold_id=fold.fold_id,
                     proba_long=prediction.proba_long,
                     proba_short=prediction.proba_short,
-                    raw={
-                        **prediction.raw,
-                        "barrier_stop_pct": row.get("barrier_stop_pct"),
-                        "barrier_take_pct": row.get("barrier_take_pct"),
-                    },
+                    signal_gap=prediction.signal_gap,
+                    stop_pct=_optional_float(row.get("barrier_stop_pct")),
+                    take_pct=_optional_float(row.get("barrier_take_pct")),
+                    raw=prediction.raw,
                 )
             )
         return predictions
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    return float(value)

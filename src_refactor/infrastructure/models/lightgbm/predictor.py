@@ -38,8 +38,8 @@ class LightGbmPredictor(ModelPredictor):
             confidence=max(p_long, p_short),
             proba_long=p_long,
             proba_short=p_short,
+            signal_gap=signal_gap,
             raw={
-                "signal_gap": signal_gap,
                 "feature_names": list(model_input.feature_names),
             },
         )

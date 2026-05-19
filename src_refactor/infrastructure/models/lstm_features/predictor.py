@@ -49,8 +49,8 @@ class LstmFeaturePredictor(ModelPredictor):
             confidence=max(p_long, p_short),
             proba_long=p_long,
             proba_short=p_short,
+            signal_gap=abs(p_long - p_short),
             raw={
-                "signal_gap": abs(p_long - p_short),
                 "feature_names": list(model_input.feature_names),
             },
         )

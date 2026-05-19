@@ -71,6 +71,9 @@ class Prediction:
     fold_id: int | None = None
     proba_long: float | None = None
     proba_short: float | None = None
+    signal_gap: float | None = None
+    stop_pct: float | None = None
+    take_pct: float | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

@@ -64,16 +64,16 @@ def test_signal_processor_candidate_sort_matches_legacy_key(signal_config):
 
 
 @pytest.mark.parametrize(
-    "raw",
+    ("stop_pct", "take_pct"),
     [
-        {},
-        {"barrier_stop_pct": 0.02},
-        {"barrier_stop_pct": float("nan"), "barrier_take_pct": 0.04},
-        {"barrier_stop_pct": 0.02, "barrier_take_pct": float("inf")},
+        (None, None),
+        (0.02, None),
+        (float("nan"), 0.04),
+        (0.02, float("inf")),
     ],
 )
-def test_signal_processor_rejects_candidates_without_valid_barriers(signal_config, raw):
-    prediction = _prediction("BTC/USDT", p_long=0.90, p_short=0.10, raw=raw)
+def test_signal_processor_rejects_candidates_without_valid_barriers(signal_config, stop_pct, take_pct):
+    prediction = _prediction("BTC/USDT", p_long=0.90, p_short=0.10, stop_pct=stop_pct, take_pct=take_pct)
 
     assert SignalBatchProcessor(signal_config).build_candidates([prediction]) == []
 
@@ -113,7 +113,8 @@ def _prediction(
     *,
     p_long: float,
     p_short: float,
-    raw: dict[str, float] | None = None,
+    stop_pct: float | None = 0.02,
+    take_pct: float | None = 0.04,
 ) -> Prediction:
     return Prediction(
         timestamp=pd.Timestamp("2025-01-01 00:00:00"),
@@ -124,5 +125,6 @@ def _prediction(
         confidence=max(p_long, p_short),
         proba_long=p_long,
         proba_short=p_short,
-        raw=raw if raw is not None else {"barrier_stop_pct": 0.02, "barrier_take_pct": 0.04},
+        stop_pct=stop_pct,
+        take_pct=take_pct,
     )
