@@ -131,12 +131,46 @@ def compute_sample_weights(frame: pd.DataFrame, config: LightGbmTrainingConfig) 
         recent_days = float(config.metadata.get("regime_recent_days_boost", 30.0))
         boost_factor = float(config.metadata.get("regime_recent_boost_factor", 2.0))
         weights = np.where(days_ago <= recent_days, weights * boost_factor, weights)
+        weights = weights * _regime_weight_multiplier(frame, config)
 
     min_weight = float(config.metadata.get("sample_weight_min", 0.8))
     max_weight = float(config.metadata.get("sample_weight_max", 1.35))
     if max_weight < min_weight:
         max_weight = min_weight
     return np.clip(weights, min_weight, max_weight)
+
+
+def _regime_weight_multiplier(frame: pd.DataFrame, config: LightGbmTrainingConfig) -> np.ndarray:
+    regime_score = np.zeros(len(frame), dtype=float)
+    regime_terms = 0
+
+    if "market_breadth_ema_fast_slow_1h" in frame.columns:
+        breadth_1h = pd.to_numeric(frame["market_breadth_ema_fast_slow_1h"], errors="coerce").fillna(0.5)
+        regime_score += np.abs((breadth_1h.to_numpy() * 2.0) - 1.0).clip(0.0, 1.0)
+        regime_terms += 1
+
+    if "market_breadth_pos_return_4h_3" in frame.columns:
+        breadth_4h = pd.to_numeric(frame["market_breadth_pos_return_4h_3"], errors="coerce").fillna(0.5)
+        regime_score += np.abs((breadth_4h.to_numpy() * 2.0) - 1.0).clip(0.0, 1.0)
+        regime_terms += 1
+
+    if "ema_slope_4h" in frame.columns:
+        ema_slope_4h = pd.to_numeric(frame["ema_slope_4h"], errors="coerce").fillna(0.0)
+        slope_scale = float(config.metadata.get("regime_weight_slope_scale_4h", 0.08))
+        if slope_scale > 0:
+            regime_score += np.tanh(np.abs(ema_slope_4h.to_numpy()) / slope_scale)
+            regime_terms += 1
+
+    if regime_terms == 0:
+        return np.ones(len(frame), dtype=float)
+
+    regime_score /= float(regime_terms)
+    regime_strength = np.clip(
+        regime_score * float(config.metadata.get("regime_weight_strength", 0.18)),
+        0.0,
+        float(config.metadata.get("regime_weight_strength_cap", 0.25)),
+    )
+    return 1.0 + regime_strength
 
 
 def _artifact_dir(spec: ModelSpec, fold: WalkForwardFold | int | None) -> Path:

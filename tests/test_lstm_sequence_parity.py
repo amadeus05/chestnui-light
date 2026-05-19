@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import train
 from lstm.dataset import SequenceDataset, SequenceStandardizer, build_history_by_symbol
 from lstm.train_lstm_walk_forward import split_train_eval_indices as split_lstm_train_eval_indices
 from lstm.train_lstm_walk_forward import build_features_meta as build_lstm_features_meta
@@ -15,11 +14,15 @@ from lstm_candles.train_lstm_candles_walk_forward import (
     split_train_eval_indices as split_candle_train_eval_indices,
 )
 
+TIMESTAMP_COLUMN = "timestamp"
+SYMBOL_COLUMN = "symbol"
+TARGET_COLUMN = "Target"
+
 
 def make_history_frame() -> pd.DataFrame:
     return pd.DataFrame(
         {
-            train.TIMESTAMP_COLUMN: pd.to_datetime(
+            TIMESTAMP_COLUMN: pd.to_datetime(
                 [
                     "2025-01-01 02:00:00",
                     "2025-01-01 00:00:00",
@@ -30,7 +33,7 @@ def make_history_frame() -> pd.DataFrame:
                     "2025-01-01 02:00:00",
                 ]
             ),
-            train.SYMBOL_COLUMN: [
+            SYMBOL_COLUMN: [
                 "BTC/USDT",
                 "BTC/USDT",
                 "BTC/USDT",
@@ -48,7 +51,7 @@ def make_history_frame() -> pd.DataFrame:
 def make_sample_frame() -> pd.DataFrame:
     return pd.DataFrame(
         {
-            train.TIMESTAMP_COLUMN: pd.to_datetime(
+            TIMESTAMP_COLUMN: pd.to_datetime(
                 [
                     "2025-01-01 00:00:00",
                     "2025-01-01 01:00:00",
@@ -56,8 +59,8 @@ def make_sample_frame() -> pd.DataFrame:
                     "2025-01-01 02:00:00",
                 ]
             ),
-            train.SYMBOL_COLUMN: ["BTC/USDT", "BTC/USDT", "BTC/USDT", "ETH/USDT"],
-            train.TARGET_COLUMN: [0, 1, 0, 1],
+            SYMBOL_COLUMN: ["BTC/USDT", "BTC/USDT", "BTC/USDT", "ETH/USDT"],
+            TARGET_COLUMN: [0, 1, 0, 1],
         }
     )
 
@@ -67,7 +70,7 @@ def test_build_history_by_symbol_sorts_deduplicates_and_sanitizes_infinities():
 
     assert set(history) == {"BTC/USDT", "ETH/USDT"}
     btc = history["BTC/USDT"]
-    assert btc[train.TIMESTAMP_COLUMN].tolist() == list(pd.date_range("2025-01-01", periods=3, freq="h"))
+    assert btc[TIMESTAMP_COLUMN].tolist() == list(pd.date_range("2025-01-01", periods=3, freq="h"))
     assert btc["feature_a"].tolist() == [1.0, 20.0, 3.0]
     assert np.isnan(btc.loc[0, "feature_b"])
     assert btc.loc[1, "feature_b"] == 200.0
@@ -94,7 +97,7 @@ def test_sequence_dataset_uses_current_and_past_rows_only():
 
     metadata = dataset.metadata_frame()
     assert metadata["dataset_index"].tolist() == [0, 1, 2]
-    assert metadata[train.SYMBOL_COLUMN].tolist() == ["BTC/USDT", "BTC/USDT", "ETH/USDT"]
+    assert metadata[SYMBOL_COLUMN].tolist() == ["BTC/USDT", "BTC/USDT", "ETH/USDT"]
 
 
 def test_sequence_standardizer_payload_and_transform_are_stable():
@@ -130,15 +133,15 @@ def test_candle_lstm_train_eval_split_purges_timestamps_before_eval():
     history = build_history_by_symbol(make_history_frame(), ["feature_a", "feature_b"])
     sample_frame = pd.DataFrame(
         {
-            train.TIMESTAMP_COLUMN: pd.date_range("2025-01-01 01:00:00", periods=6, freq="h"),
-            train.SYMBOL_COLUMN: ["BTC/USDT"] * 6,
-            train.TARGET_COLUMN: [0, 1, 0, 1, 0, 1],
+            TIMESTAMP_COLUMN: pd.date_range("2025-01-01 01:00:00", periods=6, freq="h"),
+            SYMBOL_COLUMN: ["BTC/USDT"] * 6,
+            TARGET_COLUMN: [0, 1, 0, 1, 0, 1],
         }
     )
     extended_history = pd.DataFrame(
         {
-            train.TIMESTAMP_COLUMN: pd.date_range("2025-01-01 00:00:00", periods=7, freq="h"),
-            train.SYMBOL_COLUMN: ["BTC/USDT"] * 7,
+            TIMESTAMP_COLUMN: pd.date_range("2025-01-01 00:00:00", periods=7, freq="h"),
+            SYMBOL_COLUMN: ["BTC/USDT"] * 7,
             "feature_a": np.arange(7, dtype=float),
             "feature_b": np.arange(10, 17, dtype=float),
         }
@@ -165,8 +168,8 @@ def test_candle_lstm_train_eval_split_purges_timestamps_before_eval():
 def test_lstm_feature_meta_payload_is_replay_compatible():
     predictions = pd.DataFrame(
         {
-            train.TIMESTAMP_COLUMN: pd.to_datetime(["2025-01-01", "2025-01-02"]),
-            train.SYMBOL_COLUMN: ["BTC/USDT", "ETH/USDT"],
+            TIMESTAMP_COLUMN: pd.to_datetime(["2025-01-01", "2025-01-02"]),
+            SYMBOL_COLUMN: ["BTC/USDT", "ETH/USDT"],
         }
     )
     args = Namespace(
@@ -197,8 +200,8 @@ def test_lstm_feature_meta_payload_is_replay_compatible():
 def test_candle_lstm_feature_meta_payload_is_replay_compatible():
     predictions = pd.DataFrame(
         {
-            train.TIMESTAMP_COLUMN: pd.to_datetime(["2025-01-01", "2025-01-03"]),
-            train.SYMBOL_COLUMN: ["BTC/USDT", "ETH/USDT"],
+            TIMESTAMP_COLUMN: pd.to_datetime(["2025-01-01", "2025-01-03"]),
+            SYMBOL_COLUMN: ["BTC/USDT", "ETH/USDT"],
         }
     )
     args = Namespace(

@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 
-import train
 from src.features import indicators
 from src.features.builders.regime_feature_builder import RegimeFeatureBuilder
 from src.features.master_feature_builder import MasterFeatureBuilder
@@ -163,18 +162,10 @@ def test_feature_specs_cover_all_builder_features():
     assert set(all_specs) == all_features
 
 
-def test_train_feature_formula_payload_resolves_requested_features():
+def test_feature_specs_resolve_requested_feature_formulas():
     feature_columns = ["ema_fast_slow", "trend_alignment_1h_4h"]
-    payload = train.build_feature_formulas_payload(
-        feature_columns=feature_columns,
-        model_name="test_model",
-        symbols=["BTC/USDT"],
-        experiment_snapshot={"experiment": "test"},
-    )
+    specs_by_name = MasterFeatureBuilder().collect_feature_specs(set(feature_columns))
 
-    assert payload["tracked_feature_columns"] == feature_columns
-    assert payload["untracked_feature_columns"] == []
-    formulas_by_name = {item["name"]: item for item in payload["features"]}
-    assert set(formulas_by_name) == set(feature_columns)
-    assert formulas_by_name["ema_fast_slow"]["resolved_formula"]
-    assert "ema_fast_slow" in formulas_by_name["trend_alignment_1h_4h"]["dependencies"]
+    assert set(specs_by_name) == set(feature_columns)
+    assert specs_by_name["ema_fast_slow"].resolved_formula(config_source=object())
+    assert "ema_fast_slow" in specs_by_name["trend_alignment_1h_4h"].dependencies
