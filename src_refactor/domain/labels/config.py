@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Mapping
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,27 +26,6 @@ class LabelingConfig:
     @property
     def base_horizon(self) -> int:
         return max(1, int(self.horizon))
-
-    @classmethod
-    def from_legacy_config(cls, config: Any) -> "LabelingConfig":
-        return cls(
-            horizon=int(getattr(config, "HORIZON", 16)),
-            enable_adaptive_horizon=bool(getattr(config, "ENABLE_ADAPTIVE_HORIZON", False)),
-            adaptive_horizon_min=_optional_int(getattr(config, "ADAPTIVE_HORIZON_MIN", None)),
-            adaptive_horizon_max=_optional_int(getattr(config, "ADAPTIVE_HORIZON_MAX", None)),
-            adaptive_horizon_vol_low=float(getattr(config, "ADAPTIVE_HORIZON_VOL_LOW", 0.005)),
-            adaptive_horizon_vol_high=float(getattr(config, "ADAPTIVE_HORIZON_VOL_HIGH", 0.025)),
-            use_dynamic_barriers=bool(getattr(config, "USE_DYNAMIC_BARRIERS", True)),
-            barrier_atr_multiplier=float(getattr(config, "BARRIER_ATR_MULTIPLIER", 1.25)),
-            barrier_rvol_multiplier=float(getattr(config, "BARRIER_RVOL_MULTIPLIER", 0.75)),
-            barrier_tp_to_sl_ratio=float(getattr(config, "BARRIER_TP_TO_SL_RATIO", 2.0)),
-            barrier_min_pct=_optional_float(getattr(config, "BARRIER_MIN_PCT", None)),
-            barrier_max_pct=_optional_float(getattr(config, "BARRIER_MAX_PCT", None)),
-            sl_pct=float(getattr(config, "SL_PCT", 0.015)),
-            tp_pct=float(getattr(config, "TP_PCT", 0.03)),
-            taker_fee=float(getattr(config, "TAKER_COM", 0.0004)),
-            slippage=float(getattr(config, "SLIPPAGE", 0.0003)),
-        )
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, object] | None) -> "LabelingConfig":
@@ -101,12 +80,14 @@ class LabelingConfig:
         }
 
 
-def ensure_labeling_config(config: Any) -> LabelingConfig:
+def ensure_labeling_config(config: LabelingConfig | Mapping[str, object] | None) -> LabelingConfig:
     if isinstance(config, LabelingConfig):
         return config
     if isinstance(config, Mapping):
         return LabelingConfig.from_mapping(config)
-    return LabelingConfig.from_legacy_config(config)
+    if config is None:
+        return LabelingConfig()
+    raise TypeError("Expected LabelingConfig, mapping, or None.")
 
 
 def _optional_int(value: object) -> int | None:

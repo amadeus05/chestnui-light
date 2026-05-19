@@ -45,50 +45,6 @@ class RuntimeConfig:
     signals: SignalProcessingConfig = field(default_factory=SignalProcessingConfig)
     trading: TradingEngineConfig = field(default_factory=TradingEngineConfig)
 
-    @classmethod
-    def from_legacy_config(
-        cls,
-        *,
-        mode: TradingMode,
-        model: ModelSpec,
-        config: Any,
-        fold_id: int | None = None,
-        symbols: tuple[str, ...] = (),
-    ) -> "RuntimeConfig":
-        return cls(
-            mode=mode,
-            model=model,
-            initial_balance=float(getattr(config, "BACKTEST_INITIAL_BALANCE", 100.0)),
-            fold_id=fold_id,
-            symbols=symbols,
-            pricing=ExecutionPricingConfig.from_legacy_config(config),
-            risk=RiskConfig(
-                risk_per_trade=float(getattr(config, "RISK_PER_TRADE", 0.01)),
-                leverage=float(getattr(config, "LEVERAGE", 1.0)),
-                min_position_notional=float(getattr(config, "MIN_POSITION_NOTIONAL", 10.0)),
-                max_open_positions=int(getattr(config, "BACKTEST_MAX_OPEN_POSITIONS", 1)),
-                sl_cooldown_bars=int(getattr(config, "BACKTEST_SL_COOLDOWN_BARS", 0)),
-                max_sl_per_day=int(getattr(config, "BACKTEST_MAX_SL_PER_DAY", 0)),
-                reduce_risk_after_consecutive_losses=int(
-                    getattr(config, "BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES", 0)
-                ),
-                reduced_risk_per_trade=float(getattr(config, "BACKTEST_REDUCED_RISK_PER_TRADE"))
-                if getattr(config, "BACKTEST_REDUCED_RISK_PER_TRADE", None) is not None
-                else None,
-            ),
-            signals=SignalProcessingConfig(
-                directional_proba_threshold=float(
-                    getattr(config, "DIRECTIONAL_PROBA_THRESHOLD", getattr(config, "CONFIDENCE_THRESHOLD", 0.5))
-                ),
-                min_signal_gap=float(getattr(config, "MIN_SIGNAL_GAP", 0.0)),
-                allow_longs=bool(getattr(config, "ALLOW_LONGS", True)),
-                allow_shorts=bool(getattr(config, "ALLOW_SHORTS", True)),
-            ),
-            trading=TradingEngineConfig(
-                max_new_positions_per_bar=int(getattr(config, "BACKTEST_MAX_NEW_POSITIONS_PER_BAR", 1))
-            ),
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class RuntimeAdapters:

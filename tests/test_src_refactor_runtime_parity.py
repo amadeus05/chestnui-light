@@ -6,10 +6,11 @@ from src_refactor.application.pipeline.idempotency_guard import InMemoryIdempote
 from src_refactor.application.pipeline.runtime_market_cache import RuntimeMarketCache
 from src_refactor.application.runtime_builder import RuntimeConfig, TradingMode, build_runtime_adapters
 from src_refactor.core.types import ModelSpec, Prediction
+from src_refactor.domain.execution import ExecutionPricingConfig
 from src_refactor.domain.portfolio.portfolio_manager import PortfolioManager
-from src_refactor.domain.risk.risk_manager import RiskManager
-from src_refactor.domain.signals import SignalBatchProcessor
-from src_refactor.domain.trading import TradingEngine
+from src_refactor.domain.risk.risk_manager import RiskConfig, RiskManager
+from src_refactor.domain.signals import SignalBatchProcessor, SignalProcessingConfig
+from src_refactor.domain.trading import TradingEngine, TradingEngineConfig
 from src_refactor.infrastructure.exchanges.simulation import ExchangeSimulator
 
 
@@ -205,28 +206,28 @@ def test_backtest_runner_final_closes_open_positions_without_journal():
     assert portfolio.position_snapshot("BTC/USDT") is None
 
 
-def test_runtime_config_can_use_legacy_trading_parameters_as_single_source():
-    class LegacyConfig:
-        BACKTEST_INITIAL_BALANCE = 250.0
-        TAKER_COM = 0.001
-        SLIPPAGE = 0.002
-        RISK_PER_TRADE = 0.03
-        LEVERAGE = 4.0
-        BACKTEST_MAX_OPEN_POSITIONS = 3
-        BACKTEST_SL_COOLDOWN_BARS = 8
-        BACKTEST_MAX_SL_PER_DAY = 2
-        BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES = 2
-        BACKTEST_REDUCED_RISK_PER_TRADE = 0.01
-        DIRECTIONAL_PROBA_THRESHOLD = 0.62
-        MIN_SIGNAL_GAP = 0.04
-        ALLOW_LONGS = False
-        ALLOW_SHORTS = True
-        BACKTEST_MAX_NEW_POSITIONS_PER_BAR = 2
-
-    runtime_config = RuntimeConfig.from_legacy_config(
+def test_runtime_config_uses_typed_trading_parameters_as_single_source():
+    runtime_config = RuntimeConfig(
         mode=TradingMode.BACKTEST,
         model=ModelSpec(model_type="lightgbm", timeframe="1h"),
-        config=LegacyConfig,
+        initial_balance=250.0,
+        pricing=ExecutionPricingConfig(taker_fee=0.001, slippage=0.002),
+        risk=RiskConfig(
+            risk_per_trade=0.03,
+            leverage=4.0,
+            max_open_positions=3,
+            sl_cooldown_bars=8,
+            max_sl_per_day=2,
+            reduce_risk_after_consecutive_losses=2,
+            reduced_risk_per_trade=0.01,
+        ),
+        signals=SignalProcessingConfig(
+            directional_proba_threshold=0.62,
+            min_signal_gap=0.04,
+            allow_longs=False,
+            allow_shorts=True,
+        ),
+        trading=TradingEngineConfig(max_new_positions_per_bar=2),
     )
     adapters = build_runtime_adapters(
         runtime_config,
