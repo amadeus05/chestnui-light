@@ -64,11 +64,49 @@ class MarketDataset:
     symbol_column: str = "symbol"
 
     def between(self, start: pd.Timestamp, end: pd.Timestamp) -> "MarketDataset":
-        mask = self.frame[self.timestamp_column].between(start, end, inclusive="both")
+        mask = self.frame[self.timestamp_column].between(pd.to_datetime(start), pd.to_datetime(end), inclusive="both")
         return MarketDataset(
             frame=self.frame.loc[mask].copy(),
             timeframe=self.timeframe,
             symbols=self.symbols,
             timestamp_column=self.timestamp_column,
             symbol_column=self.symbol_column,
+        )
+
+    def with_symbols(self, symbols: tuple[str, ...] | list[str]) -> "MarketDataset":
+        symbol_set = set(symbols)
+        frame = self.frame.loc[self.frame[self.symbol_column].isin(symbol_set)].copy()
+        kept_symbols = tuple(symbol for symbol in self.symbols if symbol in symbol_set)
+        return MarketDataset(
+            frame=frame,
+            timeframe=self.timeframe,
+            symbols=kept_symbols,
+            timestamp_column=self.timestamp_column,
+            symbol_column=self.symbol_column,
+        )
+
+    def symbols_with_min_rows(
+        self,
+        *,
+        start: pd.Timestamp | None = None,
+        end: pd.Timestamp | None = None,
+        min_rows: int = 2,
+    ) -> tuple[str, ...]:
+        frame = self.frame
+        if start is not None:
+            frame = frame.loc[frame[self.timestamp_column] >= pd.to_datetime(start)]
+        if end is not None:
+            frame = frame.loc[frame[self.timestamp_column] <= pd.to_datetime(end)]
+        counts = frame.groupby(self.symbol_column).size()
+        return tuple(symbol for symbol in self.symbols if int(counts.get(symbol, 0)) >= min_rows)
+
+    def drop_symbols_with_insufficient_rows(
+        self,
+        *,
+        start: pd.Timestamp | None = None,
+        end: pd.Timestamp | None = None,
+        min_rows: int = 2,
+    ) -> "MarketDataset":
+        return self.with_symbols(
+            self.symbols_with_min_rows(start=start, end=end, min_rows=min_rows)
         )
