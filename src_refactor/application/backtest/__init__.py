@@ -16,6 +16,10 @@ from src_refactor.application.backtest.runner import (
     BacktestRunner,
     BacktestRunResult,
 )
+from src_refactor.application.backtest.walk_forward_oos_flow import (
+    WalkForwardOosBacktestFlow,
+    WalkForwardOosBacktestResult,
+)
 
 __all__ = [
     "BacktestBucketStats",
@@ -28,4 +32,6 @@ __all__ = [
     "BacktestRunResult",
     "StoredPredictionBacktestFlow",
     "StoredPredictionBacktestRequest",
+    "WalkForwardOosBacktestFlow",
+    "WalkForwardOosBacktestResult",
 ]

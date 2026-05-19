@@ -148,6 +148,7 @@ def _attach_asof_context(
     timestamp_column: str,
 ) -> pd.DataFrame:
     output = base_frame.copy().sort_values(timestamp_column).reset_index(drop=True)
+    output[timestamp_column] = pd.to_datetime(output[timestamp_column], errors="coerce").astype("datetime64[ns]")
     if context_frame is None or context_frame.empty:
         output[value_column] = np.nan
         return output
@@ -158,6 +159,7 @@ def _attach_asof_context(
         .sort_values(timestamp_column)
         .reset_index(drop=True)
     )
+    context[timestamp_column] = pd.to_datetime(context[timestamp_column], errors="coerce").astype("datetime64[ns]")
     return pd.merge_asof(
         output,
         context,
