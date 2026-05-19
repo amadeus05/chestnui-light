@@ -87,6 +87,36 @@ def test_in_memory_prediction_store_filters_naive_and_aware_ranges():
     assert [prediction.symbol for prediction in predictions] == ["BTC/USDT"]
 
 
+def test_stored_prediction_source_reads_from_prediction_store():
+    store = InMemoryPredictionStore()
+    store.write(
+        [
+            _prediction("2025-01-01 00:00:00", symbol="BTC/USDT"),
+            _prediction("2025-01-02 00:00:00", symbol="ETH/USDT"),
+            Prediction(
+                timestamp=pd.Timestamp("2025-01-01 00:00:00"),
+                symbol="SOL/USDT",
+                timeframe="1h",
+                model_id="other",
+                direction=0,
+                confidence=0.8,
+            ),
+        ]
+    )
+
+    source = StoredPredictionSource.from_store(
+        store,
+        model_id="model",
+        symbols=("BTC/USDT",),
+        start=pd.Timestamp("2025-01-01 00:00:00", tz="UTC"),
+        end=pd.Timestamp("2025-01-01 00:00:00"),
+    )
+
+    predictions = source.predictions_for(_context_for("2025-01-01 00:00:00"))
+
+    assert [prediction.symbol for prediction in predictions] == ["BTC/USDT"]
+
+
 def test_parquet_prediction_store_round_trips_canonical_timestamps():
     path = Path("src_refactor/.tmp_tests") / f"predictions_{uuid4().hex}.parquet"
     try:

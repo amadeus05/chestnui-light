@@ -11,7 +11,6 @@ from src_refactor.application.backtest.report import (
 from src_refactor.application.backtest.runner import (
     BacktestRunner,
     BacktestRunResult,
-    build_oos_backtest_runner,
 )
 
 __all__ = [
@@ -23,5 +22,4 @@ __all__ = [
     "BacktestTextReportRenderer",
     "BacktestRunner",
     "BacktestRunResult",
-    "build_oos_backtest_runner",
 ]

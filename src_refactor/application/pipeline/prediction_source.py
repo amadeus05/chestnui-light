@@ -12,6 +12,7 @@ from src_refactor.application.pipeline.runtime_market_cache import (
 )
 from src_refactor.core.contracts.model_input_builder import ModelInputBuilder, ModelInputRequest
 from src_refactor.core.contracts.model_predictor import ModelPredictor
+from src_refactor.core.contracts.prediction_store import PredictionStore
 from src_refactor.core.types import ModelSpec, Prediction
 from src_refactor.domain.features import FeaturePipeline
 from src_refactor.infrastructure.predictions.timestamps import canonical_prediction_timestamp
@@ -67,6 +68,25 @@ class StoredPredictionSource(PredictionSource):
     @classmethod
     def from_predictions(cls, predictions: list[Prediction]) -> "StoredPredictionSource":
         return cls(predictions_by_timestamp=group_predictions_by_timestamp(predictions))
+
+    @classmethod
+    def from_store(
+        cls,
+        store: PredictionStore,
+        *,
+        model_id: str,
+        symbols: tuple[str, ...] | None = None,
+        start: pd.Timestamp | None = None,
+        end: pd.Timestamp | None = None,
+    ) -> "StoredPredictionSource":
+        return cls.from_predictions(
+            store.read(
+                model_id=model_id,
+                symbols=symbols,
+                start=start,
+                end=end,
+            )
+        )
 
     @classmethod
     def from_frame(
