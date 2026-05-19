@@ -1,17 +1,13 @@
 import pandas as pd
 import pytest
 
-import bt
-
 from src_refactor.core.types import MarketExecutionSnapshot, Prediction
 from src_refactor.domain.signals import SignalBatchProcessor, SignalProcessingConfig
 from src_refactor.domain.trading import OrderFactory
 
 
 @pytest.fixture()
-def signal_config(monkeypatch):
-    monkeypatch.setattr(bt, "DIRECTIONAL_PROBA_THRESHOLD", 0.55)
-    monkeypatch.setattr(bt, "MIN_SIGNAL_GAP", 0.02)
+def signal_config():
     return SignalProcessingConfig(
         directional_proba_threshold=0.55,
         min_signal_gap=0.02,
@@ -19,34 +15,28 @@ def signal_config(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("p_long", "p_short"),
+    ("p_long", "p_short", "expected"),
     [
-        (0.58, 0.54),
-        (0.52, 0.57),
-        (0.56, 0.55),
-        (0.54, 0.20),
+        (0.58, 0.54, (1, 0.58, 0.04)),
+        (0.52, 0.57, (-1, 0.57, 0.05)),
+        (0.56, 0.55, (0, 0.56, 0.01)),
+        (0.54, 0.20, (0, 0.54, 0.34)),
     ],
 )
-def test_signal_processor_directional_signal_matches_legacy_bt(signal_config, p_long, p_short):
+def test_signal_processor_directional_signal_uses_threshold_and_gap(signal_config, p_long, p_short, expected):
     processor = SignalBatchProcessor(signal_config)
 
-    assert processor.resolve_directional_signal(p_long, p_short) == pytest.approx(
-        bt.resolve_directional_signal(p_long, p_short)
-    )
+    assert processor.resolve_directional_signal(p_long, p_short) == pytest.approx(expected)
 
 
-def test_signal_processor_entry_score_matches_legacy_bt(signal_config):
+def test_signal_processor_entry_score_uses_probability_edge_and_gap(signal_config):
     processor = SignalBatchProcessor(signal_config)
 
-    assert processor.build_entry_score(direction_prob=0.60, signal_gap=0.03) == pytest.approx(
-        bt.build_entry_score(direction_prob=0.60, signal_gap=0.03)
-    )
-    assert processor.build_entry_score(direction_prob=0.50, signal_gap=0.03) == pytest.approx(
-        bt.build_entry_score(direction_prob=0.50, signal_gap=0.03)
-    )
+    assert processor.build_entry_score(direction_prob=0.60, signal_gap=0.03) == pytest.approx(0.53)
+    assert processor.build_entry_score(direction_prob=0.50, signal_gap=0.03) == pytest.approx(0.03)
 
 
-def test_signal_processor_candidate_sort_matches_legacy_key(signal_config):
+def test_signal_processor_candidate_sort_uses_score_then_probability(signal_config):
     processor = SignalBatchProcessor(signal_config)
     predictions = [
         _prediction("BTC/USDT", p_long=0.58, p_short=0.40),
@@ -78,7 +68,7 @@ def test_signal_processor_rejects_candidates_without_valid_barriers(signal_confi
     assert SignalBatchProcessor(signal_config).build_candidates([prediction]) == []
 
 
-def test_order_factory_builds_legacy_market_order_shape(signal_config):
+def test_order_factory_builds_market_order_shape(signal_config):
     candidate = SignalBatchProcessor(signal_config).build_candidates(
         [_prediction("BTC/USDT", p_long=0.90, p_short=0.10)]
     )[0]

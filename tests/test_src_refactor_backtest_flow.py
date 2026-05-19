@@ -2,8 +2,6 @@ import pandas as pd
 import pytest
 from pathlib import Path
 
-import bt
-
 from src_refactor.application.backtest import StoredPredictionBacktestFlow, StoredPredictionBacktestRequest
 from src_refactor.application.training.training_runner import FoldTrainingResult, WalkForwardTrainingResult
 from src_refactor.core.config import ExperimentConfig
@@ -53,56 +51,9 @@ def test_stored_prediction_backtest_flow_loads_data_and_runs_runtime():
     assert result.metrics.summary.total_trades == 1
 
 
-def test_stored_prediction_backtest_flow_matches_legacy_oos_backtest(monkeypatch, capsys):
+def test_stored_prediction_backtest_flow_matches_expected_oos_execution_math():
     symbol = "BTC/USDT"
     model = ModelSpec(model_type="lightgbm", timeframe="1h")
-    predictions = pd.DataFrame(
-        [
-            {
-                "timestamp": pd.Timestamp("2025-01-01 00:00:00"),
-                "symbol": symbol,
-                "p_short": 0.1,
-                "p_long": 0.9,
-            }
-        ]
-    )
-    barriers = pd.DataFrame(
-        [
-            {
-                "timestamp": pd.Timestamp("2025-01-01 00:00:00"),
-                "symbol": symbol,
-                "barrier_stop_pct": 0.02,
-                "barrier_take_pct": 0.04,
-            }
-        ]
-    )
-    market_frame = FakeCandleRepository().load_candles(symbol, "1h")
-    normalized_market = market_frame.assign(
-        timestamp=pd.to_datetime(market_frame["timestamp"], unit="ms"),
-        symbol=symbol,
-        timeframe="1h",
-    )
-
-    chart_path = Path("src_refactor/.tmp_tests/legacy_parity_equity.png")
-    try:
-        _patch_legacy_backtest(monkeypatch, normalized_market, barriers, symbol)
-        bt.backtest(
-            features_meta={
-                "feature_columns": [],
-                "train_period": {
-                    "start": "2025-01-01 00:00:00",
-                    "end": "2025-01-01 01:00:00",
-                },
-                "symbols": [symbol],
-            },
-            predictions=predictions,
-            equity_curve_path=chart_path,
-            result_title="LEGACY TEST",
-        )
-    finally:
-        chart_path.unlink(missing_ok=True)
-    legacy_stdout = capsys.readouterr().out
-
     store = InMemoryPredictionStore()
     store.write(
         [
@@ -134,12 +85,10 @@ def test_stored_prediction_backtest_flow_matches_legacy_oos_backtest(monkeypatch
     result = flow.run(StoredPredictionBacktestRequest())
     closed_trade = result.steps[0].result.closed_trades[0]
 
-    assert "Trades: 1" in legacy_stdout
-    assert "TP" in legacy_stdout
     assert result.metrics is not None
     assert result.metrics.summary.total_trades == 1
     assert closed_trade.reason == "TP"
-    assert closed_trade.pnl_abs == pytest.approx(_legacy_expected_tp_pnl_abs())
+    assert closed_trade.pnl_abs == pytest.approx(_expected_tp_pnl_abs())
 
 
 def test_stored_prediction_backtest_flow_requires_symbols():
@@ -252,52 +201,7 @@ class FakeCandleRepository:
         )
 
 
-def _patch_legacy_backtest(monkeypatch, market_frame: pd.DataFrame, barriers: pd.DataFrame, symbol: str) -> None:
-    monkeypatch.setattr(bt, "SYMBOLS", [symbol], raising=False)
-    monkeypatch.setattr(bt, "TIMEFRAME", "1h", raising=False)
-    monkeypatch.setattr(bt, "HTF_TIMEFRAME", "4h", raising=False)
-    monkeypatch.setattr(bt, "ALLOW_LONGS", True, raising=False)
-    monkeypatch.setattr(bt, "ALLOW_SHORTS", True, raising=False)
-    monkeypatch.setattr(bt, "DIRECTIONAL_PROBA_THRESHOLD", 0.5, raising=False)
-    monkeypatch.setattr(bt, "MIN_SIGNAL_GAP", 0.0, raising=False)
-    monkeypatch.setattr(bt, "BACKTEST_INITIAL_BALANCE", 100.0, raising=False)
-    monkeypatch.setattr(bt, "RISK_PER_TRADE", 0.01, raising=False)
-    monkeypatch.setattr(bt, "LEVERAGE", 1.0, raising=False)
-    monkeypatch.setattr(bt, "TAKER_COM", 0.0004, raising=False)
-    monkeypatch.setattr(bt, "SLIPPAGE", 0.0003, raising=False)
-    monkeypatch.setattr(bt, "BACKTEST_MAX_NEW_POSITIONS_PER_BAR", 1, raising=False)
-    monkeypatch.setattr(bt, "BACKTEST_MAX_OPEN_POSITIONS", 1, raising=False)
-    monkeypatch.setattr(bt, "BACKTEST_SL_COOLDOWN_BARS", 0, raising=False)
-    monkeypatch.setattr(bt, "BACKTEST_MAX_SL_PER_DAY", 0, raising=False)
-    monkeypatch.setattr(bt, "BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES", 0, raising=False)
-    monkeypatch.setattr(bt, "BACKTEST_REDUCED_RISK_PER_TRADE", 0.01, raising=False)
-    monkeypatch.setattr(bt.plt, "figure", lambda *args, **kwargs: None)
-    monkeypatch.setattr(bt.plt, "plot", lambda *args, **kwargs: None)
-    monkeypatch.setattr(bt.plt, "axhline", lambda *args, **kwargs: None)
-    monkeypatch.setattr(bt.plt, "title", lambda *args, **kwargs: None)
-    monkeypatch.setattr(bt.plt, "grid", lambda *args, **kwargs: None)
-    monkeypatch.setattr(bt.plt, "legend", lambda *args, **kwargs: None)
-    monkeypatch.setattr(bt.plt, "savefig", lambda *args, **kwargs: None)
-    monkeypatch.setattr(bt.plt, "show", lambda: None)
-
-    legacy_frame = market_frame.copy()
-    legacy_frame["close_time"] = legacy_frame["timestamp"] + pd.to_timedelta(1, unit="h")
-    legacy_features = barriers.copy()
-
-    monkeypatch.setattr(
-        bt,
-        "load_all_raw_data",
-        lambda symbols: {
-            symbol: {
-                "main": legacy_frame.copy(),
-                "htf": legacy_frame.copy(),
-            }
-        },
-    )
-    monkeypatch.setattr(bt, "load_precomputed_features", lambda *args, **kwargs: legacy_features.copy())
-
-
-def _legacy_expected_tp_pnl_abs() -> float:
+def _expected_tp_pnl_abs() -> float:
     entry_price = 100.0 * (1 + 0.0003)
     exit_price = (entry_price * (1 + 0.04)) * (1 - 0.0003)
     pnl_pct = (exit_price - entry_price) / entry_price - (0.0004 + 0.0004)

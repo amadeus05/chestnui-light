@@ -1,25 +1,16 @@
-from argparse import Namespace
+import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
 
-import bt
-import bt_walk_forward
 import config as cfg
 import train
 from src_refactor.application.pipeline import StoredPredictionSource, predictions_from_frame
-
-
-def normalize_splits(splits):
-    return [
-        (
-            int(fold_idx),
-            pd.to_datetime(train_ts).astype("datetime64[ns]").tolist(),
-            pd.to_datetime(test_ts).astype("datetime64[ns]").tolist(),
-        )
-        for fold_idx, train_ts, test_ts in splits
-    ]
+from src_refactor.core.config import ExperimentConfig
+from src_refactor.core.types import LightGbmInput, ModelSpec, WalkForwardFold
+from src_refactor.infrastructure.models.lightgbm.trainer import LightGbmTrainer
 
 
 def test_feature_clip_bounds_and_application_are_quantile_based(monkeypatch):
@@ -141,10 +132,10 @@ def test_evaluate_model_probability_threshold_metrics_are_stable(monkeypatch):
     assert threshold_060["signal_confusion_matrix"] == [[1, 0], [0, 1]]
 
 
-def test_monthly_split_builders_match_between_train_and_walk_forward():
+def test_monthly_split_builder_uses_rolling_calendar_windows():
     unique_ts = pd.date_range("2025-01-01", periods=150, freq="D").to_numpy()
 
-    train_splits = train.build_timestamp_splits(
+    splits = train.build_timestamp_splits(
         unique_ts=unique_ts,
         n_splits=3,
         split_mode="monthly",
@@ -152,47 +143,76 @@ def test_monthly_split_builders_match_between_train_and_walk_forward():
         monthly_test_months=1,
         monthly_window_mode="rolling",
     )
-    legacy_splits = list(
-        bt_walk_forward.iter_monthly_splits(
-            unique_ts,
-            train_months=2,
-            test_months=1,
-            window_mode="rolling",
+
+    assert [
+        (
+            fold_idx,
+            pd.Timestamp(train_ts[0]),
+            pd.Timestamp(train_ts[-1]),
+            pd.Timestamp(test_ts[0]),
+            pd.Timestamp(test_ts[-1]),
         )
-    )
+        for fold_idx, train_ts, test_ts in splits
+    ] == [
+        (1, pd.Timestamp("2025-01-01"), pd.Timestamp("2025-02-28"), pd.Timestamp("2025-03-01"), pd.Timestamp("2025-03-31")),
+        (2, pd.Timestamp("2025-02-01"), pd.Timestamp("2025-03-31"), pd.Timestamp("2025-04-01"), pd.Timestamp("2025-04-30")),
+        (3, pd.Timestamp("2025-03-01"), pd.Timestamp("2025-04-30"), pd.Timestamp("2025-05-01"), pd.Timestamp("2025-05-30")),
+    ]
 
-    assert normalize_splits(train_splits) == normalize_splits(legacy_splits)
 
+def test_lightgbm_trainer_metadata_keeps_replay_contract(monkeypatch):
+    class FakeLightGbmClassifier:
+        def __init__(self, **params):
+            self.params = params
 
-def test_lightgbm_walk_forward_feature_meta_matches_replay_contract():
-    predictions = pd.DataFrame(
+        def fit(self, x_train, y_train, sample_weight=None, categorical_feature=None):
+            self.x_train = x_train
+            self.y_train = y_train
+            self.sample_weight = sample_weight
+            self.categorical_feature = categorical_feature
+            return self
+
+    monkeypatch.setitem(sys.modules, "lightgbm", SimpleNamespace(LGBMClassifier=FakeLightGbmClassifier))
+
+    frame = pd.DataFrame(
         {
             "timestamp": pd.to_datetime(["2025-01-01", "2025-01-02"]),
             "symbol": ["BTC/USDT", "ETH/USDT"],
-            "p_short": [0.2, 0.7],
-            "p_long": [0.8, 0.3],
+            "feature_a": [1.0, 2.0],
+            "feature_b": [3.0, 4.0],
+            "Target": [1, -1],
         }
     )
-    args = Namespace(
+    train_input = LightGbmInput(
+        features=frame[["feature_a", "feature_b"]],
+        feature_names=("feature_a", "feature_b"),
+        metadata={"frame": frame, "clip_bounds": {"feature_a": {"lower": 0.0, "upper": 10.0}}},
+    )
+    config = ExperimentConfig(
+        model=ModelSpec(model_type="lightgbm", timeframe="1h", profile="baseline", metadata={"labeling": {"horizon": 16}}),
+        symbols=("BTC/USDT", "ETH/USDT"),
         n_splits=5,
         purge_gap=20,
-        split_mode="monthly",
-        monthly_train_months=6,
-        monthly_test_months=1,
-        monthly_window_mode="expanding",
+        split_mode="monthly_expanding",
+        train_months=6,
+        test_months=1,
     )
-    meta = bt_walk_forward.build_features_meta(
-        predictions=predictions,
-        feature_columns=["feature_a", "feature_b"],
-        symbols=["BTC/USDT", "ETH/USDT"],
-        args=args,
+    fold = WalkForwardFold(
+        fold_id=2,
+        train_start=pd.Timestamp("2025-01-01"),
+        train_end=pd.Timestamp("2025-01-02"),
+        test_start=pd.Timestamp("2025-02-01"),
+        test_end=pd.Timestamp("2025-02-28"),
     )
+    artifact = LightGbmTrainer().train(train_input, config, fold)
 
-    assert meta["feature_columns"] == ["feature_a", "feature_b"]
-    assert meta["label_mapping"] == {"short": 0, "long": 1}
-    assert meta["inverse_label_mapping"] == {"0": -1, "1": 1}
-    assert meta["train_period"] == {"start": "2025-01-01 00:00:00", "end": "2025-01-02 00:00:00"}
-    assert meta["wfv_split_mode"] == "monthly"
+    assert artifact.fold_id == 2
+    assert artifact.metadata["feature_columns"] == ["feature_a", "feature_b"]
+    assert artifact.metadata["feature_clip"] == {"bounds": {"feature_a": {"lower": 0.0, "upper": 10.0}}}
+    assert artifact.metadata["label_mapping"] == {"short": 0, "long": 1}
+    assert artifact.metadata["inverse_label_mapping"] == {"0": -1, "1": 1}
+    assert artifact.metadata["symbols"] == ["BTC/USDT", "ETH/USDT"]
+    assert artifact.metadata["labeling"] == {"horizon": 16}
 
 
 def test_prediction_lookup_deduplicates_by_last_symbol_timestamp():
@@ -202,15 +222,25 @@ def test_prediction_lookup_deduplicates_by_last_symbol_timestamp():
             "symbol": ["BTC/USDT", "BTC/USDT"],
             "p_short": [0.6, 0.4],
             "p_long": [0.4, 0.6],
+            "barrier_stop_pct": [0.02, 0.02],
+            "barrier_take_pct": [0.04, 0.04],
         }
     )
 
-    lookup = bt.build_prediction_lookup(predictions)
+    source = StoredPredictionSource.from_frame(
+        predictions,
+        model_id="walk_forward_oos",
+        timeframe="1h",
+    )
+    timestamp = pd.Timestamp("2025-01-01 00:00:00")
+    deduped = source.predictions_by_timestamp[timestamp][0]
 
-    assert lookup == {(pd.Timestamp("2025-01-01 00:00:00"), "BTC/USDT"): (0.4, 0.6)}
+    assert len(source.predictions_by_timestamp[timestamp]) == 1
+    assert deduped.proba_short == pytest.approx(0.4)
+    assert deduped.proba_long == pytest.approx(0.6)
 
 
-def test_stored_prediction_source_builds_oos_predictions_from_legacy_frame():
+def test_stored_prediction_source_builds_oos_predictions_from_prediction_frame():
     predictions = pd.DataFrame(
         {
             "timestamp": ["2025-01-01 00:00:00", "2025-01-01 00:00:00"],
