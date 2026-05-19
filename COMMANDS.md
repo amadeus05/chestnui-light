@@ -173,3 +173,5 @@ backtest_charts/equity_curve_lstm_walk_forward.png
 python lstm/train_lstm_walk_forward.py --split-mode monthly --monthly-train-months 6 --monthly-test-months 1 --purge-gap 12 --sequence-length 24 --epochs 20 --hidden-size 32 --num-layers 1 --dropout 0.4 --lr 0.0003 --weight-decay 0.001 --batch-size 256
 
 python lstm/train_lstm_walk_forward.py --split-mode monthly --monthly-train-months 6 --monthly-test-months 1 --purge-gap 24 --sequence-length 24 --epochs 20 --hidden-size 32 --num-layers 1 --dropout 0.4 --lr 0.0003 --weight-decay 0.001 --batch-size 256
+
+python lstm_candles/train_lstm_candles_walk_forward.py --split-mode monthly --monthly-train-months 6 --monthly-test-months 1 --purge-gap 24 --sequence-length 24 --epochs 20 --hidden-size 32 --num-layers 1 --dropout 0.4 --lr 0.0003 --weight-decay 0.001 --batch-size 256

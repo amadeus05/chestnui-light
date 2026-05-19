@@ -78,6 +78,19 @@ def test_backtest_cli_accepts_config_without_duplicating_required_flags():
     assert config.stored.predictions_path == "models/predictions/oos.parquet"
 
 
+def test_example_configs_load():
+    examples = [
+        "lightgbm_wvf_oos_backtest.json",
+        "lightgbm_stored_backtest.json",
+        "lstm_features_wvf_oos_backtest.json",
+    ]
+
+    for example_name in examples:
+        config = BacktestCliConfig.from_path(Path("src_refactor/configs/examples") / example_name)
+        assert config.market.symbols
+        assert config.market.timeframe
+
+
 def _write_config(payload: dict) -> Path:
     directory = Path("src_refactor/.tmp_tests")
     directory.mkdir(parents=True, exist_ok=True)

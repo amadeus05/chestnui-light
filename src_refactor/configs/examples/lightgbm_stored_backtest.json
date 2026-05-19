@@ -1,0 +1,35 @@
+{
+  "market": {
+    "db_path": "./data/market_data.db",
+    "exchange_code": "bybit",
+    "symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
+    "timeframe": "1h"
+  },
+  "model": {
+    "model_type": "lightgbm",
+    "profile": "baseline"
+  },
+  "runtime": {
+    "initial_balance": 100.0,
+    "pricing": {
+      "taker_fee": 0.0004,
+      "slippage": 0.0003
+    },
+    "risk": {
+      "risk_per_trade": 0.01,
+      "leverage": 1.0,
+      "max_open_positions": 1
+    },
+    "signals": {
+      "directional_proba_threshold": 0.55,
+      "min_signal_gap": 0.01
+    },
+    "trading": {
+      "max_new_positions_per_bar": 1
+    }
+  },
+  "stored_backtest": {
+    "predictions_path": "models/predictions/lightgbm_wvf_oos.parquet",
+    "equity_curve_path": "backtest_charts/lightgbm_wvf_oos.png"
+  }
+}
