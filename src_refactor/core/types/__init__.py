@@ -20,7 +20,7 @@ from src_refactor.core.types.models import (
     Prediction,
 )
 from src_refactor.core.types.orders import OrderRequest, OrderSide, OrderSnapshot, OrderStatus, OrderType
-from src_refactor.core.types.walk_forward import SplitMode, WalkForwardFold
+from src_refactor.core.types.walk_forward import SplitMode, TimeWindow, WalkForwardFold
 
 __all__ = [
     "AccountSnapshot",
@@ -49,5 +49,6 @@ __all__ = [
     "PositionSnapshot",
     "SplitMode",
     "Symbol",
+    "TimeWindow",
     "WalkForwardFold",
 ]
