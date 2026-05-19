@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -74,4 +74,5 @@ def run_wvf_oos(
         registry=create_default_model_registry(),
         prediction_store=prediction_store,
     )
-    return runner.run(dataset_result.dataset, experiment_config)
+    result = runner.run(dataset_result.dataset, experiment_config)
+    return replace(result, prediction_store_path=config.predictions_path)

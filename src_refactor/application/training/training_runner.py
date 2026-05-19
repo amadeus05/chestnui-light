@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 import pandas as pd
 
@@ -23,6 +24,7 @@ class FoldTrainingResult:
 class WalkForwardTrainingResult:
     config: ExperimentConfig
     folds: list[FoldTrainingResult]
+    prediction_store_path: Path | None = None
 
     @property
     def predictions(self) -> list[Prediction]:

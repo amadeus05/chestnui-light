@@ -164,6 +164,7 @@ def test_stored_prediction_backtest_request_uses_training_result_window():
     model = ModelSpec(model_type="lightgbm", timeframe="1h", symbols=("BTC/USDT",))
     training_result = WalkForwardTrainingResult(
         config=ExperimentConfig(model=model, symbols=("BTC/USDT",)),
+        prediction_store_path=Path("models/predictions/oos.parquet"),
         folds=[
             FoldTrainingResult(
                 fold=WalkForwardFold(
@@ -189,6 +190,7 @@ def test_stored_prediction_backtest_request_uses_training_result_window():
     assert request.model_id == model.model_id
     assert request.start == pd.Timestamp("2025-01-01 00:00:00")
     assert request.end == pd.Timestamp("2025-01-01 01:00:00")
+    assert training_result.prediction_store_path == Path("models/predictions/oos.parquet")
 
 
 class FakeCandleRepository:
