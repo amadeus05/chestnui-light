@@ -5,6 +5,10 @@ from pathlib import Path
 
 from src_refactor.application.training.train_wvf_oss import WvfOosRunConfig, run_wvf_oos
 from src_refactor.cli.common import (
+    add_config_args,
+    add_market_args,
+    add_model_args,
+    add_walk_forward_args,
     arg,
     json_payload,
     loaded_config,
@@ -30,26 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
         "wvf-oos",
         help="Train walk-forward OOS predictions without running a backtest.",
     )
-    wvf.add_argument("--config", default=None)
-    wvf.add_argument("--db-path", default=None)
-    wvf.add_argument("--exchange-code", default=None)
-    wvf.add_argument("--symbols", nargs="+", default=None)
-    wvf.add_argument("--model-type", choices=["lightgbm", "lstm_features", "lstm_candles"], default=None)
-    wvf.add_argument("--profile", default=None)
-    wvf.add_argument("--timeframe", default=None)
-    wvf.add_argument("--htf-timeframe", default=None)
-    wvf.add_argument("--predictions-path", default=None)
-    wvf.add_argument("--split-mode", choices=["tscv", "monthly_expanding", "monthly_rolling"], default=None)
-    wvf.add_argument("--n-splits", type=int, default=None)
-    wvf.add_argument("--train-months", type=int, default=None)
-    wvf.add_argument("--test-months", type=int, default=None)
-    wvf.add_argument("--purge-gap", type=int, default=None)
-    wvf.add_argument("--start", default=None)
-    wvf.add_argument("--end", default=None)
-    wvf.add_argument("--feature-request-json", default=None)
-    wvf.add_argument("--feature-profiles-json", default=None)
-    wvf.add_argument("--labeling-json", default=None)
-    wvf.add_argument("--model-metadata-json", default=None)
+    add_config_args(wvf)
+    add_market_args(wvf)
+    add_model_args(wvf)
+    add_walk_forward_args(wvf)
     wvf.set_defaults(handler=run_walk_forward_oos_training)
     return parser
 

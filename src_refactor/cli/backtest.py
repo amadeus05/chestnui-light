@@ -15,6 +15,13 @@ from src_refactor.application.backtest import (
 )
 from src_refactor.application.training.train_wvf_oss import WvfOosRunConfig
 from src_refactor.cli.common import (
+    add_backtest_output_args,
+    add_config_args,
+    add_market_args,
+    add_model_args,
+    add_runtime_args,
+    add_stored_prediction_args,
+    add_walk_forward_args,
     arg,
     json_payload,
     loaded_config,
@@ -41,37 +48,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     stored = subparsers.add_parser(
         "stored",
-        parents=[_common_parser()],
         help="Run a backtest from stored parquet predictions.",
     )
-    stored.add_argument("--predictions-path", default=None)
-    stored.add_argument("--model-id", default=None)
-    stored.add_argument("--start", default=None)
-    stored.add_argument("--end", default=None)
-    stored.add_argument("--keep-open-positions", action="store_true", default=None)
-    stored.add_argument("--equity-curve-path", default=None)
+    add_config_args(stored)
+    add_market_args(stored)
+    add_model_args(stored)
+    add_runtime_args(stored)
+    add_stored_prediction_args(stored)
+    add_backtest_output_args(stored)
     stored.set_defaults(handler=run_stored_backtest)
 
     wvf = subparsers.add_parser(
         "wvf-oos",
-        parents=[_common_parser()],
         help="Train walk-forward OOS predictions and backtest them through the same runtime.",
     )
-    wvf.add_argument("--htf-timeframe", default=None)
-    wvf.add_argument("--predictions-path", default=None)
-    wvf.add_argument("--split-mode", choices=["tscv", "monthly_expanding", "monthly_rolling"], default=None)
-    wvf.add_argument("--n-splits", type=int, default=None)
-    wvf.add_argument("--train-months", type=int, default=None)
-    wvf.add_argument("--test-months", type=int, default=None)
-    wvf.add_argument("--purge-gap", type=int, default=None)
-    wvf.add_argument("--start", default=None)
-    wvf.add_argument("--end", default=None)
-    wvf.add_argument("--feature-request-json", default=None)
-    wvf.add_argument("--feature-profiles-json", default=None)
-    wvf.add_argument("--labeling-json", default=None)
-    wvf.add_argument("--model-metadata-json", default=None)
-    wvf.add_argument("--keep-open-positions", action="store_true", default=None)
-    wvf.add_argument("--equity-curve-path", default=None)
+    add_config_args(wvf)
+    add_market_args(wvf)
+    add_model_args(wvf)
+    add_runtime_args(wvf)
+    add_walk_forward_args(wvf)
+    add_backtest_output_args(wvf)
     wvf.set_defaults(handler=run_walk_forward_oos_backtest)
     return parser
 
@@ -149,34 +145,6 @@ def run_walk_forward_oos_backtest(args: argparse.Namespace) -> None:
         result.backtest.metrics,
         equity_curve_path=arg(args, "equity_curve_path", config.walk_forward.equity_curve_path),
     )
-
-
-def _common_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--config", default=None)
-    parser.add_argument("--db-path", default=None)
-    parser.add_argument("--exchange-code", default=None)
-    parser.add_argument("--symbols", nargs="+", default=None)
-    parser.add_argument("--model-type", choices=["lightgbm", "lstm_features", "lstm_candles"], default=None)
-    parser.add_argument("--profile", default=None)
-    parser.add_argument("--timeframe", default=None)
-    parser.add_argument("--initial-balance", type=float, default=None)
-    parser.add_argument("--taker-fee", type=float, default=None)
-    parser.add_argument("--slippage", type=float, default=None)
-    parser.add_argument("--risk-per-trade", type=float, default=None)
-    parser.add_argument("--leverage", type=float, default=None)
-    parser.add_argument("--min-position-notional", type=float, default=None)
-    parser.add_argument("--max-open-positions", type=int, default=None)
-    parser.add_argument("--sl-cooldown-bars", type=int, default=None)
-    parser.add_argument("--max-sl-per-day", type=int, default=None)
-    parser.add_argument("--reduce-risk-after-consecutive-losses", type=int, default=None)
-    parser.add_argument("--reduced-risk-per-trade", type=float, default=None)
-    parser.add_argument("--directional-proba-threshold", type=float, default=None)
-    parser.add_argument("--min-signal-gap", type=float, default=None)
-    parser.add_argument("--no-longs", dest="allow_longs", action="store_false", default=None)
-    parser.add_argument("--no-shorts", dest="allow_shorts", action="store_false", default=None)
-    parser.add_argument("--max-new-positions-per-bar", type=int, default=None)
-    return parser
 
 
 def _prediction_window(

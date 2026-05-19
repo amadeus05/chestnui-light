@@ -17,6 +17,73 @@ from src_refactor.domain.trading import TradingEngineConfig
 from src_refactor.infrastructure.persistence import SqliteMarketRepository
 
 
+MODEL_TYPE_CHOICES = ("lightgbm", "lstm_features", "lstm_candles")
+SPLIT_MODE_CHOICES = ("tscv", "monthly_expanding", "monthly_rolling")
+
+
+def add_config_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", default=None)
+
+
+def add_market_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--db-path", default=None)
+    parser.add_argument("--exchange-code", default=None)
+    parser.add_argument("--symbols", nargs="+", default=None)
+    parser.add_argument("--timeframe", default=None)
+
+
+def add_model_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--model-type", choices=MODEL_TYPE_CHOICES, default=None)
+    parser.add_argument("--profile", default=None)
+
+
+def add_runtime_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--initial-balance", type=float, default=None)
+    parser.add_argument("--taker-fee", type=float, default=None)
+    parser.add_argument("--slippage", type=float, default=None)
+    parser.add_argument("--risk-per-trade", type=float, default=None)
+    parser.add_argument("--leverage", type=float, default=None)
+    parser.add_argument("--min-position-notional", type=float, default=None)
+    parser.add_argument("--max-open-positions", type=int, default=None)
+    parser.add_argument("--sl-cooldown-bars", type=int, default=None)
+    parser.add_argument("--max-sl-per-day", type=int, default=None)
+    parser.add_argument("--reduce-risk-after-consecutive-losses", type=int, default=None)
+    parser.add_argument("--reduced-risk-per-trade", type=float, default=None)
+    parser.add_argument("--directional-proba-threshold", type=float, default=None)
+    parser.add_argument("--min-signal-gap", type=float, default=None)
+    parser.add_argument("--no-longs", dest="allow_longs", action="store_false", default=None)
+    parser.add_argument("--no-shorts", dest="allow_shorts", action="store_false", default=None)
+    parser.add_argument("--max-new-positions-per-bar", type=int, default=None)
+
+
+def add_walk_forward_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--htf-timeframe", default=None)
+    parser.add_argument("--predictions-path", default=None)
+    parser.add_argument("--split-mode", choices=SPLIT_MODE_CHOICES, default=None)
+    parser.add_argument("--n-splits", type=int, default=None)
+    parser.add_argument("--train-months", type=int, default=None)
+    parser.add_argument("--test-months", type=int, default=None)
+    parser.add_argument("--purge-gap", type=int, default=None)
+    parser.add_argument("--start", default=None)
+    parser.add_argument("--end", default=None)
+    parser.add_argument("--feature-request-json", default=None)
+    parser.add_argument("--feature-profiles-json", default=None)
+    parser.add_argument("--labeling-json", default=None)
+    parser.add_argument("--model-metadata-json", default=None)
+
+
+def add_stored_prediction_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--predictions-path", default=None)
+    parser.add_argument("--model-id", default=None)
+    parser.add_argument("--start", default=None)
+    parser.add_argument("--end", default=None)
+
+
+def add_backtest_output_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--keep-open-positions", action="store_true", default=None)
+    parser.add_argument("--equity-curve-path", default=None)
+
+
 def loaded_config(args: argparse.Namespace) -> BacktestCliConfig:
     return BacktestCliConfig.from_path(args.config) if args.config else BacktestCliConfig()
 
