@@ -7,8 +7,10 @@ import pandas as pd
 from src_refactor.application.backtest.runner import BacktestRunner, BacktestRunResult
 from src_refactor.application.pipeline import StoredPredictionSource
 from src_refactor.application.runtime_builder import RuntimeConfig, build_backtest_runtime, build_runtime
+from src_refactor.application.training.training_runner import WalkForwardTrainingResult
 from src_refactor.core.contracts import PredictionStore
 from src_refactor.core.contracts.broker_gateway import BrokerGateway
+from src_refactor.core.types import Prediction
 from src_refactor.infrastructure.feeds import HistoricalCandleFrameLoader
 
 
@@ -20,6 +22,48 @@ class StoredPredictionBacktestRequest:
     start: pd.Timestamp | None = None
     end: pd.Timestamp | None = None
     close_open_positions: bool = True
+
+    @classmethod
+    def from_training_result(
+        cls,
+        result: WalkForwardTrainingResult,
+        *,
+        close_open_positions: bool = True,
+    ) -> "StoredPredictionBacktestRequest":
+        return cls.from_predictions(
+            result.predictions,
+            symbols=result.config.symbols,
+            timeframe=result.config.model.timeframe,
+            model_id=result.config.model.model_id,
+            close_open_positions=close_open_positions,
+        )
+
+    @classmethod
+    def from_predictions(
+        cls,
+        predictions: list[Prediction],
+        *,
+        symbols: tuple[str, ...] = (),
+        timeframe: str | None = None,
+        model_id: str | None = None,
+        close_open_positions: bool = True,
+    ) -> "StoredPredictionBacktestRequest":
+        if not predictions:
+            return cls(
+                symbols=symbols,
+                timeframe=timeframe,
+                model_id=model_id,
+                close_open_positions=close_open_positions,
+            )
+        timestamps = [pd.to_datetime(prediction.timestamp) for prediction in predictions]
+        return cls(
+            symbols=symbols or tuple(dict.fromkeys(prediction.symbol for prediction in predictions)),
+            timeframe=timeframe or predictions[0].timeframe,
+            model_id=model_id or predictions[0].model_id,
+            start=min(timestamps),
+            end=max(timestamps),
+            close_open_positions=close_open_positions,
+        )
 
 
 @dataclass(frozen=True, slots=True)

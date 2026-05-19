@@ -5,8 +5,10 @@ from pathlib import Path
 import bt
 
 from src_refactor.application.backtest import StoredPredictionBacktestFlow, StoredPredictionBacktestRequest
+from src_refactor.application.training.training_runner import FoldTrainingResult, WalkForwardTrainingResult
+from src_refactor.core.config import ExperimentConfig
 from src_refactor.application.runtime_builder import RuntimeConfig, TradingMode
-from src_refactor.core.types import ModelSpec, Prediction
+from src_refactor.core.types import ModelArtifact, ModelSpec, Prediction, WalkForwardFold
 from src_refactor.infrastructure.feeds import HistoricalCandleFrameLoader
 from src_refactor.infrastructure.predictions import InMemoryPredictionStore
 
@@ -158,6 +160,37 @@ def test_stored_prediction_backtest_flow_requires_symbols():
         raise AssertionError("Expected StoredPredictionBacktestFlow to require symbols.")
 
 
+def test_stored_prediction_backtest_request_uses_training_result_window():
+    model = ModelSpec(model_type="lightgbm", timeframe="1h", symbols=("BTC/USDT",))
+    training_result = WalkForwardTrainingResult(
+        config=ExperimentConfig(model=model, symbols=("BTC/USDT",)),
+        folds=[
+            FoldTrainingResult(
+                fold=WalkForwardFold(
+                    fold_id=0,
+                    train_start=pd.Timestamp("2024-01-01"),
+                    train_end=pd.Timestamp("2024-12-31"),
+                    test_start=pd.Timestamp("2025-01-01 00:00:00"),
+                    test_end=pd.Timestamp("2025-01-01 01:00:00"),
+                ),
+                artifact=ModelArtifact(spec=model, uri="model.joblib", fold_id=0),
+                predictions=[
+                    _prediction_for_request("2025-01-01 01:00:00", model),
+                    _prediction_for_request("2025-01-01 00:00:00", model),
+                ],
+            )
+        ],
+    )
+
+    request = StoredPredictionBacktestRequest.from_training_result(training_result)
+
+    assert request.symbols == ("BTC/USDT",)
+    assert request.timeframe == "1h"
+    assert request.model_id == model.model_id
+    assert request.start == pd.Timestamp("2025-01-01 00:00:00")
+    assert request.end == pd.Timestamp("2025-01-01 01:00:00")
+
+
 class FakeCandleRepository:
     def load_candles(self, symbol: str, timeframe: str) -> pd.DataFrame:
         assert symbol == "BTC/USDT"
@@ -235,3 +268,14 @@ def _legacy_expected_tp_pnl_abs() -> float:
     pnl_pct = (exit_price - entry_price) / entry_price - (0.0004 + 0.0004)
     position_notional = min(100.0 * 0.01 / 0.02, 100.0 * 1.0)
     return position_notional * pnl_pct
+
+
+def _prediction_for_request(timestamp: str, model: ModelSpec) -> Prediction:
+    return Prediction(
+        timestamp=pd.Timestamp(timestamp),
+        symbol="BTC/USDT",
+        timeframe=model.timeframe,
+        model_id=model.model_id,
+        direction=0,
+        confidence=0.9,
+    )
