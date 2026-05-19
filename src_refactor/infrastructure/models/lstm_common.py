@@ -27,23 +27,24 @@ class LstmTrainingConfig:
 
     @classmethod
     def from_metadata(cls, metadata: dict) -> "LstmTrainingConfig":
+        defaults = cls()
         return cls(
-            sequence_length=int(metadata.get("sequence_length", metadata.get("window_size", cls.sequence_length))),
-            batch_size=int(metadata.get("batch_size", cls.batch_size)),
-            hidden_size=int(metadata.get("hidden_size", cls.hidden_size)),
-            num_layers=int(metadata.get("num_layers", cls.num_layers)),
-            dropout=float(metadata.get("dropout", cls.dropout)),
-            learning_rate=float(metadata.get("learning_rate", metadata.get("lr", cls.learning_rate))),
-            weight_decay=float(metadata.get("weight_decay", cls.weight_decay)),
-            epochs=int(metadata.get("epochs", cls.epochs)),
-            early_stopping_patience=int(metadata.get("early_stopping_patience", cls.early_stopping_patience)),
+            sequence_length=int(metadata.get("sequence_length", metadata.get("window_size", defaults.sequence_length))),
+            batch_size=int(metadata.get("batch_size", defaults.batch_size)),
+            hidden_size=int(metadata.get("hidden_size", defaults.hidden_size)),
+            num_layers=int(metadata.get("num_layers", defaults.num_layers)),
+            dropout=float(metadata.get("dropout", defaults.dropout)),
+            learning_rate=float(metadata.get("learning_rate", metadata.get("lr", defaults.learning_rate))),
+            weight_decay=float(metadata.get("weight_decay", defaults.weight_decay)),
+            epochs=int(metadata.get("epochs", defaults.epochs)),
+            early_stopping_patience=int(metadata.get("early_stopping_patience", defaults.early_stopping_patience)),
             min_epochs_before_early_stop=int(
-                metadata.get("min_epochs_before_early_stop", cls.min_epochs_before_early_stop)
+                metadata.get("min_epochs_before_early_stop", defaults.min_epochs_before_early_stop)
             ),
-            early_stopping_min_delta=float(metadata.get("early_stopping_min_delta", cls.early_stopping_min_delta)),
-            gradient_clip=float(metadata.get("gradient_clip", cls.gradient_clip)),
-            validation_fraction=float(metadata.get("validation_fraction", cls.validation_fraction)),
-            min_train_rows=int(metadata.get("min_train_rows", cls.min_train_rows)),
+            early_stopping_min_delta=float(metadata.get("early_stopping_min_delta", defaults.early_stopping_min_delta)),
+            gradient_clip=float(metadata.get("gradient_clip", defaults.gradient_clip)),
+            validation_fraction=float(metadata.get("validation_fraction", defaults.validation_fraction)),
+            min_train_rows=int(metadata.get("min_train_rows", defaults.min_train_rows)),
         )
 
     def to_metadata(self) -> dict[str, float | int]:
