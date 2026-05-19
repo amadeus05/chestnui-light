@@ -3,14 +3,19 @@ from pathlib import Path
 from uuid import uuid4
 
 from src_refactor.cli.backtest import build_parser
+from src_refactor.cli.common import repository
 from src_refactor.cli.train import build_parser as build_train_parser
 from src_refactor.configs import BacktestCliConfig
+from src_refactor.infrastructure.market_data import ParquetMarketDataStore
+from src_refactor.infrastructure.persistence import SqliteMarketRepository
 
 
 def test_backtest_cli_config_loads_nested_json():
     path = _write_config(
         {
             "market": {
+                "source": "parquet",
+                "data_root": "_data_test",
                 "db_path": "data/test.db",
                 "exchange_code": "binance",
                 "symbols": ["BTC/USDT", "ETH/USDT"],
@@ -48,6 +53,8 @@ def test_backtest_cli_config_loads_nested_json():
         path.unlink(missing_ok=True)
 
     assert config.market.symbols == ("BTC/USDT", "ETH/USDT")
+    assert config.market.source == "parquet"
+    assert config.market.data_root == "_data_test"
     assert config.market.timeframe == "15m"
     assert config.model.profile == "exp_a"
     assert config.model.metadata["seed"] == 7
@@ -85,6 +92,7 @@ def test_example_configs_load():
         "lightgbm_stored_backtest.json",
         "lstm_features_wvf_oos_backtest.json",
         "lightgbm_wvf_oos_train.json",
+        "lightgbm_parquet_wvf_oos_train.json",
         "lstm_features_wvf_oos_train.json",
     ]
 
@@ -111,6 +119,63 @@ def test_train_cli_accepts_config_without_duplicating_required_flags():
     assert args.predictions_path is None
     assert config.market.symbols == ("BTC/USDT",)
     assert config.walk_forward.predictions_path == "models/predictions/oos.parquet"
+
+
+def test_market_repository_resolves_sqlite_by_default():
+    args = build_parser().parse_args(["stored", "--symbols", "BTC/USDT", "--predictions-path", "oos.parquet"])
+    config = BacktestCliConfig()
+
+    resolved = repository(args, config)
+
+    assert isinstance(resolved, SqliteMarketRepository)
+
+
+def test_market_repository_resolves_parquet_from_config():
+    path = _write_config(
+        {
+            "market": {
+                "source": "parquet",
+                "data_root": "_data",
+                "exchange_code": "bybit",
+                "symbols": ["BTC/USDT"],
+            },
+            "stored_backtest": {"predictions_path": "models/predictions/oos.parquet"},
+        }
+    )
+    try:
+        args = build_parser().parse_args(["stored", "--config", str(path)])
+        config = BacktestCliConfig.from_path(args.config)
+    finally:
+        path.unlink(missing_ok=True)
+
+    resolved = repository(args, config)
+
+    assert isinstance(resolved, ParquetMarketDataStore)
+    assert resolved.root == "_data"
+    assert resolved.exchange_code == "bybit"
+
+
+def test_market_repository_resolves_parquet_from_cli_override():
+    args = build_parser().parse_args(
+        [
+            "stored",
+            "--symbols",
+            "BTC/USDT",
+            "--predictions-path",
+            "oos.parquet",
+            "--market-source",
+            "parquet",
+            "--data-root",
+            "_data_cli",
+            "--exchange-code",
+            "bybit",
+        ]
+    )
+
+    resolved = repository(args, BacktestCliConfig())
+
+    assert isinstance(resolved, ParquetMarketDataStore)
+    assert resolved.root == "_data_cli"
 
 
 def _write_config(payload: dict) -> Path:
