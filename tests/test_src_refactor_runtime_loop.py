@@ -8,7 +8,7 @@ from src_refactor.domain.risk.risk_manager import RiskManager
 from src_refactor.domain.signals import SignalBatchProcessor
 from src_refactor.domain.trading import TradingEngine
 from src_refactor.infrastructure.exchanges.simulation import ExchangeSimulator
-from src_refactor.infrastructure.feeds import HistoricalFrameMarketStream
+from src_refactor.infrastructure.feeds import HistoricalCandleFrameLoader, HistoricalFrameMarketStream
 
 
 def _frame() -> pd.DataFrame:
@@ -82,6 +82,35 @@ def test_historical_frame_stream_yields_one_batch_per_timestamp():
     assert set(batches[0].by_symbol) == {"BTC/USDT", "ETH/USDT"}
 
 
+def test_historical_candle_frame_loader_normalizes_repository_candles():
+    loader = HistoricalCandleFrameLoader(FakeCandleRepository())
+
+    frame = loader.load_symbols(["ETH/USDT", "BTC/USDT"], "1h")
+
+    assert frame.columns.tolist() == [
+        "timestamp",
+        "symbol",
+        "timeframe",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "close_time",
+    ]
+    assert frame["symbol"].tolist() == ["BTC/USDT", "ETH/USDT"]
+    assert frame["timeframe"].tolist() == ["1h", "1h"]
+    assert frame["timestamp"].tolist() == [
+        pd.Timestamp("2025-01-01 00:00:00"),
+        pd.Timestamp("2025-01-01 00:00:00"),
+    ]
+    assert frame["close_time"].tolist() == [
+        pd.Timestamp("2025-01-01 01:00:00"),
+        pd.Timestamp("2025-01-01 01:00:00"),
+    ]
+    assert frame["open"].tolist() == [100.0, 200.0]
+
+
 def test_runtime_loop_processes_historical_stream_as_symbol_batches():
     pipeline = TradingPipeline(
         market_cache=RuntimeMarketCache(),
@@ -105,3 +134,20 @@ def test_runtime_loop_processes_historical_stream_as_symbol_batches():
     assert len(result.steps) == 1
     assert len(result.steps[0].result.opened_orders) == 1
     assert result.steps[0].result.opened_orders[0].symbol == "ETH/USDT"
+
+
+class FakeCandleRepository:
+    def load_candles(self, symbol: str, timeframe: str) -> pd.DataFrame:
+        prices = {"BTC/USDT": 100.0, "ETH/USDT": 200.0}
+        return pd.DataFrame(
+            [
+                {
+                    "timestamp": 1735689600000,
+                    "open": str(prices[symbol]),
+                    "high": prices[symbol] + 1,
+                    "low": prices[symbol] - 1,
+                    "close": prices[symbol],
+                    "volume": "1000",
+                }
+            ]
+        )
