@@ -4,11 +4,15 @@ import argparse
 import json
 import logging
 from pathlib import Path
+import sys
 
 import pandas as pd
 
 from src_refactor.infrastructure.exchanges import BybitMarketDataClient
 from src_refactor.infrastructure.market_data import MarketDataIngestionService, ParquetMarketDataStore
+
+
+logger = logging.getLogger(__name__)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -38,14 +42,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_backfill(args: argparse.Namespace) -> None:
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout, force=True)
     client = _client(args.exchange)
     store = ParquetMarketDataStore(root=Path(args.data_root), exchange_code=client.exchange_code)
+    end = pd.to_datetime(args.end) if args.end else pd.Timestamp.now(tz="UTC")
+    logger.info(
+        "Market data backfill: exchange=%s, data_root=%s, symbols=%s, timeframes=%s, start=%s, end=%s",
+        client.exchange_code,
+        Path(args.data_root),
+        ",".join(args.symbols),
+        ",".join(args.timeframes),
+        pd.to_datetime(args.start),
+        end,
+    )
     summary = MarketDataIngestionService(client=client, store=store).backfill_raw(
         symbols=tuple(args.symbols),
         timeframes=tuple(args.timeframes),
         start=pd.to_datetime(args.start),
-        end=pd.to_datetime(args.end) if args.end else pd.Timestamp.now(tz="UTC"),
+        end=end,
         include_premium_index=args.include_premium_index,
         include_funding=args.include_funding,
         include_open_interest=args.include_open_interest,
