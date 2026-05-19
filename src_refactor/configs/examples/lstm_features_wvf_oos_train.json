@@ -1,0 +1,38 @@
+{
+  "market": {
+    "db_path": "./data/market_data.db",
+    "exchange_code": "bybit",
+    "symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
+    "timeframe": "1h",
+    "htf_timeframe": "4h"
+  },
+  "model": {
+    "model_type": "lstm_features",
+    "profile": "baseline",
+    "metadata": {
+      "sequence_length": 24,
+      "window_size": 24,
+      "epochs": 20,
+      "hidden_size": 32,
+      "num_layers": 1,
+      "dropout": 0.4,
+      "learning_rate": 0.0003,
+      "lr": 0.0003,
+      "weight_decay": 0.001,
+      "batch_size": 256
+    }
+  },
+  "walk_forward": {
+    "predictions_path": "models/predictions/lstm_features_wvf_oos.parquet",
+    "split_mode": "monthly_expanding",
+    "train_months": 6,
+    "test_months": 1,
+    "purge_gap": 24,
+    "feature_request": {
+      "profile": "all",
+      "include_features": [],
+      "exclude_features": [],
+      "exclude_blocks": []
+    }
+  }
+}

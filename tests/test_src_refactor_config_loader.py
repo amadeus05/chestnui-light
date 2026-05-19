@@ -3,6 +3,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from src_refactor.cli.backtest import build_parser
+from src_refactor.cli.train import build_parser as build_train_parser
 from src_refactor.configs import BacktestCliConfig
 
 
@@ -83,12 +84,33 @@ def test_example_configs_load():
         "lightgbm_wvf_oos_backtest.json",
         "lightgbm_stored_backtest.json",
         "lstm_features_wvf_oos_backtest.json",
+        "lightgbm_wvf_oos_train.json",
+        "lstm_features_wvf_oos_train.json",
     ]
 
     for example_name in examples:
         config = BacktestCliConfig.from_path(Path("src_refactor/configs/examples") / example_name)
         assert config.market.symbols
         assert config.market.timeframe
+
+
+def test_train_cli_accepts_config_without_duplicating_required_flags():
+    path = _write_config(
+        {
+            "market": {"symbols": ["BTC/USDT"]},
+            "walk_forward": {"predictions_path": "models/predictions/oos.parquet"},
+        }
+    )
+    try:
+        args = build_train_parser().parse_args(["wvf-oos", "--config", str(path)])
+        config = BacktestCliConfig.from_path(args.config)
+    finally:
+        path.unlink(missing_ok=True)
+
+    assert args.symbols is None
+    assert args.predictions_path is None
+    assert config.market.symbols == ("BTC/USDT",)
+    assert config.walk_forward.predictions_path == "models/predictions/oos.parquet"
 
 
 def _write_config(payload: dict) -> Path:
