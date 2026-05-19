@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 from uuid import uuid4
@@ -8,6 +9,7 @@ import pandas as pd
 import pytest
 
 from src_refactor.infrastructure.feeds import HistoricalCandleFrameLoader
+from src_refactor.infrastructure.exchanges.bybit import BybitMarketDataClient
 from src_refactor.infrastructure.market_data import MarketDataIngestionService, ParquetMarketDataStore
 
 
@@ -163,6 +165,53 @@ def test_market_data_ingestion_accepts_mixed_timezone_bounds(local_tmp_path):
 
     assert summary.written_rows["candles:1h:BTC/USDT"] == 2
     assert client.candle_starts == [pd.Timestamp("2024-01-01 00:00:00")]
+
+
+def test_market_data_ingestion_logs_legacy_style_summary(local_tmp_path, caplog):
+    client = FakeExchangeClient()
+    store = ParquetMarketDataStore(root=local_tmp_path, exchange_code="bybit")
+    service = MarketDataIngestionService(client=client, store=store)
+
+    with caplog.at_level(logging.INFO):
+        service.backfill_raw(
+            symbols=("BTC/USDT",),
+            timeframes=("1h",),
+            start="2024-01-01 00:00:00",
+            end="2024-01-01 03:00:00",
+            include_premium_index=False,
+            include_funding=False,
+            include_open_interest=False,
+        )
+
+    assert "[BTC/USDT-1h] sync plan: last_ts=None" in caplog.text
+    assert "BTC/USDT 1h: 2 new candles" in caplog.text
+
+
+def test_bybit_market_data_client_logs_legacy_style_window_progress(monkeypatch, caplog):
+    client = BybitMarketDataClient()
+
+    def fake_get(self, path, params):
+        return {
+            "retCode": 0,
+            "result": {
+                "list": [
+                    ["1735689600000", "1", "2", "0.5", "1.5", "10", "15"],
+                ]
+            },
+        }
+
+    monkeypatch.setattr(BybitMarketDataClient, "_get", fake_get)
+
+    with caplog.at_level(logging.INFO):
+        client.fetch_candles(
+            symbol="BTC/USDT",
+            timeframe="1h",
+            start=pd.Timestamp("2025-01-01 00:00:00"),
+            end=pd.Timestamp("2025-01-01 00:00:00"),
+        )
+
+    assert "[BTC/USDT-1h] Bybit backfill: 1 windows, limit=1000, workers=1" in caplog.text
+    assert "[BTC/USDT-1h] windows 1/1, up to" in caplog.text
 
 
 def test_parquet_market_data_store_is_candle_repository(local_tmp_path):

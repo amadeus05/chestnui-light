@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -37,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_backfill(args: argparse.Namespace) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     client = _client(args.exchange)
     store = ParquetMarketDataStore(root=Path(args.data_root), exchange_code=client.exchange_code)
     summary = MarketDataIngestionService(client=client, store=store).backfill_raw(

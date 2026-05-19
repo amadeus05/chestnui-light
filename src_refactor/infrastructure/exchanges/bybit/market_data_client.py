@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+import logging
 from time import sleep
 
 import pandas as pd
 import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 BYBIT_INTERVALS = {
@@ -59,6 +64,7 @@ class BybitMarketDataClient:
     timeout: float = 20.0
     retry_count: int = 5
     retry_sleep: float = 0.3
+    max_workers: int = 1
 
     @property
     def exchange_code(self) -> str:
@@ -79,7 +85,10 @@ class BybitMarketDataClient:
     ) -> pd.DataFrame:
         interval = self._interval(timeframe)
         rows: list[list[object]] = []
-        for window_start, window_end in self._windows(start, end, self.timeframe_ms(timeframe), self.limit):
+        windows = self._windows(start, end, self.timeframe_ms(timeframe), self.limit)
+        self._log_backfill_start(symbol, timeframe, total_windows=len(windows), limit=self.limit)
+        progress_step = self._progress_step(windows)
+        for completed, (window_start, window_end) in enumerate(windows, start=1):
             payload = self._get(
                 "/v5/market/kline",
                 {
@@ -91,7 +100,16 @@ class BybitMarketDataClient:
                     "limit": self.limit,
                 },
             )
-            rows.extend(payload.get("result", {}).get("list", []))
+            window_rows = payload.get("result", {}).get("list", [])
+            rows.extend(window_rows)
+            self._log_window_progress(
+                symbol,
+                timeframe,
+                completed=completed,
+                total_windows=len(windows),
+                progress_step=progress_step,
+                progress_ts=_latest_list_timestamp(window_rows, window_end),
+            )
         return _kline_frame(rows)
 
     def fetch_premium_index_klines(
@@ -104,7 +122,11 @@ class BybitMarketDataClient:
     ) -> pd.DataFrame:
         interval = self._interval(timeframe)
         rows: list[list[object]] = []
-        for window_start, window_end in self._windows(start, end, self.timeframe_ms(timeframe), self.limit):
+        windows = self._windows(start, end, self.timeframe_ms(timeframe), self.limit)
+        log_timeframe = f"premium-{timeframe}"
+        self._log_backfill_start(symbol, log_timeframe, total_windows=len(windows), limit=self.limit)
+        progress_step = self._progress_step(windows)
+        for completed, (window_start, window_end) in enumerate(windows, start=1):
             payload = self._get(
                 "/v5/market/premium-index-price-kline",
                 {
@@ -116,7 +138,16 @@ class BybitMarketDataClient:
                     "limit": self.limit,
                 },
             )
-            rows.extend(payload.get("result", {}).get("list", []))
+            window_rows = payload.get("result", {}).get("list", [])
+            rows.extend(window_rows)
+            self._log_window_progress(
+                symbol,
+                log_timeframe,
+                completed=completed,
+                total_windows=len(windows),
+                progress_step=progress_step,
+                progress_ts=_latest_list_timestamp(window_rows, window_end),
+            )
         return _premium_index_frame(rows)
 
     def fetch_funding_rates(
@@ -128,7 +159,10 @@ class BybitMarketDataClient:
     ) -> pd.DataFrame:
         interval_ms = 8 * 60 * 60 * 1000
         rows: list[dict[str, object]] = []
-        for window_start, window_end in self._windows(start, end, interval_ms, self.funding_limit):
+        windows = self._windows(start, end, interval_ms, self.funding_limit)
+        self._log_backfill_start(symbol, "funding", total_windows=len(windows), limit=self.funding_limit)
+        progress_step = self._progress_step(windows)
+        for completed, (window_start, window_end) in enumerate(windows, start=1):
             payload = self._get(
                 "/v5/market/funding/history",
                 {
@@ -139,7 +173,16 @@ class BybitMarketDataClient:
                     "limit": self.funding_limit,
                 },
             )
-            rows.extend(payload.get("result", {}).get("list", []))
+            window_rows = payload.get("result", {}).get("list", [])
+            rows.extend(window_rows)
+            self._log_window_progress(
+                symbol,
+                "funding",
+                completed=completed,
+                total_windows=len(windows),
+                progress_step=progress_step,
+                progress_ts=_latest_dict_timestamp(window_rows, "fundingRateTimestamp", window_end),
+            )
         return _funding_frame(rows)
 
     def fetch_open_interest(
@@ -153,12 +196,21 @@ class BybitMarketDataClient:
         if timeframe not in BYBIT_OPEN_INTEREST_INTERVALS:
             raise ValueError(f"Unsupported Bybit open interest timeframe: {timeframe}")
         rows: list[dict[str, object]] = []
-        for window_start, window_end in self._windows(
+        windows = self._windows(
             start,
             end,
             self.timeframe_ms(timeframe),
             self.open_interest_limit,
-        ):
+        )
+        log_timeframe = f"{timeframe}-open-interest"
+        self._log_backfill_start(
+            symbol,
+            log_timeframe,
+            total_windows=len(windows),
+            limit=self.open_interest_limit,
+        )
+        progress_step = self._progress_step(windows)
+        for completed, (window_start, window_end) in enumerate(windows, start=1):
             payload = self._get(
                 "/v5/market/open-interest",
                 {
@@ -170,7 +222,16 @@ class BybitMarketDataClient:
                     "limit": self.open_interest_limit,
                 },
             )
-            rows.extend(payload.get("result", {}).get("list", []))
+            window_rows = payload.get("result", {}).get("list", [])
+            rows.extend(window_rows)
+            self._log_window_progress(
+                symbol,
+                log_timeframe,
+                completed=completed,
+                total_windows=len(windows),
+                progress_step=progress_step,
+                progress_ts=_latest_dict_timestamp(window_rows, "timestamp", window_end),
+            )
         return _open_interest_frame(rows)
 
     def _interval(self, timeframe: str) -> str:
@@ -215,6 +276,45 @@ class BybitMarketDataClient:
                 if attempt + 1 < self.retry_count:
                     sleep(self.retry_sleep * (2 ** attempt))
         raise RuntimeError(f"Bybit request failed: {last_error}")
+
+    def _log_backfill_start(self, symbol: str, timeframe: str, *, total_windows: int, limit: int) -> None:
+        if total_windows <= 0:
+            return
+        logger.info(
+            "[%s-%s] Bybit backfill: %s windows, limit=%s, workers=%s",
+            symbol,
+            timeframe,
+            total_windows,
+            limit,
+            min(self.max_workers, total_windows),
+        )
+
+    @staticmethod
+    def _progress_step(windows: list[tuple[int, int]]) -> int:
+        return max(1, len(windows) // 10)
+
+    @staticmethod
+    def _log_window_progress(
+        symbol: str,
+        timeframe: str,
+        *,
+        completed: int,
+        total_windows: int,
+        progress_step: int,
+        progress_ts: int,
+    ) -> None:
+        if total_windows <= 0:
+            return
+        if completed % progress_step != 0 and completed != total_windows:
+            return
+        logger.info(
+            "[%s-%s] windows %s/%s, up to %s",
+            symbol,
+            timeframe,
+            completed,
+            total_windows,
+            datetime.fromtimestamp(progress_ts / 1000),
+        )
 
 
 def _kline_frame(rows: list[list[object]]) -> pd.DataFrame:
@@ -279,6 +379,19 @@ def _normalize_numeric_frame(frame: pd.DataFrame, numeric_columns: tuple[str, ..
 
 def _api_symbol(symbol: str) -> str:
     return symbol.strip().upper().replace("/", "")
+
+
+def _latest_list_timestamp(rows: list[list[object]], fallback: int) -> int:
+    if not rows:
+        return fallback
+    return int(rows[-1][0])
+
+
+def _latest_dict_timestamp(rows: list[dict[str, object]], key: str, fallback: int) -> int:
+    if not rows:
+        return fallback
+    value = rows[-1].get(key)
+    return fallback if value is None else int(value)
 
 
 def _timestamp_ms(value: pd.Timestamp) -> int:
