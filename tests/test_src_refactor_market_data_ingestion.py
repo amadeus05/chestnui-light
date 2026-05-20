@@ -214,6 +214,32 @@ def test_bybit_market_data_client_logs_legacy_style_window_progress(monkeypatch,
     assert "[BTC/USDT-1h] windows 1/1, up to" in caplog.text
 
 
+def test_bybit_market_data_client_parses_string_millisecond_timestamps(monkeypatch):
+    client = BybitMarketDataClient()
+
+    def fake_get(self, path, params):
+        return {
+            "retCode": 0,
+            "result": {
+                "list": [
+                    ["1735689600000", "1", "2", "0.5", "1.5", "10", "15"],
+                ]
+            },
+        }
+
+    monkeypatch.setattr(BybitMarketDataClient, "_get", fake_get)
+
+    frame = client.fetch_candles(
+        symbol="BTC/USDT",
+        timeframe="1h",
+        start=pd.Timestamp("2025-01-01 00:00:00"),
+        end=pd.Timestamp("2025-01-01 00:00:00"),
+    )
+
+    assert len(frame) == 1
+    assert frame.iloc[0]["timestamp"] == pd.Timestamp("2025-01-01 00:00:00")
+
+
 def test_parquet_market_data_store_is_candle_repository(local_tmp_path):
     store = ParquetMarketDataStore(root=local_tmp_path, exchange_code="bybit")
     store.save_candles(

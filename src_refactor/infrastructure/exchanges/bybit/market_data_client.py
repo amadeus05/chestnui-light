@@ -369,7 +369,7 @@ def _normalize_numeric_frame(frame: pd.DataFrame, numeric_columns: tuple[str, ..
     if frame.empty:
         return frame
     output = frame.copy()
-    output["timestamp"] = pd.to_datetime(output["timestamp"], unit="ms", errors="coerce")
+    output["timestamp"] = pd.to_datetime(pd.to_numeric(output["timestamp"], errors="coerce"), unit="ms", errors="coerce")
     for column in numeric_columns:
         output[column] = pd.to_numeric(output[column], errors="coerce")
     return output.dropna(subset=["timestamp"]).drop_duplicates(subset=["timestamp"], keep="last").sort_values(
