@@ -169,7 +169,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Using device: %s", device)
 
-    sample_frame, _, history_by_symbol, feature_columns = load_frames(args.db_path, args.symbols)
+    _, sample_frame, _, history_by_symbol, feature_columns = load_frames(args.db_path, args.symbols)
     raw_dataset = SequenceDataset(
         sample_frame,
         history_by_symbol,

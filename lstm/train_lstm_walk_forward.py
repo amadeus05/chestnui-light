@@ -107,23 +107,46 @@ def select_lstm_feature_columns(dataset: pd.DataFrame) -> list[str]:
     ]
 
 
-def load_frames(db_path: str, symbols: list[str]):
-    sample_frame = train.load_training_frame(db_path, symbols)
-    feature_columns = select_lstm_feature_columns(sample_frame)
-
+def load_candidate_and_directional_frames(db_path: str, symbols: list[str]):
     repository = HistoricalKlineRepository(db_path=db_path)
     full_frame = repository.load_feature_dataset(symbols)
-    full_frame = full_frame.dropna(subset=[train.TIMESTAMP_COLUMN, train.SYMBOL_COLUMN]).copy()
+    full_frame = full_frame.dropna(subset=[train.TIMESTAMP_COLUMN, train.SYMBOL_COLUMN, train.TARGET_COLUMN]).copy()
+    full_frame = full_frame.sort_values(train.TIMESTAMP_COLUMN).reset_index(drop=True)
+    full_frame.replace([np.inf, -np.inf], np.nan, inplace=True)
+
     end_cutoff = train.get_end_date_cutoff()
     if end_cutoff is not None and not pd.isna(end_cutoff):
         full_frame = full_frame.loc[full_frame[train.TIMESTAMP_COLUMN] <= end_cutoff].copy()
+
+    all_timestamps = np.sort(full_frame[train.TIMESTAMP_COLUMN].dropna().unique())
+    symbol_categories = list(dict.fromkeys(symbols))
+    candidate_frame = full_frame.copy()
+    directional_frame = candidate_frame.loc[candidate_frame[train.TARGET_COLUMN].astype(int) != 0].copy()
+    directional_frame[train.TARGET_COLUMN] = directional_frame[train.TARGET_COLUMN].astype(int).map(train.LABEL_TO_CLASS)
+
+    candidate_frame[train.SYMBOL_COLUMN] = pd.Categorical(
+        candidate_frame[train.SYMBOL_COLUMN],
+        categories=symbol_categories,
+    )
+    directional_frame[train.SYMBOL_COLUMN] = pd.Categorical(
+        directional_frame[train.SYMBOL_COLUMN],
+        categories=symbol_categories,
+    )
+    candidate_frame.attrs["all_timestamps"] = all_timestamps
+    directional_frame.attrs["all_timestamps"] = all_timestamps
+    return full_frame, candidate_frame, directional_frame
+
+
+def load_frames(db_path: str, symbols: list[str]):
+    full_frame, candidate_frame, directional_frame = load_candidate_and_directional_frames(db_path, symbols)
+    feature_columns = select_lstm_feature_columns(directional_frame)
 
     missing = [column for column in feature_columns if column not in full_frame.columns]
     if missing:
         raise RuntimeError(f"Full feature frame is missing LSTM feature columns: {missing[:10]}")
 
     history_by_symbol = build_history_by_symbol(full_frame, feature_columns)
-    return sample_frame, full_frame, history_by_symbol, feature_columns
+    return candidate_frame, directional_frame, full_frame, history_by_symbol, feature_columns
 
 
 def split_train_eval_indices(n_items: int, validation_fraction: float):
@@ -257,8 +280,10 @@ def build_features_meta(predictions: pd.DataFrame, feature_columns: list[str], s
     }
 
 
-def walk_forward_lstm(sample_frame, history_by_symbol, feature_columns, args, device):
-    unique_ts = np.asarray(sample_frame.attrs.get("all_timestamps", np.sort(sample_frame[train.TIMESTAMP_COLUMN].unique())))
+def walk_forward_lstm(candidate_frame, directional_frame, history_by_symbol, feature_columns, args, device):
+    unique_ts = np.asarray(
+        directional_frame.attrs.get("all_timestamps", np.sort(candidate_frame[train.TIMESTAMP_COLUMN].unique()))
+    )
     timestamp_splits = train.build_timestamp_splits(
         unique_ts=unique_ts,
         n_splits=args.n_splits,
@@ -286,9 +311,9 @@ def walk_forward_lstm(sample_frame, history_by_symbol, feature_columns, args, de
         if args.purge_gap > 0 and len(train_timestamps) > args.purge_gap:
             train_timestamps = train_timestamps[:-args.purge_gap]
 
-        train_df = sample_frame.loc[sample_frame[train.TIMESTAMP_COLUMN].isin(set(train_timestamps))].copy()
-        test_df = sample_frame.loc[sample_frame[train.TIMESTAMP_COLUMN].isin(set(test_timestamps))].copy()
-        if train_df.empty or test_df.empty:
+        train_df = directional_frame.loc[directional_frame[train.TIMESTAMP_COLUMN].isin(set(train_timestamps))].copy()
+        prediction_df = candidate_frame.loc[candidate_frame[train.TIMESTAMP_COLUMN].isin(set(test_timestamps))].copy()
+        if train_df.empty or prediction_df.empty:
             logger.warning("Fold %s skipped: empty train/test.", fold_idx)
             continue
         if len(sorted(train_df[train.TARGET_COLUMN].unique().tolist())) < 2:
@@ -317,23 +342,23 @@ def walk_forward_lstm(sample_frame, history_by_symbol, feature_columns, args, de
             args.sequence_length,
             standardizer=standardizer,
         )
-        test_dataset = SequenceDataset(
-            test_df,
+        prediction_dataset = SequenceDataset(
+            prediction_df,
             history_by_symbol,
             feature_columns,
             args.sequence_length,
             standardizer=standardizer,
         )
-        if len(test_dataset) == 0:
-            logger.warning("Fold %s skipped: no test sequences.", fold_idx)
+        if len(prediction_dataset) == 0:
+            logger.warning("Fold %s skipped: no prediction sequences.", fold_idx)
             continue
 
         logger.info(
-            "Fold %s/%s | train_seq=%s | test_seq=%s | features=%s",
+            "Fold %s/%s | train_seq=%s | prediction_seq=%s | features=%s",
             fold_idx,
             len(timestamp_splits),
             len(train_dataset),
-            len(test_dataset),
+            len(prediction_dataset),
             len(feature_columns),
         )
         model, best_epoch, best_eval_loss = train_fold_model(
@@ -343,19 +368,31 @@ def walk_forward_lstm(sample_frame, history_by_symbol, feature_columns, args, de
             train_indices=train_indices,
             eval_indices=eval_indices,
         )
-        proba, pred = predict_dataset(model, test_dataset, args.batch_size, device)
-        meta = test_dataset.metadata_frame()
-        y_true = meta[train.TARGET_COLUMN].to_numpy(dtype=int)
+        proba, pred = predict_dataset(model, prediction_dataset, args.batch_size, device)
+        meta = prediction_dataset.metadata_frame()
+        directional_mask = meta[train.TARGET_COLUMN].astype(int) != 0
+        metric_meta = meta.loc[directional_mask].copy()
+        if metric_meta.empty:
+            logger.warning("Fold %s skipped metrics: no directional prediction rows.", fold_idx)
+            metric_pred = np.empty((0,), dtype=np.int64)
+            metric_proba = np.empty((0, 2), dtype=np.float32)
+            y_true = np.empty((0,), dtype=np.int64)
+        else:
+            metric_positions = np.flatnonzero(directional_mask.to_numpy())
+            metric_pred = pred[metric_positions]
+            metric_proba = proba[metric_positions]
+            y_true = metric_meta[train.TARGET_COLUMN].astype(int).map(train.LABEL_TO_CLASS).to_numpy(dtype=int)
 
-        all_y_true.append(y_true)
-        all_y_pred.append(pred)
-        all_y_proba.append(proba)
+        if len(y_true) > 0:
+            all_y_true.append(y_true)
+            all_y_pred.append(metric_pred)
+            all_y_proba.append(metric_proba)
         prediction_frames.append(
             pd.DataFrame(
                 {
                     train.TIMESTAMP_COLUMN: meta[train.TIMESTAMP_COLUMN].values,
                     train.SYMBOL_COLUMN: meta[train.SYMBOL_COLUMN].values,
-                    train.TARGET_COLUMN: y_true,
+                    train.TARGET_COLUMN: meta[train.TARGET_COLUMN].values,
                     "prediction": pred,
                     "p_short": proba[:, 0],
                     "p_long": proba[:, 1],
@@ -363,16 +400,23 @@ def walk_forward_lstm(sample_frame, history_by_symbol, feature_columns, args, de
                 }
             )
         )
+        accuracy = float(accuracy_score(y_true, metric_pred)) if len(y_true) > 0 else None
+        roc_auc = (
+            float(roc_auc_score(y_true, metric_proba[:, 1]))
+            if len(set(y_true.tolist())) > 1
+            else None
+        )
         fold_details.append(
             {
                 "fold": int(fold_idx),
                 "split_mode": args.split_mode,
                 "train_sequences": int(len(train_dataset)),
-                "test_sequences": int(len(test_dataset)),
+                "prediction_sequences": int(len(prediction_dataset)),
+                "directional_metric_sequences": int(len(y_true)),
                 "best_epoch": int(best_epoch),
                 "best_eval_loss": float(best_eval_loss),
-                "accuracy": float(accuracy_score(y_true, pred)),
-                "roc_auc": float(roc_auc_score(y_true, proba[:, 1])) if len(set(y_true)) > 1 else None,
+                "accuracy": accuracy,
+                "roc_auc": roc_auc,
                 "timestamp_boundaries": {
                     "train_start": train.format_timestamp(train_timestamps[0]),
                     "train_end_after_purge": train.format_timestamp(train_timestamps[-1]),
@@ -390,6 +434,8 @@ def walk_forward_lstm(sample_frame, history_by_symbol, feature_columns, args, de
 
     if not prediction_frames:
         raise RuntimeError("All LSTM walk-forward folds were skipped.")
+    if not all_y_true:
+        raise RuntimeError("No directional LSTM OOS rows were available for metrics.")
 
     y_true_all = np.concatenate(all_y_true)
     y_pred_all = np.concatenate(all_y_pred)
@@ -457,17 +503,19 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Using device: %s", device)
 
-    sample_frame, _, history_by_symbol, feature_columns = load_frames(args.db_path, args.symbols)
+    candidate_frame, directional_frame, _, history_by_symbol, feature_columns = load_frames(args.db_path, args.symbols)
     logger.info(
-        "Loaded LSTM sample rows=%s | symbols=%s | features=%s | seq_len=%s",
-        len(sample_frame),
+        "Loaded LSTM candidate rows=%s | directional rows=%s | symbols=%s | features=%s | seq_len=%s",
+        len(candidate_frame),
+        len(directional_frame),
         ", ".join(args.symbols),
         len(feature_columns),
         args.sequence_length,
     )
 
     metrics, fold_details, predictions, model_state = walk_forward_lstm(
-        sample_frame=sample_frame,
+        candidate_frame=candidate_frame,
+        directional_frame=directional_frame,
         history_by_symbol=history_by_symbol,
         feature_columns=feature_columns,
         args=args,
