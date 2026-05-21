@@ -12,6 +12,7 @@ if str(ROOT_DIR) not in sys.path:
 import bt
 import config as cfg
 import train
+from src.persistence.repositories.historical_kline_repo import HistoricalKlineRepository
 
 
 def parse_args():
@@ -45,13 +46,30 @@ def load_predictions(path: str) -> pd.DataFrame:
     return predictions
 
 
-def attach_barrier_columns_from_training_frame(predictions: pd.DataFrame) -> pd.DataFrame:
+def attach_barrier_columns_from_feature_tables(predictions: pd.DataFrame) -> pd.DataFrame:
+    if {"barrier_stop_pct", "barrier_take_pct"}.issubset(predictions.columns):
+        return predictions
+
     symbols = sorted(predictions["symbol"].dropna().astype(str).unique().tolist())
-    training_frame = train.load_training_frame(cfg.DB_PATH, symbols)
-    barrier_frame = training_frame[
-        ["timestamp", "symbol", "barrier_stop_pct", "barrier_take_pct"]
-    ].copy()
+    repository = HistoricalKlineRepository(db_path=cfg.DB_PATH)
+    barrier_frames = []
+    for symbol in symbols:
+        feature_frame = repository.load_features(symbol)
+        if feature_frame.empty:
+            continue
+        required_columns = {"timestamp", "symbol", "barrier_stop_pct", "barrier_take_pct"}
+        missing = required_columns.difference(feature_frame.columns)
+        if missing:
+            continue
+        barrier_frames.append(
+            feature_frame[["timestamp", "symbol", "barrier_stop_pct", "barrier_take_pct"]].copy()
+        )
+    if not barrier_frames:
+        raise ValueError("No feature-table barrier rows found for candle-LSTM predictions.")
+
+    barrier_frame = pd.concat(barrier_frames, ignore_index=True)
     barrier_frame["timestamp"] = pd.to_datetime(barrier_frame["timestamp"])
+    barrier_frame = barrier_frame.drop_duplicates(subset=["timestamp", "symbol"], keep="last")
     merged = predictions.merge(
         barrier_frame,
         on=["timestamp", "symbol"],
@@ -103,7 +121,7 @@ def load_features_meta(path: str, predictions: pd.DataFrame) -> dict:
 def main():
     args = parse_args()
     predictions = load_predictions(args.predictions)
-    predictions = attach_barrier_columns_from_training_frame(predictions)
+    predictions = attach_barrier_columns_from_feature_tables(predictions)
     predictions = filter_predictions_by_period(predictions, args.start_date, args.end_date)
     features_meta = load_features_meta(args.features, predictions)
     bt.backtest(

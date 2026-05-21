@@ -4,6 +4,7 @@ import pandas as pd
 import bt
 from lstm.dataset import SequenceDataset
 from lstm import train_lstm_walk_forward as lstm_wf
+from lstm_candles import bt_lstm_candles_walk_forward as candle_replay
 
 
 def _feature_dataset() -> pd.DataFrame:
@@ -79,3 +80,28 @@ def test_backtest_prediction_lookup_accepts_candidate_predictions():
 
     assert len(lookup) == 3
     assert lookup[(pd.Timestamp("2025-01-01 01:00:00"), "BTC/USDT")] == (0.6, 0.4)
+
+
+def test_candle_lstm_replay_attaches_barriers_for_zero_target_candidates(monkeypatch):
+    class FakeRepository:
+        def __init__(self, db_path: str):
+            self.db_path = db_path
+
+        def load_features(self, symbol):
+            return _feature_dataset()
+
+    monkeypatch.setattr(candle_replay, "HistoricalKlineRepository", FakeRepository)
+    predictions = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2025-01-01", periods=3, freq="h"),
+            "symbol": ["BTC/USDT"] * 3,
+            "p_short": [0.2, 0.6, 0.4],
+            "p_long": [0.8, 0.4, 0.6],
+            "fold": [1, 1, 1],
+        }
+    )
+
+    merged = candle_replay.attach_barrier_columns_from_feature_tables(predictions)
+
+    assert merged["barrier_stop_pct"].tolist() == [0.02, 0.02, 0.02]
+    assert merged["barrier_take_pct"].tolist() == [0.04, 0.04, 0.04]
