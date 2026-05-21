@@ -114,6 +114,82 @@ def test_backtest_uses_metadata_symbols_for_external_predictions(monkeypatch):
     assert captured["symbols"] == ["ETH/USDT"]
 
 
+def test_backtest_does_not_reuse_intrabar_exit_slot_for_same_bar_entry(monkeypatch, capsys):
+    timestamps = pd.date_range("2025-01-01 00:00:00", periods=3, freq="h")
+
+    def make_raw(symbol):
+        if symbol == "BTC/USDT":
+            high = [100.0, 110.0, 110.0]
+        else:
+            high = [100.0, 101.0, 101.0]
+        return {
+            "main": pd.DataFrame(
+                {
+                    "timestamp": timestamps,
+                    "open": [100.0, 100.0, 100.0],
+                    "high": high,
+                    "low": [99.0, 99.0, 99.0],
+                    "close": [100.0, 100.0, 100.0],
+                    "volume": [1000.0, 1000.0, 1000.0],
+                    "close_time": timestamps + pd.Timedelta(hours=1),
+                }
+            ),
+            "htf": pd.DataFrame(
+                {
+                    "timestamp": timestamps,
+                    "open": [100.0, 100.0, 100.0],
+                    "high": [101.0, 101.0, 101.0],
+                    "low": [99.0, 99.0, 99.0],
+                    "close": [100.0, 100.0, 100.0],
+                    "volume": [1000.0, 1000.0, 1000.0],
+                    "close_time": timestamps + pd.Timedelta(hours=1),
+                }
+            ),
+        }
+
+    def make_features(symbol):
+        return pd.DataFrame(
+            {
+                "timestamp": timestamps + pd.Timedelta(hours=1),
+                "symbol": [symbol] * 3,
+                "barrier_stop_pct": [0.02, 0.02, 0.02],
+                "barrier_take_pct": [0.05, 0.05, 0.05],
+            }
+        )
+
+    monkeypatch.setattr(bt, "load_all_raw_data", lambda symbols: {symbol: make_raw(symbol) for symbol in symbols})
+    monkeypatch.setattr(bt, "load_precomputed_features", lambda symbol, **kwargs: make_features(symbol))
+    monkeypatch.setattr(bt.plt, "show", lambda: None)
+    monkeypatch.setattr(bt, "BACKTEST_MAX_OPEN_POSITIONS", 1)
+    monkeypatch.setattr(bt, "BACKTEST_MAX_NEW_POSITIONS_PER_BAR", 1)
+    monkeypatch.setattr(bt, "BACKTEST_INITIAL_BALANCE", 1000.0)
+
+    predictions = pd.DataFrame(
+        {
+            "timestamp": [pd.Timestamp("2025-01-01 01:00:00"), pd.Timestamp("2025-01-01 02:00:00")],
+            "symbol": ["BTC/USDT", "ETH/USDT"],
+            "p_short": [0.1, 0.1],
+            "p_long": [0.9, 0.9],
+        }
+    )
+    features_meta = {
+        "feature_columns": [],
+        "symbols": ["BTC/USDT", "ETH/USDT"],
+        "train_period": {
+            "start": "2025-01-01 01:00:00",
+            "end": "2025-01-01 02:00:00",
+        },
+        "feature_clip": {"bounds": {}},
+    }
+
+    bt.backtest(features_meta=features_meta, predictions=predictions)
+
+    output = capsys.readouterr().out
+    assert "OPEN LONG: BTC/USDT" in output
+    assert "TP" in output
+    assert "OPEN LONG: ETH/USDT" not in output
+
+
 def test_candle_lstm_replay_attaches_barriers_for_zero_target_candidates(monkeypatch):
     class FakeRepository:
         def __init__(self, db_path: str):

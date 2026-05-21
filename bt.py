@@ -749,6 +749,14 @@ def backtest(
         equity_timestamps.append(current_ts)
         peak_equity, max_drawdown = update_drawdown_stats(current_equity, peak_equity, max_drawdown)
 
+        entry_balance = balance
+        entry_used_margin = used_margin
+        entry_consecutive_loss_count = consecutive_loss_count
+        entry_daily_sl_count = daily_sl_count
+        entry_stop_cooldown_until_index = stop_cooldown_until_index.copy()
+        entry_open_symbols = {sym for sym, pos in positions.items() if pos is not None}
+        entry_available_balance = max(0.0, entry_balance - entry_used_margin)
+
         # Phase 1: all exits are evaluated on the same market snapshot.
         for sym, ctx in market_batch.items():
             if positions[sym] is None:
@@ -849,22 +857,22 @@ def backtest(
             BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES > 0
             and BACKTEST_REDUCED_RISK_PER_TRADE > 0
             and BACKTEST_REDUCED_RISK_PER_TRADE < RISK_PER_TRADE
-            and consecutive_loss_count >= BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES
+            and entry_consecutive_loss_count >= BACKTEST_REDUCE_RISK_AFTER_CONSECUTIVE_LOSSES
         ):
             effective_risk_per_trade = BACKTEST_REDUCED_RISK_PER_TRADE
 
-        if BACKTEST_MAX_SL_PER_DAY > 0 and daily_sl_count >= BACKTEST_MAX_SL_PER_DAY:
+        if BACKTEST_MAX_SL_PER_DAY > 0 and entry_daily_sl_count >= BACKTEST_MAX_SL_PER_DAY:
             continue
 
-        snapshot_balance = balance
+        snapshot_balance = entry_balance
         entry_candidates = []
         if using_external_predictions:
             candidate_symbols = [
                 sym for sym in market_batch
                 if (
-                    positions[sym] is None
+                    sym not in entry_open_symbols
                     and sym in all_features
-                    and i >= stop_cooldown_until_index.get(sym, -1)
+                    and i >= entry_stop_cooldown_until_index.get(sym, -1)
                 )
             ]
             batch_symbols = []
@@ -881,9 +889,9 @@ def backtest(
             candidate_symbols = [
                 sym for sym in market_batch
                 if (
-                    positions[sym] is None
+                    sym not in entry_open_symbols
                     and sym in all_features_prepared
-                    and i >= stop_cooldown_until_index.get(sym, -1)
+                    and i >= entry_stop_cooldown_until_index.get(sym, -1)
                 )
             ]
             batch_symbols, batch_features = get_feature_batch_precomputed(
@@ -965,23 +973,24 @@ def backtest(
         )
 
         opened_this_bar = 0
-        open_positions_count = sum(pos is not None for pos in positions.values())
+        open_positions_count = len(entry_open_symbols)
+        available_balance_for_entries = entry_available_balance
         for candidate in entry_candidates:
             if opened_this_bar >= BACKTEST_MAX_NEW_POSITIONS_PER_BAR:
                 break
             if open_positions_count >= BACKTEST_MAX_OPEN_POSITIONS:
                 break
 
-            available_balance = balance - used_margin
-            if available_balance <= 0:
+            if available_balance_for_entries <= 0:
                 break
 
-            required_margin = min(candidate["required_margin"], available_balance)
+            required_margin = min(candidate["required_margin"], available_balance_for_entries)
             position_notional = min(candidate["position_notional"], required_margin * LEVERAGE)
 
             if position_notional < 10 or required_margin <= 0:
                 continue
 
+            available_balance_for_entries -= required_margin
             trade_number = next_trade_number
             next_trade_number += 1
             used_margin += required_margin
@@ -1052,7 +1061,6 @@ def backtest(
                 daily_sl_count += 1
 
             positions[candidate["sym"]] = None
-            open_positions_count = max(0, open_positions_count - 1)
 
             exit_icon = "\u274C" if reason == "SL" else "\u2705" if reason == "TP" else "\u2139\uFE0F"
             print(
