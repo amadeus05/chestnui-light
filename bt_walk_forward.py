@@ -2,7 +2,6 @@ import argparse
 import json
 from datetime import datetime, timezone
 
-import lightgbm as lgb
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import TimeSeriesSplit
@@ -112,35 +111,34 @@ def fit_fold_model(train_df: pd.DataFrame, feature_columns: list[str], seed: int
 
     x_train = clipped_train[feature_columns]
     y_train = clipped_train[train.TARGET_COLUMN]
-    w_train = train.compute_sample_weights(clipped_train[train.TIMESTAMP_COLUMN])
-
-    model = train.build_model(seed=seed)
-    categorical_feature = [train.SYMBOL_COLUMN] if train.SYMBOL_COLUMN in feature_columns else "auto"
+    w_train = train.compute_sample_weights(clipped_train)
 
     if len(x_train) >= 20:
-        internal_eval_size = max(1, int(len(x_train) * 0.15))
-        if internal_eval_size < len(x_train):
-            model.fit(
-                x_train.iloc[:-internal_eval_size],
-                y_train.iloc[:-internal_eval_size],
-                sample_weight=w_train[:-internal_eval_size],
-                eval_set=[(x_train.iloc[-internal_eval_size:], y_train.iloc[-internal_eval_size:])],
-                eval_metric="binary_logloss",
-                categorical_feature=categorical_feature,
-                callbacks=[
-                    lgb.early_stopping(stopping_rounds=200, verbose=False),
-                    lgb.log_evaluation(period=0),
-                ],
-            )
-            return model, clip_bounds
+        model, fit_metadata = train.fit_model_with_internal_eval(
+            x_train=x_train,
+            y_train=y_train,
+            w_train=w_train,
+            feature_columns=feature_columns,
+            seed=seed,
+        )
+        return model, clip_bounds, fit_metadata
 
+    model = train.build_model(seed=seed)
     model.fit(
         x_train,
         y_train,
         sample_weight=w_train,
-        categorical_feature=categorical_feature,
+        categorical_feature=[train.SYMBOL_COLUMN] if train.SYMBOL_COLUMN in feature_columns else "auto",
     )
-    return model, clip_bounds
+    fit_metadata = {
+        "internal_eval_size": 0,
+        "eval_plan": None,
+        "internal_eval_slices": None,
+        "best_iter": int(getattr(model, "n_estimators_", 0) or getattr(model, "n_estimators", 0)),
+        "fallback_used": False,
+        "fallback_n_estimators": None,
+    }
+    return model, clip_bounds, fit_metadata
 
 
 def build_walk_forward_predictions(
@@ -181,7 +179,7 @@ def build_walk_forward_predictions(
             print(f"Fold {fold_idx}: skipped (train={len(train_df)}, test={len(test_df)}, classes={train_classes})")
             continue
 
-        model, clip_bounds = fit_fold_model(train_df, feature_columns, seed + fold_idx)
+        model, clip_bounds, fit_metadata = fit_fold_model(train_df, feature_columns, seed + fold_idx)
         clipped_test = train.apply_feature_clip_bounds(test_df, clip_bounds)
         clipped_test = clipped_test.dropna(subset=feature_columns)
         if clipped_test.empty:
@@ -209,7 +207,14 @@ def build_walk_forward_predictions(
             "train_end": str(train_df[train.TIMESTAMP_COLUMN].max()),
             "test_start": str(clipped_test[train.TIMESTAMP_COLUMN].min()),
             "test_end": str(clipped_test[train.TIMESTAMP_COLUMN].max()),
-            "best_iteration": int(getattr(model, "best_iteration_", 0) or getattr(model, "n_estimators_", 0)),
+            "best_iteration": int(fit_metadata["best_iter"]),
+            "internal_eval": {
+                "rows": int(fit_metadata["internal_eval_size"]),
+                "eval_plan": fit_metadata["eval_plan"],
+                "slices": fit_metadata["internal_eval_slices"],
+            },
+            "fallback_used": bool(fit_metadata["fallback_used"]),
+            "fallback_n_estimators": fit_metadata["fallback_n_estimators"],
         }
         fold_details.append(fold_info)
         print(
@@ -290,7 +295,7 @@ def build_monthly_walk_forward_predictions(
             print(f"Fold {fold_idx}: skipped (train={len(train_df)}, test={len(test_df)}, classes={train_classes})")
             continue
 
-        model, clip_bounds = fit_fold_model(train_df, feature_columns, seed + fold_idx)
+        model, clip_bounds, fit_metadata = fit_fold_model(train_df, feature_columns, seed + fold_idx)
         clipped_test = train.apply_feature_clip_bounds(test_df, clip_bounds)
         clipped_test = clipped_test.dropna(subset=feature_columns)
         if clipped_test.empty:
@@ -321,7 +326,14 @@ def build_monthly_walk_forward_predictions(
             "train_end_before_purge": str(pd.to_datetime(original_train_timestamps[-1])),
             "test_start": str(clipped_test[train.TIMESTAMP_COLUMN].min()),
             "test_end": str(clipped_test[train.TIMESTAMP_COLUMN].max()),
-            "best_iteration": int(getattr(model, "best_iteration_", 0) or getattr(model, "n_estimators_", 0)),
+            "best_iteration": int(fit_metadata["best_iter"]),
+            "internal_eval": {
+                "rows": int(fit_metadata["internal_eval_size"]),
+                "eval_plan": fit_metadata["eval_plan"],
+                "slices": fit_metadata["internal_eval_slices"],
+            },
+            "fallback_used": bool(fit_metadata["fallback_used"]),
+            "fallback_n_estimators": fit_metadata["fallback_n_estimators"],
         }
         fold_details.append(fold_info)
         print(
