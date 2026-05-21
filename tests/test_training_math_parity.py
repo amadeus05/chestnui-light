@@ -7,6 +7,7 @@ import pytest
 
 import bt
 import etl
+import train
 from src_refactor.application.pipeline import StoredPredictionSource, predictions_from_frame
 from src_refactor.application.training.walk_forward_splitter import WalkForwardSplitter
 from src_refactor.core.config import ExperimentConfig
@@ -167,6 +168,30 @@ def test_legacy_finalize_feature_frame_reports_dropna_row_loss(monkeypatch, capl
     assert "dropna_rows=2" in caplog.text
     assert "feature_a" in caplog.text
     assert "feature_b" in caplog.text
+
+
+def test_legacy_internal_eval_split_applies_purge_gap(monkeypatch):
+    monkeypatch.setattr(train.cfg, "effective_max_label_horizon", lambda: 3, raising=False)
+
+    slices = train.resolve_internal_eval_slices(n_rows=20, eval_size=4)
+
+    assert slices["eval_start"] == 16
+    assert slices["fit_end"] == 13
+    assert slices["requested_purge_gap"] == 3
+    assert slices["applied_purge_gap"] == 3
+    assert slices["purge_reduced"] is False
+
+
+def test_legacy_internal_eval_split_reduces_purge_when_train_is_too_small(monkeypatch):
+    monkeypatch.setattr(train.cfg, "effective_max_label_horizon", lambda: 10, raising=False)
+
+    slices = train.resolve_internal_eval_slices(n_rows=8, eval_size=4)
+
+    assert slices["eval_start"] == 4
+    assert slices["fit_end"] == 1
+    assert slices["requested_purge_gap"] == 10
+    assert slices["applied_purge_gap"] == 3
+    assert slices["purge_reduced"] is True
 
 
 def test_monthly_split_builder_uses_rolling_calendar_windows():

@@ -392,6 +392,33 @@ def resolve_internal_eval_plan(y_train: pd.Series) -> dict:
     }
 
 
+def resolve_internal_eval_slices(n_rows: int, eval_size: int, requested_purge_gap: int | None = None) -> dict:
+    eval_size = int(eval_size)
+    if n_rows <= eval_size:
+        return {
+            "fit_end": 0,
+            "eval_start": max(0, n_rows - eval_size),
+            "eval_size": max(0, min(eval_size, n_rows)),
+            "requested_purge_gap": int(requested_purge_gap or 0),
+            "applied_purge_gap": 0,
+            "purge_reduced": bool(requested_purge_gap),
+        }
+
+    requested_gap = cfg.effective_max_label_horizon() if requested_purge_gap is None else int(requested_purge_gap)
+    requested_gap = max(0, requested_gap)
+    eval_start = n_rows - eval_size
+    max_gap = max(0, eval_start - 1)
+    applied_gap = min(requested_gap, max_gap)
+    return {
+        "fit_end": eval_start - applied_gap,
+        "eval_start": eval_start,
+        "eval_size": eval_size,
+        "requested_purge_gap": requested_gap,
+        "applied_purge_gap": applied_gap,
+        "purge_reduced": applied_gap < requested_gap,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  Model building
 # ═══════════════════════════════════════════════════════════════════════════
@@ -507,12 +534,26 @@ def fit_model_with_internal_eval(
     model = build_model(seed=seed)
     eval_plan = resolve_internal_eval_plan(y_train.reset_index(drop=True))
     internal_eval_size = int(eval_plan["eval_size"])
+    internal_eval_slices = resolve_internal_eval_slices(
+        n_rows=len(y_train),
+        eval_size=internal_eval_size,
+    )
+    fit_end = int(internal_eval_slices["fit_end"])
+    eval_start = int(internal_eval_slices["eval_start"])
+    if internal_eval_slices["purge_reduced"] and internal_eval_slices["requested_purge_gap"] > 0:
+        logger.warning(
+            "Internal eval purge gap reduced: requested=%s applied=%s rows=%s eval_size=%s",
+            internal_eval_slices["requested_purge_gap"],
+            internal_eval_slices["applied_purge_gap"],
+            len(y_train),
+            internal_eval_size,
+        )
 
-    x_fit = x_train.iloc[:-internal_eval_size]
-    y_fit = y_train.iloc[:-internal_eval_size]
-    w_fit = w_train[:-internal_eval_size]
-    x_eval = x_train.iloc[-internal_eval_size:]
-    y_eval = y_train.iloc[-internal_eval_size:]
+    x_fit = x_train.iloc[:fit_end]
+    y_fit = y_train.iloc[:fit_end]
+    w_fit = w_train[:fit_end]
+    x_eval = x_train.iloc[eval_start:]
+    y_eval = y_train.iloc[eval_start:]
 
     model.fit(
         x_fit,
@@ -556,6 +597,7 @@ def fit_model_with_internal_eval(
     fit_metadata = {
         "internal_eval_size": internal_eval_size,
         "eval_plan": eval_plan,
+        "internal_eval_slices": internal_eval_slices,
         "best_iter": best_iter,
         "fallback_used": fallback_used,
         "fallback_n_estimators": fallback_n_estimators,
