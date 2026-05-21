@@ -138,6 +138,8 @@ def get_barrier_pcts(feature_row: pd.DataFrame | None) -> tuple[float | None, fl
     take_pct = float(feature_row["barrier_take_pct"].iloc[0])
     if not np.isfinite(stop_pct) or not np.isfinite(take_pct):
         return None, None
+    if stop_pct <= 0 or take_pct <= 0:
+        return None, None
     return stop_pct, take_pct
 
 
@@ -546,10 +548,11 @@ def backtest(
         print(f"Error: {exc}")
         return
     trained_symbols = list(features_meta.get("symbols", SYMBOLS))
+    backtest_symbols = list(dict.fromkeys(trained_symbols or list(SYMBOLS)))
     use_symbol_feature = "symbol" in feature_names
-    unseen_symbols = [symbol for symbol in SYMBOLS if symbol not in trained_symbols]
+    unseen_symbols = [symbol for symbol in backtest_symbols if symbol not in trained_symbols]
     if use_symbol_feature:
-        symbol_categories = list(dict.fromkeys(trained_symbols + list(SYMBOLS)))
+        symbol_categories = list(dict.fromkeys(trained_symbols + backtest_symbols))
         if unseen_symbols:
             print(
                 "Warning: backtest includes symbols absent from training metadata: "
@@ -571,7 +574,7 @@ def backtest(
             f"{feature_clip_meta.get('upper_q', 0.99) * 100:.2f}%]"
         )
     print(f"Backtest window: {test_start_ts.isoformat()} to {test_end_ts.isoformat()}")
-    all_raw = load_all_raw_data(SYMBOLS)
+    all_raw = load_all_raw_data(backtest_symbols)
     if not all_raw:
         print("Error: no raw data for backtest.")
         return

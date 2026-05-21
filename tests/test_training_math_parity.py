@@ -57,6 +57,25 @@ def test_feature_clip_can_be_disabled():
     assert LightGbmInputBuilder.apply_feature_clip_bounds(frame, {}) is frame
 
 
+def test_legacy_evaluate_model_handles_one_class_labels():
+    metrics = train.evaluate_model(
+        y_true=np.array([1, 1, 1]),
+        y_pred=np.array([1, 1, 0]),
+        y_proba=np.array(
+            [
+                [0.1, 0.9],
+                [0.2, 0.8],
+                [0.6, 0.4],
+            ]
+        ),
+        split_name="oos",
+    )
+
+    assert metrics["roc_auc"] is None
+    assert metrics["pr_auc"] is None
+    assert metrics["oos_rows"] == 3
+
+
 def test_sample_weights_match_exponential_decay_without_regime_boost():
     frame = pd.DataFrame({"timestamp": pd.to_datetime(["2025-01-01", "2025-01-11", "2025-01-21"])})
     config = LightGbmTrainingConfig.from_metadata(
@@ -299,6 +318,14 @@ def test_prediction_lookup_deduplicates_by_last_symbol_timestamp():
     assert len(source.predictions_by_timestamp[timestamp]) == 1
     assert deduped.proba_short == pytest.approx(0.4)
     assert deduped.proba_long == pytest.approx(0.6)
+
+
+def test_backtest_rejects_non_positive_barriers():
+    zero_stop = pd.DataFrame({"barrier_stop_pct": [0.0], "barrier_take_pct": [0.04]})
+    negative_take = pd.DataFrame({"barrier_stop_pct": [0.02], "barrier_take_pct": [-0.04]})
+
+    assert bt.get_barrier_pcts(zero_stop) == (None, None)
+    assert bt.get_barrier_pcts(negative_take) == (None, None)
 
 
 def test_stored_prediction_source_builds_oos_predictions_from_prediction_frame():

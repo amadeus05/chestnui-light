@@ -523,11 +523,11 @@ def main():
     )
     save_payload(metrics, fold_details, predictions, model_state, feature_columns, args)
     logger.info(
-        "LSTM OOS | acc=%.4f | bal_acc=%.4f | f1=%.4f | auc=%.4f | mcc=%.4f",
+        "LSTM OOS | acc=%.4f | bal_acc=%.4f | f1=%.4f | auc=%s | mcc=%.4f",
         metrics["accuracy"],
         metrics["balanced_accuracy"],
         metrics["f1_macro"],
-        metrics["roc_auc"],
+        train.format_metric_for_log(metrics["roc_auc"]),
         metrics["mcc"],
     )
 

@@ -49,6 +49,10 @@ def _safe_log_ratio(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
     return np.log(ratio)
 
 
+def _with_decision_timestamps(frame: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+    return etl.with_decision_timestamps(frame, timeframe)
+
+
 def _pct_delta(series: pd.Series, periods: int) -> pd.Series:
     base = series.shift(periods).replace(0, np.nan)
     return ((series - base) / base).replace([np.inf, -np.inf], np.nan)
@@ -57,6 +61,7 @@ def _pct_delta(series: pd.Series, periods: int) -> pd.Series:
 def _build_btc_context(repository: HistoricalKlineRepository) -> pd.DataFrame:
     btc_symbol = "BTC/USDT"
     btc = repository.load_candles(btc_symbol, cfg.TIMEFRAME)
+    btc = _with_decision_timestamps(btc, cfg.TIMEFRAME)
     btc = _apply_end_cutoff(btc)
     if btc is None or btc.empty:
         return pd.DataFrame(columns=[train.TIMESTAMP_COLUMN, "btc_return_1h"])
@@ -75,12 +80,15 @@ def build_symbol_sequence_frame(
     if main is None or main.empty:
         return pd.DataFrame(columns=[train.TIMESTAMP_COLUMN, train.SYMBOL_COLUMN] + SEQUENCE_FEATURE_COLUMNS)
 
+    main = _with_decision_timestamps(main, cfg.TIMEFRAME)
     main = _apply_end_cutoff(main)
     if main is None or main.empty:
         return pd.DataFrame(columns=[train.TIMESTAMP_COLUMN, train.SYMBOL_COLUMN] + SEQUENCE_FEATURE_COLUMNS)
 
     funding = _apply_end_cutoff(repository.load_funding_rates(symbol))
-    premium = _apply_end_cutoff(repository.load_premium_index_klines(symbol, cfg.TIMEFRAME))
+    premium = repository.load_premium_index_klines(symbol, cfg.TIMEFRAME)
+    premium = _with_decision_timestamps(premium, cfg.TIMEFRAME)
+    premium = _apply_end_cutoff(premium)
     open_interest = _apply_end_cutoff(repository.load_open_interest(symbol, cfg.TIMEFRAME))
 
     frame = main.sort_values(train.TIMESTAMP_COLUMN).reset_index(drop=True).copy()

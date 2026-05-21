@@ -5,6 +5,7 @@ import bt
 from lstm.dataset import SequenceDataset
 from lstm import train_lstm_walk_forward as lstm_wf
 from lstm_candles import bt_lstm_candles_walk_forward as candle_replay
+from lstm_candles import data as candle_data
 
 
 def _feature_dataset() -> pd.DataFrame:
@@ -82,6 +83,37 @@ def test_backtest_prediction_lookup_accepts_candidate_predictions():
     assert lookup[(pd.Timestamp("2025-01-01 01:00:00"), "BTC/USDT")] == (0.6, 0.4)
 
 
+def test_backtest_uses_metadata_symbols_for_external_predictions(monkeypatch):
+    captured = {}
+
+    def fake_load_all_raw_data(symbols):
+        captured["symbols"] = list(symbols)
+        return {}
+
+    monkeypatch.setattr(bt, "load_all_raw_data", fake_load_all_raw_data)
+    predictions = pd.DataFrame(
+        {
+            "timestamp": [pd.Timestamp("2025-01-01 01:00:00")],
+            "symbol": ["ETH/USDT"],
+            "p_short": [0.4],
+            "p_long": [0.6],
+        }
+    )
+    features_meta = {
+        "feature_columns": [],
+        "symbols": ["ETH/USDT"],
+        "train_period": {
+            "start": "2025-01-01 01:00:00",
+            "end": "2025-01-01 01:00:00",
+        },
+        "feature_clip": {"bounds": {}},
+    }
+
+    bt.backtest(features_meta=features_meta, predictions=predictions)
+
+    assert captured["symbols"] == ["ETH/USDT"]
+
+
 def test_candle_lstm_replay_attaches_barriers_for_zero_target_candidates(monkeypatch):
     class FakeRepository:
         def __init__(self, db_path: str):
@@ -105,3 +137,36 @@ def test_candle_lstm_replay_attaches_barriers_for_zero_target_candidates(monkeyp
 
     assert merged["barrier_stop_pct"].tolist() == [0.02, 0.02, 0.02]
     assert merged["barrier_take_pct"].tolist() == [0.04, 0.04, 0.04]
+
+
+def test_candle_lstm_sequence_frame_uses_decision_timestamps(monkeypatch):
+    class FakeRepository:
+        def load_candles(self, symbol, timeframe):
+            return pd.DataFrame(
+                {
+                    "timestamp": pd.date_range("2025-01-01 00:00:00", periods=30, freq="h"),
+                    "open": np.linspace(100, 129, 30),
+                    "high": np.linspace(101, 130, 30),
+                    "low": np.linspace(99, 128, 30),
+                    "close": np.linspace(100.5, 129.5, 30),
+                    "volume": np.linspace(1000, 1029, 30),
+                }
+            )
+
+        def load_funding_rates(self, symbol):
+            return pd.DataFrame(columns=["timestamp", "funding_rate"])
+
+        def load_premium_index_klines(self, symbol, timeframe):
+            return pd.DataFrame(columns=["timestamp", "premium_index_close"])
+
+        def load_open_interest(self, symbol, timeframe):
+            return pd.DataFrame(columns=["timestamp", "open_interest"])
+
+    monkeypatch.setattr(candle_data.train, "get_end_date_cutoff", lambda: None)
+    repository = FakeRepository()
+    btc_context = candle_data._build_btc_context(repository)
+
+    frame = candle_data.build_symbol_sequence_frame(repository, "ETH/USDT", btc_context)
+
+    assert frame["timestamp"].iloc[0] == pd.Timestamp("2025-01-01 01:00:00")
+    assert frame["timestamp"].iloc[-1] == pd.Timestamp("2025-01-02 06:00:00")

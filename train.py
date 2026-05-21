@@ -605,6 +605,28 @@ def fit_model_with_internal_eval(
     return model, fit_metadata
 
 
+def has_both_classes(values) -> bool:
+    return len(set(np.asarray(values).tolist())) > 1
+
+
+def safe_roc_auc(y_true, p_long) -> float | None:
+    if not has_both_classes(y_true):
+        return None
+    return float(roc_auc_score(y_true, p_long))
+
+
+def safe_pr_auc(y_true, p_long) -> float | None:
+    if not has_both_classes(y_true):
+        return None
+    return float(average_precision_score(y_true, p_long))
+
+
+def format_metric_for_log(value, decimals: int = 4) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):.{decimals}f}"
+
+
 def evaluate_model(y_true, y_pred, y_proba, split_name, n_rows=None):
     """
     Compute a full metrics dictionary from pre-assembled OOS vectors.
@@ -713,8 +735,8 @@ def evaluate_model(y_true, y_pred, y_proba, split_name, n_rows=None):
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
         "f1_macro": float(f1_score(y_true, y_pred, average="macro")),
-        "roc_auc": float(roc_auc_score(y_true, p_long)),
-        "pr_auc": float(average_precision_score(y_true, p_long)),
+        "roc_auc": safe_roc_auc(y_true, p_long),
+        "pr_auc": safe_pr_auc(y_true, p_long),
         "mcc": float(matthews_corrcoef(y_true, y_pred)),
         "confusion_matrix": confusion_matrix(y_true, y_pred, labels=[0, 1]).tolist(),
         "classification_report": report,
@@ -936,7 +958,7 @@ def walk_forward_validation(
 
         # Per-fold quick summary
         fold_acc = float(accuracy_score(y_test, y_pred_fold))
-        fold_auc = float(roc_auc_score(y_test, y_proba_fold[:, 1]))
+        fold_auc = safe_roc_auc(y_test, y_proba_fold[:, 1])
         fold_info = {
             "fold": fold_idx,
             "split_mode": split_mode,
@@ -982,7 +1004,7 @@ def walk_forward_validation(
 
         logger.info(
             "Fold %s/%s | train=%s rows [%s → %s] | test=%s rows [%s → %s] | "
-            "eval=%s (fit_pos=%.3f eval_pos=%.3f%s%s) | best_iter=%s | acc=%.4f | auc=%.4f",
+            "eval=%s (fit_pos=%.3f eval_pos=%.3f%s%s) | best_iter=%s | acc=%.4f | auc=%s",
             fold_idx,
             len(timestamp_splits),
             fold_info["train_rows"],
@@ -998,7 +1020,7 @@ def walk_forward_validation(
             f", fallback={fit_metadata['fallback_n_estimators']}" if fit_metadata["fallback_used"] else "",
             best_iter,
             fold_acc,
-            fold_auc,
+            format_metric_for_log(fold_auc),
         )
 
     # --- Aggregate OOS vector ------------------------------------------------
@@ -1022,14 +1044,14 @@ def walk_forward_validation(
     logger.info("-" * 72)
     logger.info(
         "OOS aggregate (%s folds, %s rows) | acc=%.4f | bal_acc=%.4f | "
-        "f1_macro=%.4f | roc_auc=%.4f | pr_auc=%.4f | mcc=%.4f",
+        "f1_macro=%.4f | roc_auc=%s | pr_auc=%s | mcc=%.4f",
         len(fold_details),
         len(oos_y_true),
         oos_metrics["accuracy"],
         oos_metrics["balanced_accuracy"],
         oos_metrics["f1_macro"],
-        oos_metrics["roc_auc"],
-        oos_metrics["pr_auc"],
+        format_metric_for_log(oos_metrics["roc_auc"]),
+        format_metric_for_log(oos_metrics["pr_auc"]),
         oos_metrics["mcc"],
     )
     logger.info("Median best_iteration across folds: %s", median_best_iter)
@@ -1188,6 +1210,10 @@ def build_dataset_diagnostics(dataset, fold_details):
     }
 
 
+def optional_float(value):
+    return float(value) if value is not None else None
+
+
 def build_fold_stability_payload(fold_details):
     if not fold_details:
         return {
@@ -1198,12 +1224,18 @@ def build_fold_stability_payload(fold_details):
         }
 
     accuracy_values = np.asarray([float(fold["accuracy"]) for fold in fold_details], dtype=float)
-    roc_auc_values = np.asarray([float(fold["roc_auc"]) for fold in fold_details], dtype=float)
+    roc_auc_values = np.asarray(
+        [float(fold["roc_auc"]) for fold in fold_details if fold.get("roc_auc") is not None],
+        dtype=float,
+    )
     return {
         "accuracy_std": float(np.std(accuracy_values)),
         "accuracy_range": float(np.max(accuracy_values) - np.min(accuracy_values)),
-        "roc_auc_std": float(np.std(roc_auc_values)),
-        "roc_auc_range": float(np.max(roc_auc_values) - np.min(roc_auc_values)),
+        "roc_auc_std": float(np.std(roc_auc_values)) if len(roc_auc_values) > 0 else None,
+        "roc_auc_range": (
+            float(np.max(roc_auc_values) - np.min(roc_auc_values))
+            if len(roc_auc_values) > 0 else None
+        ),
     }
 
 
@@ -1253,8 +1285,8 @@ def build_train_history_entry(args, metrics, experiment_snapshot):
         "accuracy": float(oos_metrics["accuracy"]),
         "balanced_accuracy": float(oos_metrics["balanced_accuracy"]),
         "f1_macro": float(oos_metrics["f1_macro"]),
-        "roc_auc": float(oos_metrics["roc_auc"]),
-        "pr_auc": float(oos_metrics["pr_auc"]),
+        "roc_auc": optional_float(oos_metrics["roc_auc"]),
+        "pr_auc": optional_float(oos_metrics["pr_auc"]),
         "mcc": float(oos_metrics["mcc"]),
         "fold_stability_pct": (
             float(fold_stability["accuracy_std"]) * 100 if fold_stability["accuracy_std"] is not None else None
@@ -1671,12 +1703,12 @@ def main():
 
         logger.info(
             "OOS metrics | accuracy=%.4f | balanced_accuracy=%.4f | f1_macro=%.4f | "
-            "roc_auc=%.4f | pr_auc=%.4f | mcc=%.4f",
+            "roc_auc=%s | pr_auc=%s | mcc=%.4f",
             oos_metrics["accuracy"],
             oos_metrics["balanced_accuracy"],
             oos_metrics["f1_macro"],
-            oos_metrics["roc_auc"],
-            oos_metrics["pr_auc"],
+            format_metric_for_log(oos_metrics["roc_auc"]),
+            format_metric_for_log(oos_metrics["pr_auc"]),
             oos_metrics["mcc"],
         )
 
