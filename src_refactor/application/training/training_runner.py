@@ -62,6 +62,7 @@ class WalkForwardTrainingRunner:
                 spec=fold_spec,
                 timestamp_column=config.timestamp_column,
                 symbol_column=config.symbol_column,
+                history_frame=frame.loc[timestamps <= fold.test_end].copy(),
             )
             predictions = prediction_service.predict_frame(test_frame, fold)
             if self.prediction_store is not None:

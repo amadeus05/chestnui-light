@@ -2,8 +2,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src_refactor.application.training.oos_prediction_service import OosPredictionService
 from src_refactor.core.config import ExperimentConfig
-from src_refactor.core.types import LstmCandleWindowInput, LstmFeatureSequenceInput, ModelSpec, WalkForwardFold
+from src_refactor.core.types import LstmCandleWindowInput, LstmFeatureSequenceInput, ModelSpec, WalkForwardFold, Prediction
 from src_refactor.infrastructure.models.lstm_candles.input_builder import LstmCandleInputBuilder
 from src_refactor.infrastructure.models.lstm_candles import trainer as candle_trainer_module
 from src_refactor.infrastructure.models.lstm_candles.trainer import LstmCandleTrainer
@@ -134,6 +135,36 @@ def test_lstm_feature_trainer_metadata_is_replay_compatible(monkeypatch):
     assert artifact.metadata["labeling"] == {"horizon": 16}
 
 
+def test_lstm_oos_prediction_uses_rolling_symbol_history():
+    frame = pd.DataFrame(
+        {
+            TIMESTAMP_COLUMN: pd.date_range("2025-01-01", periods=5, freq="h"),
+            SYMBOL_COLUMN: ["BTC/USDT"] * 5,
+            TARGET_COLUMN: [-1, 1, -1, 1, -1],
+            "feature_a": np.arange(5, dtype=float),
+            "feature_b": np.arange(10, 15, dtype=float),
+        }
+    )
+    test_frame = frame.iloc[[3, 4]].copy()
+    input_builder = _RecordingInputBuilder()
+    service = OosPredictionService(
+        input_builder=input_builder,
+        predictor=_StaticPredictor(),
+        spec=ModelSpec(
+            model_type="lstm_features",
+            timeframe="1h",
+            metadata={"window_size": 3, "feature_columns": ["feature_a", "feature_b"]},
+        ),
+        history_frame=frame,
+    )
+
+    service.predict_frame(test_frame, _fold())
+
+    assert [len(captured) for captured in input_builder.frames] == [4, 5]
+    assert input_builder.frames[0][TIMESTAMP_COLUMN].tolist() == frame.iloc[:4][TIMESTAMP_COLUMN].tolist()
+    assert input_builder.frames[1][TIMESTAMP_COLUMN].tolist() == frame.iloc[:5][TIMESTAMP_COLUMN].tolist()
+
+
 def test_lstm_candle_trainer_metadata_is_replay_compatible(monkeypatch):
     monkeypatch.setattr(candle_trainer_module, "train_lstm_classifier", _fake_train_lstm_classifier)
     train_input = LstmCandleWindowInput(
@@ -177,3 +208,27 @@ def _fake_train_lstm_classifier(sequences, targets, config, *, device):
 class _FakeModel:
     def state_dict(self):
         return {}
+
+
+class _RecordingInputBuilder(LstmFeatureInputBuilder):
+    frames: list = None
+
+    def build_predict_input(self, request, spec=None):
+        if self.frames is None:
+            object.__setattr__(self, "frames", [])
+        self.frames.append(request.copy())
+        return super().build_predict_input(request, spec)
+
+
+class _StaticPredictor:
+    def predict(self, model_input):
+        return Prediction(
+            timestamp=pd.Timestamp("2025-01-01"),
+            symbol="BTC/USDT",
+            timeframe="1h",
+            model_id="test",
+            direction=0,
+            confidence=0.5,
+            proba_long=0.5,
+            proba_short=0.5,
+        )
