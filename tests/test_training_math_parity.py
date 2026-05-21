@@ -140,6 +140,35 @@ def test_backtest_execution_window_maps_decision_period_to_open_time_grid():
     assert end == pd.Timestamp("2025-01-01 02:00:00")
 
 
+def test_legacy_finalize_feature_frame_reports_dropna_row_loss(monkeypatch, caplog):
+    monkeypatch.setattr(etl.cfg, "HORIZON", 0)
+    monkeypatch.setattr(etl.cfg, "ENABLE_ADAPTIVE_HORIZON", False, raising=False)
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2025-01-01", periods=4, freq="h"),
+            "open": [100.0, 101.0, 102.0, 103.0],
+            "high": [101.0, 102.0, 103.0, 104.0],
+            "low": [99.0, 100.0, 101.0, 102.0],
+            "close": [100.5, 101.5, 102.5, 103.5],
+            "volume": [1_000.0, 1_100.0, 1_200.0, 1_300.0],
+            "feature_a": [1.0, np.nan, 3.0, 4.0],
+            "feature_b": [np.inf, 2.0, 3.0, 4.0],
+            "barrier_stop_pct": [0.02, 0.02, 0.02, 0.02],
+            "barrier_take_pct": [0.04, 0.04, 0.04, 0.04],
+            "Target": [1, -1, 1, -1],
+        }
+    )
+
+    with caplog.at_level("WARNING", logger=etl.logger.name):
+        finalized = etl.finalize_feature_frame(frame, ["feature_a", "feature_b"])
+
+    assert len(finalized) == 1
+    assert "Feature finalize dropna removed rows" in caplog.text
+    assert "dropna_rows=2" in caplog.text
+    assert "feature_a" in caplog.text
+    assert "feature_b" in caplog.text
+
+
 def test_monthly_split_builder_uses_rolling_calendar_windows():
     frame = pd.DataFrame({"timestamp": pd.date_range("2025-01-01", periods=150, freq="D")})
     config = ExperimentConfig(

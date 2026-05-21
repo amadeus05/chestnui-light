@@ -230,11 +230,18 @@ def triple_barrier_labeling(df: pd.DataFrame) -> pd.DataFrame:
 
 def finalize_feature_frame(df: pd.DataFrame, feature_columns: list[str]) -> pd.DataFrame:
     output = df.copy()
+    input_rows = len(output)
     effective_horizons = compute_effective_horizons(output)
     max_horizon = int(np.max(effective_horizons)) if len(effective_horizons) > 0 else get_base_horizon()
+    horizon_dropped_rows = min(max_horizon, len(output)) if max_horizon > 0 else 0
     if max_horizon > 0:
         if len(output) <= max_horizon:
             empty_columns = BASE_OUTPUT_COLUMNS + feature_columns + BARRIER_OUTPUT_COLUMNS + ["Target"]
+            logger.warning(
+                "Feature finalize removed all rows: input_rows=%s max_horizon=%s output_rows=0",
+                input_rows,
+                max_horizon,
+            )
             return output.iloc[0:0][empty_columns].copy()
         output = output.iloc[:-max_horizon].copy()
 
@@ -245,7 +252,31 @@ def finalize_feature_frame(df: pd.DataFrame, feature_columns: list[str]) -> pd.D
 
     output = output[output_columns].copy()
     output.replace([np.inf, -np.inf], np.nan, inplace=True)
+    rows_before_dropna = len(output)
+    missing_counts = output.isna().sum()
+    rows_with_missing = int(output.isna().any(axis=1).sum())
+    if rows_with_missing > 0:
+        top_missing_columns = {
+            column: int(count)
+            for column, count in missing_counts[missing_counts > 0].sort_values(ascending=False).head(10).items()
+        }
+        logger.warning(
+            "Feature finalize dropna removed rows: input_rows=%s horizon_dropped=%s rows_before_dropna=%s "
+            "dropna_rows=%s top_missing_columns=%s",
+            input_rows,
+            horizon_dropped_rows,
+            rows_before_dropna,
+            rows_with_missing,
+            top_missing_columns,
+        )
     output.dropna(inplace=True)
+    if input_rows > 0 and output.empty:
+        logger.warning(
+            "Feature finalize produced empty output: input_rows=%s horizon_dropped=%s dropna_rows=%s",
+            input_rows,
+            horizon_dropped_rows,
+            rows_with_missing,
+        )
     output.reset_index(drop=True, inplace=True)
     return output
 
