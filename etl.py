@@ -308,6 +308,18 @@ def timeframe_to_ms(timeframe: str) -> int:
     return amount * unit_to_ms[unit]
 
 
+def with_decision_timestamps(frame: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+    if frame is None or frame.empty or "timestamp" not in frame.columns:
+        return frame
+
+    output = frame.copy()
+    open_time = pd.to_datetime(output["timestamp"], errors="coerce")
+    output["open_time"] = open_time
+    output["close_time"] = open_time + pd.to_timedelta(timeframe_to_ms(timeframe), unit="ms")
+    output["timestamp"] = output["close_time"]
+    return output
+
+
 def align_to_next_candle_open(timestamp_ms: int, timeframe: str) -> int:
     timeframe_ms = timeframe_to_ms(timeframe)
     remainder = timestamp_ms % timeframe_ms
@@ -350,10 +362,12 @@ def build_candle_maps(
 
     for symbol in symbols_to_load:
         symbol_name = str(symbol)
-        df = repository.load_candles(symbol, str(getattr(cfg, "TIMEFRAME", "1h")))
-        htf_df = repository.load_candles(symbol, str(getattr(cfg, "HTF_TIMEFRAME", "4h")))
+        timeframe = str(getattr(cfg, "TIMEFRAME", "1h"))
+        htf_timeframe = str(getattr(cfg, "HTF_TIMEFRAME", "4h"))
+        df = with_decision_timestamps(repository.load_candles(symbol, timeframe), timeframe)
+        htf_df = with_decision_timestamps(repository.load_candles(symbol, htf_timeframe), htf_timeframe)
         funding_df = repository.load_funding_rates(symbol)
-        premium_index_df = repository.load_premium_index_klines(symbol, str(getattr(cfg, "TIMEFRAME", "1h")))
+        premium_index_df = with_decision_timestamps(repository.load_premium_index_klines(symbol, timeframe), timeframe)
         open_interest_df = repository.load_open_interest(symbol, str(getattr(cfg, "TIMEFRAME", "1h")))
         if df.empty or htf_df.empty:
             logger.warning("%s: no data in DB (main=%s, htf=%s)", symbol_name, len(df), len(htf_df))

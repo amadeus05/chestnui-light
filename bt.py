@@ -289,6 +289,10 @@ def load_raw_candles(symbol: str, timeframe: str) -> pd.DataFrame:
     return df
 
 
+def execution_timestamp_for_decision_time(decision_ts: pd.Timestamp, timeframe: str) -> pd.Timestamp:
+    return pd.to_datetime(decision_ts) - pd.to_timedelta(timeframe_to_ms(timeframe), unit="ms")
+
+
 def load_all_raw_data(symbols):
     all_data = {}
 
@@ -369,6 +373,15 @@ def filter_symbols_with_period_overlap(all_data: dict, start_ts: pd.Timestamp, e
         filtered[symbol] = payload
 
     return filtered, dropped
+
+
+def build_execution_window(
+    decision_start_ts: pd.Timestamp,
+    decision_end_ts: pd.Timestamp,
+    timeframe: str,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    timestamp_shift = pd.to_timedelta(timeframe_to_ms(timeframe), unit="ms")
+    return pd.to_datetime(decision_start_ts) - timestamp_shift, pd.to_datetime(decision_end_ts) - timestamp_shift
 
 
 def get_feature_row_precomputed(df: pd.DataFrame, ts: pd.Timestamp, feature_names: list):
@@ -569,6 +582,8 @@ def backtest(
     else:
         print("Feature mode: precomputed DB features (ETL)")
         required_feature_columns = feature_names + ["barrier_stop_pct", "barrier_take_pct"]
+    feature_timestamp_shift = pd.to_timedelta(timeframe_to_ms(TIMEFRAME), unit="ms")
+    execution_start_ts, execution_end_ts = build_execution_window(test_start_ts, test_end_ts, TIMEFRAME)
 
     all_features = {}
     all_main_index = {}
@@ -610,7 +625,12 @@ def backtest(
             print("Error: no symbols with prepared precomputed features available.")
             return
 
-    all_raw, dropped_symbols = filter_symbols_with_period_overlap(all_raw, test_start_ts, test_end_ts, min_candles=2)
+    all_raw, dropped_symbols = filter_symbols_with_period_overlap(
+        all_raw,
+        execution_start_ts,
+        execution_end_ts,
+        min_candles=2,
+    )
     if dropped_symbols:
         print(
             "Warning: dropped symbols without enough overlap inside the backtest window: "
@@ -623,7 +643,7 @@ def backtest(
     common_timestamps = get_common_main_timestamps(all_raw)
     test_timestamps = [
         ts for ts in common_timestamps
-        if test_start_ts <= ts <= test_end_ts
+        if execution_start_ts <= ts <= execution_end_ts
     ]
 
     if len(test_timestamps) < 2:
@@ -846,8 +866,9 @@ def backtest(
             ]
             batch_symbols = []
             batch_proba = []
+            prediction_ts = current_ts + feature_timestamp_shift
             for sym in candidate_symbols:
-                proba = prediction_lookup.get((current_ts, sym))
+                proba = prediction_lookup.get((prediction_ts, sym))
                 if proba is None:
                     continue
                 batch_symbols.append(sym)
@@ -865,7 +886,7 @@ def backtest(
             batch_symbols, batch_features = get_feature_batch_precomputed(
                 all_features_prepared,
                 candidate_symbols,
-                current_ts,
+                current_ts + feature_timestamp_shift,
             )
             has_signal_batch = not batch_features.empty
             if has_signal_batch:
@@ -879,7 +900,7 @@ def backtest(
                     required_row_columns = feature_names + required_row_columns
                 feature_row = get_feature_row_precomputed(
                     all_features[sym],
-                    current_ts,
+                    current_ts + feature_timestamp_shift,
                     required_row_columns,
                 )
                 stop_pct, take_pct = get_barrier_pcts(feature_row)

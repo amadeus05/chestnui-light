@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import bt
+import etl
 from src_refactor.application.pipeline import StoredPredictionSource, predictions_from_frame
 from src_refactor.application.training.walk_forward_splitter import WalkForwardSplitter
 from src_refactor.core.config import ExperimentConfig
@@ -101,6 +103,41 @@ def test_sample_weights_apply_recent_and_regime_boosts():
     recent_base = 2.0
     recent_regime_multiplier = 1.0 + 0.2
     np.testing.assert_allclose(weights, [old_base, recent_base * recent_regime_multiplier], rtol=1e-6)
+
+
+def test_etl_feature_timestamps_are_close_time_decision_timestamps():
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(["2025-01-01 00:00:00", "2025-01-01 01:00:00"]),
+            "open": [100.0, 101.0],
+            "high": [102.0, 103.0],
+            "low": [99.0, 100.0],
+            "close": [101.0, 102.0],
+            "volume": [10.0, 11.0],
+        }
+    )
+
+    shifted = etl.with_decision_timestamps(frame, "1h")
+
+    assert shifted["open_time"].tolist() == frame["timestamp"].tolist()
+    assert shifted["timestamp"].tolist() == pd.to_datetime(["2025-01-01 01:00:00", "2025-01-01 02:00:00"]).tolist()
+
+
+def test_backtest_maps_decision_timestamp_to_execution_open_time():
+    decision_ts = pd.Timestamp("2025-01-01 01:00:00")
+
+    assert bt.execution_timestamp_for_decision_time(decision_ts, "1h") == pd.Timestamp("2025-01-01 00:00:00")
+
+
+def test_backtest_execution_window_maps_decision_period_to_open_time_grid():
+    start, end = bt.build_execution_window(
+        pd.Timestamp("2025-01-01 01:00:00"),
+        pd.Timestamp("2025-01-01 03:00:00"),
+        "1h",
+    )
+
+    assert start == pd.Timestamp("2025-01-01 00:00:00")
+    assert end == pd.Timestamp("2025-01-01 02:00:00")
 
 
 def test_monthly_split_builder_uses_rolling_calendar_windows():
