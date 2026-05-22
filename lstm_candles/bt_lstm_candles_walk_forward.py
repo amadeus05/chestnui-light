@@ -34,6 +34,7 @@ def parse_args():
     )
     parser.add_argument("--start-date", default=None)
     parser.add_argument("--end-date", default=None)
+    parser.add_argument("--db-path", default=cfg.DB_PATH, help="Path to SQLite database for raw/features/barriers.")
     return parser.parse_args()
 
 
@@ -46,12 +47,12 @@ def load_predictions(path: str) -> pd.DataFrame:
     return predictions
 
 
-def attach_barrier_columns_from_feature_tables(predictions: pd.DataFrame) -> pd.DataFrame:
+def attach_barrier_columns_from_feature_tables(predictions: pd.DataFrame, db_path: str | None = None) -> pd.DataFrame:
     if {"barrier_stop_pct", "barrier_take_pct"}.issubset(predictions.columns):
         return predictions
 
     symbols = sorted(predictions["symbol"].dropna().astype(str).unique().tolist())
-    repository = HistoricalKlineRepository(db_path=cfg.DB_PATH)
+    repository = HistoricalKlineRepository(db_path=db_path or cfg.DB_PATH)
     barrier_frames = []
     for symbol in symbols:
         feature_frame = repository.load_features(symbol)
@@ -121,7 +122,7 @@ def load_features_meta(path: str, predictions: pd.DataFrame) -> dict:
 def main():
     args = parse_args()
     predictions = load_predictions(args.predictions)
-    predictions = attach_barrier_columns_from_feature_tables(predictions)
+    predictions = attach_barrier_columns_from_feature_tables(predictions, db_path=args.db_path)
     predictions = filter_predictions_by_period(predictions, args.start_date, args.end_date)
     features_meta = load_features_meta(args.features, predictions)
     bt.backtest(
@@ -129,6 +130,7 @@ def main():
         predictions=predictions,
         equity_curve_path=Path(args.chart),
         result_title="LSTM CANDLES WALK-FORWARD OOS BACKTEST REPLAY",
+        db_path=args.db_path,
     )
 
 

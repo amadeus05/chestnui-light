@@ -539,6 +539,7 @@ def main():
             predictions=predictions,
             equity_curve_path=chart_path,
             result_title="LSTM WALK-FORWARD OOS BACKTEST",
+            db_path=args.db_path,
         )
 
 

@@ -272,8 +272,8 @@ def print_table(headers: list[str], rows: list[list[str]], right_align: set[int]
     print(bottom)
 
 
-def load_raw_candles(symbol: str, timeframe: str) -> pd.DataFrame:
-    repository = HistoricalKlineRepository()
+def load_raw_candles(symbol: str, timeframe: str, db_path: str | None = None) -> pd.DataFrame:
+    repository = HistoricalKlineRepository(db_path=db_path or DB_PATH)
     df = repository.load_candles(symbol, timeframe)
 
     if df.empty:
@@ -295,14 +295,14 @@ def execution_timestamp_for_decision_time(decision_ts: pd.Timestamp, timeframe: 
     return pd.to_datetime(decision_ts) - pd.to_timedelta(timeframe_to_ms(timeframe), unit="ms")
 
 
-def load_all_raw_data(symbols):
+def load_all_raw_data(symbols, db_path: str | None = None):
     all_data = {}
 
     print(f"Loading raw data for {len(symbols)} symbols...")
     for sym in symbols:
         try:
-            df_main = load_raw_candles(sym, TIMEFRAME)
-            df_htf = load_raw_candles(sym, HTF_TIMEFRAME)
+            df_main = load_raw_candles(sym, TIMEFRAME, db_path=db_path)
+            df_htf = load_raw_candles(sym, HTF_TIMEFRAME, db_path=db_path)
 
             if df_main.empty:
                 print(f"Warning: {sym} has no main TF data ({TIMEFRAME})")
@@ -320,8 +320,13 @@ def load_all_raw_data(symbols):
     return all_data
 
 
-def load_precomputed_features(symbol: str, symbol_categories=None, required_columns: list | None = None) -> pd.DataFrame:
-    repository = HistoricalKlineRepository()
+def load_precomputed_features(
+    symbol: str,
+    symbol_categories=None,
+    required_columns: list | None = None,
+    db_path: str | None = None,
+) -> pd.DataFrame:
+    repository = HistoricalKlineRepository(db_path=db_path or DB_PATH)
     try:
         df = repository.load_features(symbol)
     except Exception:
@@ -504,6 +509,7 @@ def backtest(
     predictions: pd.DataFrame | None = None,
     equity_curve_path: Path | None = None,
     result_title: str = "PORTFOLIO BACKTEST RESULTS",
+    db_path: str | None = None,
 ):
     print("Loading model and features...")
 
@@ -562,6 +568,7 @@ def backtest(
         symbol_categories = None
     feature_clip_meta = features_meta.get("feature_clip", {})
     clip_bounds = feature_clip_meta.get("bounds", {})
+    resolved_db_path = db_path or str(globals().get("DB_PATH", DB_PATH))
     if using_external_predictions:
         print(f"Loaded walk-forward OOS predictions: {len(prediction_lookup)} symbol/timestamp rows")
     else:
@@ -574,7 +581,7 @@ def backtest(
             f"{feature_clip_meta.get('upper_q', 0.99) * 100:.2f}%]"
         )
     print(f"Backtest window: {test_start_ts.isoformat()} to {test_end_ts.isoformat()}")
-    all_raw = load_all_raw_data(backtest_symbols)
+    all_raw = load_all_raw_data(backtest_symbols, db_path=resolved_db_path)
     if not all_raw:
         print("Error: no raw data for backtest.")
         return
@@ -595,6 +602,7 @@ def backtest(
             sym,
             symbol_categories=symbol_categories,
             required_columns=required_feature_columns,
+            db_path=resolved_db_path,
         )
         if feat_df.empty:
             print(f"Warning: {sym} has no required precomputed feature/barrier rows.")

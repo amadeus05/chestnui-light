@@ -86,8 +86,9 @@ def test_backtest_prediction_lookup_accepts_candidate_predictions():
 def test_backtest_uses_metadata_symbols_for_external_predictions(monkeypatch):
     captured = {}
 
-    def fake_load_all_raw_data(symbols):
+    def fake_load_all_raw_data(symbols, db_path=None):
         captured["symbols"] = list(symbols)
+        captured["db_path"] = db_path
         return {}
 
     monkeypatch.setattr(bt, "load_all_raw_data", fake_load_all_raw_data)
@@ -109,9 +110,10 @@ def test_backtest_uses_metadata_symbols_for_external_predictions(monkeypatch):
         "feature_clip": {"bounds": {}},
     }
 
-    bt.backtest(features_meta=features_meta, predictions=predictions)
+    bt.backtest(features_meta=features_meta, predictions=predictions, db_path="custom.db")
 
     assert captured["symbols"] == ["ETH/USDT"]
+    assert captured["db_path"] == "custom.db"
 
 
 def test_backtest_does_not_reuse_intrabar_exit_slot_for_same_bar_entry(monkeypatch, capsys):
@@ -157,7 +159,7 @@ def test_backtest_does_not_reuse_intrabar_exit_slot_for_same_bar_entry(monkeypat
             }
         )
 
-    monkeypatch.setattr(bt, "load_all_raw_data", lambda symbols: {symbol: make_raw(symbol) for symbol in symbols})
+    monkeypatch.setattr(bt, "load_all_raw_data", lambda symbols, db_path=None: {symbol: make_raw(symbol) for symbol in symbols})
     monkeypatch.setattr(bt, "load_precomputed_features", lambda symbol, **kwargs: make_features(symbol))
     monkeypatch.setattr(bt.plt, "show", lambda: None)
     monkeypatch.setattr(bt, "BACKTEST_MAX_OPEN_POSITIONS", 1)
@@ -191,8 +193,11 @@ def test_backtest_does_not_reuse_intrabar_exit_slot_for_same_bar_entry(monkeypat
 
 
 def test_candle_lstm_replay_attaches_barriers_for_zero_target_candidates(monkeypatch):
+    captured = {}
+
     class FakeRepository:
         def __init__(self, db_path: str):
+            captured["db_path"] = db_path
             self.db_path = db_path
 
         def load_features(self, symbol):
@@ -209,8 +214,9 @@ def test_candle_lstm_replay_attaches_barriers_for_zero_target_candidates(monkeyp
         }
     )
 
-    merged = candle_replay.attach_barrier_columns_from_feature_tables(predictions)
+    merged = candle_replay.attach_barrier_columns_from_feature_tables(predictions, db_path="custom.db")
 
+    assert captured["db_path"] == "custom.db"
     assert merged["barrier_stop_pct"].tolist() == [0.02, 0.02, 0.02]
     assert merged["barrier_take_pct"].tolist() == [0.04, 0.04, 0.04]
 

@@ -33,6 +33,7 @@ def parse_args():
     )
     parser.add_argument("--start-date", default=None, help="Optional backtest start timestamp.")
     parser.add_argument("--end-date", default=None, help="Optional backtest end timestamp.")
+    parser.add_argument("--db-path", default=cfg.DB_PATH, help="Path to SQLite database for raw/features/barriers.")
     return parser.parse_args()
 
 
@@ -114,6 +115,7 @@ def main():
         predictions=predictions,
         equity_curve_path=Path(args.chart),
         result_title="LSTM WALK-FORWARD OOS BACKTEST REPLAY",
+        db_path=args.db_path,
     )
 
 
