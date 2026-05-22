@@ -62,10 +62,15 @@ class TradingEngine:
         if first_execution_timestamp is not None:
             self.risk.on_bar(first_execution_timestamp)
 
-        account = self.broker.get_account_snapshot()
+        entry_account = self.broker.get_account_snapshot()
+        account = entry_account
         if first_timestamp is not None:
             self.portfolio.record_equity(first_timestamp, mark_prices)
         equity = account.equity
+        entry_open_symbols = set(entry_account.positions)
+        entry_open_positions_count = len(entry_account.positions)
+        entry_balance = entry_account.balance
+        entry_available_balance = max(0.0, entry_account.balance - entry_account.used_margin)
 
         for symbol, snapshot in snapshots.items():
             position = account.positions.get(symbol) or self.portfolio.position_snapshot(symbol)
@@ -85,6 +90,8 @@ class TradingEngine:
         accepted_orders: list[OrderSnapshot] = []
         rejected_orders: list[OrderSnapshot] = []
         opened_this_bar = 0
+        available_balance_for_entries = entry_available_balance
+        open_positions_count_for_entries = entry_open_positions_count
         for candidate in candidates:
             if opened_this_bar >= self.config.max_new_positions_per_bar:
                 break
@@ -94,14 +101,14 @@ class TradingEngine:
             if not self.risk.can_open_symbol(
                 candidate.symbol,
                 bar_index,
-                open_positions_count=len(account.positions),
+                open_positions_count=open_positions_count_for_entries,
             ):
                 continue
-            if candidate.symbol in account.positions or self.portfolio.has_position(candidate.symbol):
+            if candidate.symbol in entry_open_symbols:
                 continue
             sizing = self.risk.size_position(
-                balance=account.balance,
-                available_balance=max(0.0, account.balance - account.used_margin),
+                balance=entry_balance,
+                available_balance=available_balance_for_entries,
                 stop_pct=candidate.stop_pct,
             )
             if sizing is None:
@@ -123,6 +130,8 @@ class TradingEngine:
             if result.order is not None:
                 accepted_orders.append(result.order)
                 self._record_order_accepted(result.order)
+            available_balance_for_entries = max(0.0, available_balance_for_entries - sizing.required_margin)
+            open_positions_count_for_entries += 1
 
             order_fills = list(result.fills)
             order_fills.extend(self.broker.process_market_snapshot(snapshot))
@@ -141,6 +150,7 @@ class TradingEngine:
                 )
                 opened_this_bar += 1
                 account = self.broker.get_account_snapshot()
+                entry_open_symbols.add(candidate.symbol)
 
                 position = self.portfolio.position_snapshot(fill.symbol)
                 if position is None:

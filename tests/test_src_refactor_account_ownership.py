@@ -320,3 +320,45 @@ def test_trading_engine_respects_existing_broker_position_when_portfolio_is_empt
     assert result.account == account
     assert result.opened_orders == ()
     assert broker.orders == []
+
+
+def test_trading_engine_does_not_reuse_intrabar_exit_slot_for_same_batch_entry():
+    broker = ExchangeSimulator()
+    portfolio = PortfolioManager(initial_balance=100.0)
+    portfolio.open_position(
+        symbol="BTC/USDT",
+        direction=1,
+        entry_price=100.0,
+        position_notional=50.0,
+        required_margin=50.0,
+        stop_pct=0.02,
+        take_pct=0.04,
+        opened_at=pd.Timestamp("2025-01-01 00:00:00"),
+    )
+    engine = TradingEngine(
+        broker=broker,
+        portfolio=portfolio,
+        risk=RiskManager(),
+    )
+
+    result = engine.on_market_batch(
+        bar_index=1,
+        snapshots={
+            "BTC/USDT": MarketExecutionSnapshot(
+                symbol="BTC/USDT",
+                current_timestamp=pd.Timestamp("2025-01-01 00:00:00"),
+                next_timestamp=pd.Timestamp("2025-01-01 01:00:00"),
+                current_close=100.0,
+                next_open=100.0,
+                next_high=105.0,
+                next_low=99.0,
+            ),
+            "ETH/USDT": _snapshot("ETH/USDT"),
+        },
+        candidates=[_candidate("ETH/USDT")],
+    )
+
+    assert len(result.closed_trades) == 1
+    assert result.closed_trades[0].symbol == "BTC/USDT"
+    assert result.opened_orders == ()
+    assert not portfolio.has_position("ETH/USDT")
