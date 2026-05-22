@@ -240,6 +240,40 @@ def test_monthly_split_builder_uses_rolling_calendar_windows():
     ]
 
 
+def test_refactor_tscv_splitter_skips_fold_when_purge_removes_train_window():
+    frame = pd.DataFrame({"timestamp": pd.date_range("2025-01-01", periods=6, freq="h")})
+    config = ExperimentConfig(
+        model=ModelSpec(model_type="lightgbm", timeframe="1h"),
+        split_mode="tscv",
+        n_splits=2,
+        purge_gap=2,
+    )
+
+    splits = WalkForwardSplitter(config).split(frame)
+
+    assert [(fold.train_end, fold.test_start) for fold in splits] == [
+        (pd.Timestamp("2025-01-01 01:00:00"), pd.Timestamp("2025-01-01 04:00:00")),
+    ]
+
+
+def test_refactor_monthly_splitter_skips_fold_when_purge_removes_train_window():
+    frame = pd.DataFrame({"timestamp": pd.date_range("2025-01-01", periods=90, freq="D")})
+    config = ExperimentConfig(
+        model=ModelSpec(model_type="lightgbm", timeframe="1d"),
+        split_mode="monthly_expanding",
+        n_splits=3,
+        train_months=1,
+        test_months=1,
+        purge_gap=31,
+    )
+
+    splits = WalkForwardSplitter(config).split(frame)
+
+    assert [(fold.train_end, fold.test_start) for fold in splits] == [
+        (pd.Timestamp("2025-01-28"), pd.Timestamp("2025-03-01")),
+    ]
+
+
 def test_lightgbm_trainer_metadata_keeps_replay_contract(monkeypatch):
     class FakeLightGbmClassifier:
         def __init__(self, **params):

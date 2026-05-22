@@ -46,7 +46,9 @@ class WalkForwardSplitter:
             if test_start_idx <= 0 or test_end_idx >= len(unique_ts):
                 continue
 
-            train_end_idx = max(0, test_start_idx - self.config.purge_gap - 1)
+            train_end_idx = test_start_idx - self.config.purge_gap - 1
+            if train_end_idx < 0:
+                continue
             folds.append(
                 WalkForwardFold(
                     fold_id=fold_id,
@@ -80,9 +82,10 @@ class WalkForwardSplitter:
             train_end = test_start_month - pd.Timedelta(nanoseconds=1)
             if self.config.purge_gap > 0:
                 train_candidates = unique_ts[unique_ts < test_start_month]
-                purge_idx = max(0, len(train_candidates) - self.config.purge_gap - 1)
-                if len(train_candidates) > 0:
-                    train_end = min(train_end, train_candidates.iloc[purge_idx])
+                purge_idx = len(train_candidates) - self.config.purge_gap - 1
+                if purge_idx < 0:
+                    continue
+                train_end = min(train_end, train_candidates.iloc[purge_idx])
 
             train_mask = unique_ts.between(train_start_month, train_end, inclusive="both")
             test_mask = unique_ts.between(test_start_month, test_end_exclusive, inclusive="left")
